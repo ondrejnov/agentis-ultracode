@@ -1,48 +1,48 @@
 #!/usr/bin/env node
 /**
- * Falešný `claude` pro testy (ULTRACODE_CLAUDE_BIN=<tento soubor>).
+ * Fake `claude` for tests (ULTRACODE_CLAUDE_BIN=<this file>).
  *
- * Napodobuje `claude -p --output-format stream-json --verbose` (formát ověřený na reálném claude 2.1.x,
- * viz sample-stream-*.jsonl). Prompt čte ze stdin, direktivy hledá kdekoli v promptu.
+ * Imitates `claude -p --output-format stream-json --verbose` (format verified on a real claude 2.1.x,
+ * see sample-stream-*.jsonl). Reads the prompt from stdin, looks for directives anywhere in the prompt.
  *
- * SDÍLENÝ KONTRAKT (nesmí se měnit):
- *   [[fake:json {...}]]    při --json-schema vrátí structured_output = tento JSON
- *                          (bez direktivy se vygeneruje minimální objekt podle schema:
- *                          string→"x", number/integer→1, boolean→true, array→[], object→objekt s vlastnostmi)
- *   [[fake:text ABC]]      finální text = ABC (default "echo: " + prvních 200 znaků promptu bez direktiv)
- *   [[fake:sleep 300]]     počká 300 ms před výsledkem
- *   [[fake:tools 3]]       vyemituje 3 tool_use eventy
+ * SHARED CONTRACT (must not change):
+ *   [[fake:json {...}]]    with --json-schema returns structured_output = this JSON
+ *                          (without a directive a minimal object is generated from the schema:
+ *                          string→"x", number/integer→1, boolean→true, array→[], object→object with its properties)
+ *   [[fake:text ABC]]      final text = ABC (default "echo: " + first 200 characters of the prompt without directives)
+ *   [[fake:sleep 300]]     waits 300 ms before the result
+ *   [[fake:tools 3]]       emits 3 tool_use events
  *   [[fake:tokens 120]]    output_tokens=120 (default 10); [[fake:cost 0.02]] total_cost_usd (default 0.001)
- *   [[fake:fail]]          vždy skončí exit 1 se zprávou na stderr
- *   [[fake:fail-times N]]  prvních N pokusů se stejným promptem skončí exit 1, další uspějí
- *                          (počítadlo v $FAKE_CLAUDE_STATE_DIR, klíč = sha1 promptu)
- *   [[fake:stall]]         vypíše init a pak visí navždy (až do zabití); [[fake:stall-times N]] totéž prvních N pokusů
- *   [[fake:apierror]]      result s is_error:true, subtype:"error_during_execution", exit 1
- *   Každé spuštění přidá řádek JSON do $FAKE_CLAUDE_LOG:
+ *   [[fake:fail]]          always exits with 1 and a message on stderr
+ *   [[fake:fail-times N]]  the first N attempts with the same prompt exit with 1, the next ones succeed
+ *                          (counter in $FAKE_CLAUDE_STATE_DIR, key = sha1 of the prompt)
+ *   [[fake:stall]]         prints init and then hangs forever (until killed); [[fake:stall-times N]] the same for the first N attempts
+ *   [[fake:apierror]]      result with is_error:true, subtype:"error_during_execution", exit 1
+ *   Each run appends a JSON line to $FAKE_CLAUDE_LOG:
  *     {pid,startedAt,endedAt,args,cwd,prompt,env:{CLAUDE_CODE_DISABLE_WORKFLOWS},attempt}
- *   (řádek se zapisuje při ukončení – i při SIGTERM/SIGINT; po SIGKILL řádek nevznikne).
+ *   (the line is written on exit – also on SIGTERM/SIGINT; no line is written after SIGKILL).
  *
- * ROZŠÍŘENÍ (nadmnožina kontraktu, nic z výše uvedeného nemění):
- *   [[fake:apierror 529]]       jako apierror, ale s api_error_status 529 (přechodná chyba; jiný kód = jiný status)
- *   [[fake:apierror-times N]]   prvních N pokusů API chyba 529 (přechodná), další uspějí
+ * EXTENSIONS (superset of the contract, nothing above is changed):
+ *   [[fake:apierror 529]]       like apierror, but with api_error_status 529 (transient error; another code = another status)
+ *   [[fake:apierror-times N]]   the first N attempts fail with API error 529 (transient), the next ones succeed
  *   [[fake:input 42]]           input_tokens (default 10)
  *   [[fake:cache 100 50]]       cache_read_input_tokens, cache_creation_input_tokens (default 0 0)
- *   [[fake:turns 7]]            num_turns (default 1 + počet tools)
- *   [[fake:stderr TEXT]]        zapíše TEXT na stderr (v průběhu běhu)
- *   [[fake:heartbeat 100 5]]    5× po 100 ms zapíše tečku na stderr (aktivita bez stdout), pak pokračuje
- *   [[fake:child]]              spustí potomka `sleep 600` (ve stejné skupině procesů, drží stdout/stderr);
- *                               jeho pid je v eventu {"type":"system","subtype":"fake_child","pid":N}
- *                               a v řádku logu jako childPid
- *   [[fake:ignore-term]]        ignoruje SIGTERM (zabít jde jen SIGKILL)
- *   [[fake:no-newline]]         poslední (result) řádek bez koncového \n
- *   [[fake:garbage]]            do výstupu vloží nevalidní JSON řádky a kus rozepsaného řádku
- *   [[fake:hang-after-result]]  po result eventu proces nekončí (visí)
- *   [[fake:no-result]]          skončí exit 0 bez result eventu
- *   [[fake:missing-structured]] při --json-schema vrátí úspěšný result BEZ structured_output
- *   [[fake:exit-code N]]        po result eventu skončí s kódem N (default 0, u chyb 1)
+ *   [[fake:turns 7]]            num_turns (default 1 + number of tools)
+ *   [[fake:stderr TEXT]]        writes TEXT to stderr (during the run)
+ *   [[fake:heartbeat 100 5]]    5× every 100 ms writes a dot to stderr (activity without stdout), then continues
+ *   [[fake:child]]              starts a child `sleep 600` (in the same process group, holds stdout/stderr);
+ *                               its pid is in the event {"type":"system","subtype":"fake_child","pid":N}
+ *                               and in the log line as childPid
+ *   [[fake:ignore-term]]        ignores SIGTERM (only SIGKILL can kill it)
+ *   [[fake:no-newline]]         last (result) line without a trailing \n
+ *   [[fake:garbage]]            inserts invalid JSON lines and a fragment of an incomplete line into the output
+ *   [[fake:hang-after-result]]  after the result event the process does not exit (hangs)
+ *   [[fake:no-result]]          exits with 0 without a result event
+ *   [[fake:missing-structured]] with --json-schema returns a successful result WITHOUT structured_output
+ *   [[fake:exit-code N]]        after the result event exits with code N (default 0, 1 for errors)
  *
- * Proměnné prostředí: FAKE_CLAUDE_LOG (soubor logu), FAKE_CLAUDE_STATE_DIR (počítadla pokusů;
- * default $TMPDIR/fake-claude-state-<ppid>, tedy vázané na rodičovský proces = runner).
+ * Environment variables: FAKE_CLAUDE_LOG (log file), FAKE_CLAUDE_STATE_DIR (attempt counters;
+ * default $TMPDIR/fake-claude-state-<ppid>, i.e. bound to the parent process = runner).
  */
 
 import { spawn } from 'node:child_process'
@@ -72,11 +72,11 @@ function readStdin() {
 }
 const prompt = readStdin()
 
-// ───────── direktivy ─────────
+// ───────── directives ─────────
 
 const directives = [] // {name, value, start, end}
 
-/** Najde `]]`, za kterým je validní JSON (JSON může obsahovat `]]`, např. [[1]]). */
+/** Finds a `]]` followed by valid JSON (the JSON may contain `]]`, e.g. [[1]]). */
 function parseJsonDirective(text, from) {
   let idx = text.indexOf(']]', from)
   while (idx >= 0) {
@@ -84,11 +84,11 @@ function parseJsonDirective(text, from) {
     try {
       return { value: JSON.parse(candidate), end: idx + 2 }
     } catch {
-      // zkus další ]]
+      // try the next ]]
     }
     idx = text.indexOf(']]', idx + 1)
   }
-  // zkus i variantu, kdy JSON končí `]` těsně před `]]`
+  // also try the variant where the JSON ends with `]` right before `]]`
   return null
 }
 
@@ -130,7 +130,7 @@ for (const d of [...directives].sort((a, b) => b.start - a.start)) {
 }
 cleanPrompt = cleanPrompt.replace(/\s+/g, ' ').trim()
 
-// ───────── počítadlo pokusů ─────────
+// ───────── attempt counter ─────────
 
 const promptHash = createHash('sha1').update(prompt).digest('hex')
 const stateDir = process.env.FAKE_CLAUDE_STATE_DIR || join(tmpdir(), `fake-claude-state-${process.ppid}`)
@@ -142,7 +142,7 @@ try {
   attempt = fstatSync(fd).size
   closeSync(fd)
 } catch {
-  // bez počítadla
+  // without counter
 }
 
 // ───────── log ─────────
@@ -163,7 +163,7 @@ function writeLog() {
     prompt,
     env: {
       CLAUDE_CODE_DISABLE_WORKFLOWS: process.env.CLAUDE_CODE_DISABLE_WORKFLOWS ?? null,
-      // rozšíření pro testy předávání env (nadmnožina kontraktu)
+      // extension for testing env passing (superset of the contract)
       ULTRACODE_TEST_ENV: process.env.ULTRACODE_TEST_ENV ?? null,
     },
     attempt,
@@ -172,7 +172,7 @@ function writeLog() {
   try {
     appendFileSync(logFile, JSON.stringify(entry) + '\n')
   } catch {
-    // ignoruj
+    // ignore
   }
 }
 
@@ -185,7 +185,7 @@ for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP']) {
 }
 process.on('exit', writeLog)
 
-// ───────── výstup ─────────
+// ───────── output ─────────
 
 const sessionId = randomUUID()
 function emit(obj, { newline = true } = {}) {
@@ -265,32 +265,32 @@ async function main() {
   })
 
   if (has('child')) {
-    const c = spawn('sleep', ['600'], { stdio: 'inherit' }) // ve STEJNÉ skupině, drží roury
+    const c = spawn('sleep', ['600'], { stdio: 'inherit' }) // in the SAME group, holds the pipes
     c.unref()
     childPid = c.pid ?? null
     emit({ type: 'system', subtype: 'fake_child', pid: childPid, session_id: sessionId, uuid: randomUUID() })
   }
 
-  // fail / stall (podle pokusu)
+  // fail / stall (depending on the attempt)
   if (has('fail')) {
-    process.stderr.write('fake-claude: simulované selhání (fail)\n')
+    process.stderr.write('fake-claude: simulated failure (fail)\n')
     process.exitCode = 1
     return
   }
   const failTimes = num('fail-times', 0)
   if (failTimes > 0 && attempt <= failTimes) {
-    process.stderr.write(`fake-claude: simulované selhání (fail-times ${failTimes}, pokus ${attempt})\n`)
+    process.stderr.write(`fake-claude: simulated failure (fail-times ${failTimes}, attempt ${attempt})\n`)
     process.exitCode = 1
     return
   }
   const stallTimes = num('stall-times', 0)
   if (has('stall') || (stallTimes > 0 && attempt <= stallTimes)) {
-    setInterval(() => {}, 1 << 30) // visí do zabití
+    setInterval(() => {}, 1 << 30) // hangs until killed
     await new Promise(() => {})
   }
 
   if (has('garbage')) {
-    process.stdout.write('tohle neni json {\n')
+    process.stdout.write('this is not json {\n')
     process.stdout.write('{"type":"assistant","message":{"content":[{"type":"te\n')
   }
 
@@ -353,7 +353,7 @@ async function main() {
         is_error: true,
         api_error_status: status,
         terminal_reason: 'api_error',
-        result: status === 529 ? 'API Error: 529 overloaded_error (fake)' : `API Error: simulovaná chyba${status ? ` ${status}` : ''} (fake)`,
+        result: status === 529 ? 'API Error: 529 overloaded_error (fake)' : `API Error: simulated error${status ? ` ${status}` : ''} (fake)`,
       },
       { newline: !has('no-newline') },
     )
@@ -400,7 +400,7 @@ function safeParse(s) {
 }
 
 if (outputFormat !== 'stream-json') {
-  // režim `--output-format text|json` – jen minimální podpora
+  // `--output-format text|json` mode – minimal support only
   const text = has('text') ? String(val('text')) : 'echo: ' + cleanPrompt.slice(0, 200)
   if (outputFormat === 'json') process.stdout.write(JSON.stringify({ type: 'result', result: text, is_error: false }) + '\n')
   else process.stdout.write(text + '\n')

@@ -1,21 +1,21 @@
 /// <reference path="../types/workflow.d.ts" />
 
-// Upgrade PHP kódu na PHP 8.x: Core (průřezové změny) → pipeline(Fix → Review) po oddílech kódu.
-// Zobecněný port workflow, které se osvědčilo u upgradu starého e-shopu (21 agentů).
+// Upgrade of PHP code to PHP 8.x: Core (cross-cutting changes) → pipeline(Fix → Review) per code partition.
+// Generalized port of a workflow that worked well for upgrading an old e-shop (21 agents).
 //
-// Spuštění:
+// Run:
 //   ultracode run php8-upgrade --args-file upgrade.json
 //   ultracode run php8-upgrade --args '{"root":"/var/www/app","partitions":[{"key":"app","paths":["app"]},{"key":"lib","paths":["include","lib"]}]}'
 //
 // args:
-//   root         (povinné) absolutní cesta ke kořeni projektu
-//   partitions   (povinné) [{ key, paths: string[], notes? }] — cesty relativně ke kořeni; oddíly se NESMÍ překrývat,
-//                protože fixeři zapisují do stejného working tree (překryv se odmítne ještě před startem agentů)
-//   goal         cíl (default: běží správně na PHP 8.3 a je validní i na 8.1/8.2)
-//   description  jednovětý popis projektu pro agenty (framework, vendor, vstupní body…)
-//   coreTasks    vlastní seznam průřezových úkolů pro fázi Core (default viz DEFAULT_CORE_TASKS)
-//   coreExclude  cesty, kam fáze Core nesmí sahat (default ["vendor/"] — patří vlastním oddílům)
-//   scratch      adresář pro dočasné soubory agentů (default <root>/.ultracode/scratch)
+//   root         (required) absolute path to the project root
+//   partitions   (required) [{ key, paths: string[], notes? }] — paths relative to the root; partitions must NOT overlap,
+//                because fixers write to the same working tree (overlap is rejected before any agent starts)
+//   goal         target (default: runs correctly on PHP 8.3 and is valid on 8.1/8.2)
+//   description  one-sentence project description for the agents (framework, vendor, entry points…)
+//   coreTasks    custom list of cross-cutting tasks for the Core phase (default see DEFAULT_CORE_TASKS)
+//   coreExclude  paths the Core phase must not touch (default ["vendor/"] — they belong to their own partitions)
+//   scratch      directory for the agents' temporary files (default <root>/.ultracode/scratch)
 
 export const meta = {
   name: 'php8-upgrade',
@@ -60,7 +60,7 @@ interface ReviewResult {
   outsidePartition: string[]
 }
 
-// ───────── vstup ─────────
+// ───────── input ─────────
 
 const input = (args ?? {}) as {
   root?: string
@@ -73,10 +73,10 @@ const input = (args ?? {}) as {
 }
 
 if (typeof input.root !== 'string' || !input.root.startsWith('/')) {
-  throw new Error('Chybí args.root (absolutní cesta ke kořeni projektu).')
+  throw new Error('Missing args.root (absolute path to the project root).')
 }
 if (!Array.isArray(input.partitions) || input.partitions.length === 0) {
-  throw new Error('Chybí args.partitions: pole oddílů { key, paths: string[] }.')
+  throw new Error('Missing args.partitions: array of partitions { key, paths: string[] }.')
 }
 
 const ROOT = input.root.replace(/\/+$/, '')
@@ -85,21 +85,21 @@ const GOAL = input.goal ?? 'make the code run correctly on PHP 8.3 (and stay val
 const CORE_EXCLUDE = input.coreExclude ?? ['vendor/']
 const PARTITIONS: Partition[] = input.partitions
 
-// ───────── deterministická kontrola překryvu oddílů (dřív než se utratí první token) ─────────
+// ───────── deterministic check of partition overlap (before the first token is spent) ─────────
 
-// Kanonický tvar cesty relativní ke kořeni: bez '', '.', '//' a '..' (vyřešeno); absolutní cesta pod ROOT se zkrátí.
-// Prázdný výsledek = celý kořen (koliduje se vším). Cesta mimo ROOT je chyba, ne tichý překryv.
+// Canonical form of a path relative to the root: without '', '.', '//' and '..' (resolved); an absolute path under ROOT is shortened.
+// Empty result = whole root (clashes with everything). A path outside ROOT is an error, not a silent overlap.
 const norm = (p: string): string => {
   let rest = p.trim()
   if (rest.startsWith('/')) {
-    if (rest !== ROOT && !rest.startsWith(ROOT + '/')) throw new Error(`Cesta oddílu "${p}" leží mimo kořen ${ROOT}.`)
+    if (rest !== ROOT && !rest.startsWith(ROOT + '/')) throw new Error(`Partition path "${p}" is outside the root ${ROOT}.`)
     rest = rest.slice(ROOT.length)
   }
   const out: string[] = []
   for (const seg of rest.split('/')) {
     if (seg === '' || seg === '.') continue
     if (seg === '..') {
-      if (out.length === 0) throw new Error(`Cesta oddílu "${p}" vede nad kořen ${ROOT}.`)
+      if (out.length === 0) throw new Error(`Partition path "${p}" goes above the root ${ROOT}.`)
       out.pop()
     } else {
       out.push(seg)
@@ -112,15 +112,15 @@ const keys = new Set<string>()
 const owners: Array<{ path: string; key: string }> = []
 for (const p of PARTITIONS) {
   if (!p || typeof p.key !== 'string' || !p.key || !Array.isArray(p.paths) || p.paths.length === 0) {
-    throw new Error('Každý oddíl musí mít neprázdné "key" a pole "paths".')
+    throw new Error('Each partition must have a non-empty "key" and a "paths" array.')
   }
-  if (keys.has(p.key)) throw new Error('Duplicitní klíč oddílu: ' + p.key)
+  if (keys.has(p.key)) throw new Error('Duplicate partition key: ' + p.key)
   keys.add(p.key)
   for (const raw of p.paths) {
     const path = norm(raw)
     for (const o of owners) {
       if (clash(o.path, path)) {
-        throw new Error(`Oddíly se překrývají: "${p.key}" (${raw}) vs. "${o.key}" (${o.path || '.'}). Souběžní fixeři by si přepisovali zápisy.`)
+        throw new Error(`Partitions overlap: "${p.key}" (${raw}) vs. "${o.key}" (${o.path || '.'}). Concurrent fixers would overwrite each other's writes.`)
       }
     }
     owners.push({ path, key: p.key })
@@ -130,7 +130,7 @@ for (const p of PARTITIONS) {
 const partitionText = (p: Partition): string =>
   p.paths.map((x) => ROOT + '/' + norm(x)).join(', ') + (p.notes ? ' — ' + p.notes : '')
 
-// ───────── společný brief (nesdílený kontext: každý agent ho dostane celý) ─────────
+// ───────── shared brief (each agent gets all of it) ─────────
 
 const BRIEF = `
 PROJECT: ${ROOT}${input.description ? ' — ' + input.description : ''}
@@ -158,7 +158,7 @@ const DEFAULT_CORE_TASKS = [
 
 const CORE_TASKS = input.coreTasks && input.coreTasks.length ? input.coreTasks : DEFAULT_CORE_TASKS
 
-// ───────── schémata ─────────
+// ───────── schemas ─────────
 
 const RESULT = {
   type: 'object',
@@ -199,7 +199,7 @@ const REVIEW = {
   required: ['partition', 'verdict', 'issuesFound', 'summary', 'outsidePartition'],
 }
 
-// ───────── fáze A: průřezové změny (musí předcházet práci po oddílech) ─────────
+// ───────── phase A: cross-cutting changes (must precede the per-partition work) ─────────
 
 phase('Core')
 
@@ -217,12 +217,12 @@ Verify with 'php -l' on every changed file. Set partition to "core" and return f
 )
 
 if (core) {
-  log(`Core hotovo: změněno ${core.filesChanged.length} souborů. ${core.summary}`)
+  log(`Core done: changed ${core.filesChanged.length} files. ${core.summary}`)
 } else {
-  log('Core agent selhal (null) — oddíly poběží bez průřezových změn a revieweři to musí doplnit.')
+  log('Core agent failed (null) — partitions will run without the cross-cutting changes and reviewers must cover them.')
 }
 
-// ───────── fáze B: oddíly Fix → Review (pipeline: oddíl A může být v Review, zatímco B ještě opravuje) ─────────
+// ───────── phase B: partitions Fix → Review (pipeline: partition A may be in Review while B is still fixing) ─────────
 
 const results = await pipeline(
   PARTITIONS,
@@ -256,14 +256,14 @@ Fix confirmed issues directly (only within your partition) and mark fixed:true; 
     ),
 )
 
-// ───────── výsledek ─────────
+// ───────── result ─────────
 
 const partitionsOut = PARTITIONS.map((p, i) => ({ key: p.key, review: results[i] }))
 const unreviewed = partitionsOut.filter((p) => p.review === null).map((p) => p.key)
 const problems = partitionsOut.filter((p) => p.review && p.review.verdict === 'problems').map((p) => p.key)
 
-if (unreviewed.length) log(`POZOR: oddíly bez výsledku review (selhal fixer i reviewer nebo stage): ${unreviewed.join(', ')}`)
-if (problems.length) log(`Oddíly s nevyřešenými problémy: ${problems.join(', ')}`)
+if (unreviewed.length) log(`WARNING: partitions without a review result (fixer or reviewer or stage failed): ${unreviewed.join(', ')}`)
+if (problems.length) log(`Partitions with unresolved problems: ${problems.join(', ')}`)
 
 return {
   core,

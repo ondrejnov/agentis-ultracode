@@ -1,8 +1,8 @@
 /**
- * Sandbox jednoho skriptu workflow: vm kontext + most (bridge) mezi realmem skriptu a hooks enginu.
+ * Sandbox for one workflow script: vm context + bridge between the script realm and the engine hooks.
  *
- * Neví nic o worker_threads – dostane `ScriptHooks` (ve workeru je to proxy přes postMessage, v testech mock).
- * Vnořené `workflow()` se spouští v NOVÉM vm kontextu tímtéž kódem (`runInSandbox` rekurzivně).
+ * Knows nothing about worker_threads – it receives `ScriptHooks` (in the worker this is a proxy over postMessage, in tests a mock).
+ * A nested `workflow()` runs in a NEW vm context with the same code (`runInSandbox` recursively).
  */
 
 import { Script, createContext } from 'node:vm'
@@ -15,7 +15,7 @@ import type { RuntimeBridge, RuntimeConfig } from './runtime.ts'
 import { validateAgentCall } from './validate.ts'
 
 export interface SandboxScript {
-  /** Výstup `parseScript().code` – výraz s async funkcí. */
+  /** Output of `parseScript().code` – an expression with an async function. */
   code: string
   filename: string
   meta: WorkflowMeta
@@ -23,20 +23,20 @@ export interface SandboxScript {
 
 export interface SandboxShared {
   hooks: ScriptHooks
-  /** Pohled na SharedArrayBuffer rozpočtu (Float64Array, BUDGET_SLOTS). */
+  /** View of the budget SharedArrayBuffer (Float64Array, BUDGET_SLOTS). */
   budget: Float64Array
   maxItems: number
 }
 
 export interface SandboxRun {
   argsJson: string | undefined
-  /** `['root']` nebo `['root', 'child']`. */
+  /** `['root']` or `['root', 'child']`. */
   workflowPath: string[]
-  /** 0 = kořenový skript, 1 = vnořené workflow. */
+  /** 0 = root script, 1 = nested workflow. */
   depth: number
 }
 
-/** Nejhlubší povolené vnoření `workflow()` (kořen má hloubku 0). */
+/** Deepest allowed nesting of `workflow()` (root has depth 0). */
 const MAX_NESTING_DEPTH = 1
 
 let runtimeSource: string | undefined
@@ -49,14 +49,14 @@ function getRuntimeSource(): string {
 const ok = (value: unknown): string => JSON.stringify({ ok: true, value: value === undefined ? null : value })
 const fail = (e: unknown, keepStack = false): string => {
   const error = serializeError(e)
-  // Stack chyby z hooku enginu (interní rámce hlavního vlákna) skriptu nic neřekne; stack potomka ano.
+  // The stack of an error from an engine hook (internal main-thread frames) tells the script nothing; the child's stack does.
   if (!keepStack) delete error.stack
   return JSON.stringify({ ok: false, error })
 }
 
 /**
- * Spustí skript a vrátí jeho návratovou hodnotu jako JSON řetězec (`undefined` → `'null'`).
- * Hází chybu skriptu (s původní zprávou a stackem s čísly řádků skriptu).
+ * Runs the script and returns its return value as a JSON string (`undefined` → `'null'`).
+ * Throws the script error (with the original message and a stack with script line numbers).
  */
 export async function runInSandbox(script: SandboxScript, shared: SandboxShared, run: SandboxRun): Promise<string> {
   const { hooks } = shared
@@ -81,7 +81,7 @@ export async function runInSandbox(script: SandboxScript, shared: SandboxShared,
           }
         }
         default:
-          throw new Error(`Neznámé volání mostu: ${method}`)
+          throw new Error(`Unknown bridge call: ${method}`)
       }
     } catch (e) {
       return fail(e)
@@ -99,7 +99,7 @@ export async function runInSandbox(script: SandboxScript, shared: SandboxShared,
           hooks.log(String(payload.message), call())
           break
         default:
-          throw new Error(`Neznámá událost mostu: ${method}`)
+          throw new Error(`Unknown bridge event: ${method}`)
       }
       return '{"ok":true,"value":null}'
     } catch (e) {
@@ -110,8 +110,8 @@ export async function runInSandbox(script: SandboxScript, shared: SandboxShared,
   const runChild = async (ref: unknown, argsJson: string | undefined): Promise<string> => {
     if (run.depth >= MAX_NESTING_DEPTH) {
       throw new Error(
-        'workflow() nelze volat z vnořeného workflow: vnoření je povoleno jen o jednu úroveň. ' +
-          'Zavolej oba workflow postupně z kořenového skriptu.',
+        'workflow() cannot be called from a nested workflow: nesting is allowed only one level deep. ' +
+          'Call both workflows one after another from the root script.',
       )
     }
     let hookRef: string | { scriptPath: string }
@@ -125,7 +125,7 @@ export async function runInSandbox(script: SandboxScript, shared: SandboxShared,
     ) {
       hookRef = { scriptPath: (ref as { scriptPath: string }).scriptPath }
     } else {
-      throw new TypeError('workflow(): první argument musí být jméno workflow (řetězec) nebo { scriptPath }.')
+      throw new TypeError('workflow(): the first argument must be a workflow name (string) or { scriptPath }.')
     }
 
     const loaded = await hooks.loadWorkflow(hookRef, call())
@@ -134,12 +134,12 @@ export async function runInSandbox(script: SandboxScript, shared: SandboxShared,
       const lines = parsed.diagnostics.map((d) => formatDiagnostic(d, loaded.filename))
       const first = parsed.diagnostics.find((d) => d.level === 'error')
       throw new ScriptValidationError(
-        `Vnořené workflow „${typeof hookRef === 'string' ? hookRef : hookRef.scriptPath}“ je neplatné: ${first ? first.message : 'neznámá chyba'}`,
+        `Nested workflow “${typeof hookRef === 'string' ? hookRef : hookRef.scriptPath}” is invalid: ${first ? first.message : 'unknown error'}`,
         lines,
       )
     }
     const name = parsed.meta.name
-    // enter/exit nesou cestu POTOMKA (['rodič', 'potomek']), stejně jako hooky agent/phase/log uvnitř něj
+    // enter/exit carry the CHILD path (['parent', 'child']), as do the agent/phase/log hooks inside it
     const childPath = [...run.workflowPath, name]
     hooks.workflowEnter(name, { workflowPath: childPath })
     try {
@@ -152,7 +152,7 @@ export async function runInSandbox(script: SandboxScript, shared: SandboxShared,
       try {
         hooks.workflowExit(name, { workflowPath: childPath })
       } catch {
-        /* chyba v exit hooku nesmí přebít výsledek ani původní chybu */
+        /* an error in the exit hook must not override the result or the original error */
       }
     }
   }
@@ -165,7 +165,7 @@ export async function runInSandbox(script: SandboxScript, shared: SandboxShared,
   }
   const config: RuntimeConfig = { argsJson: run.argsJson, maxItems: shared.maxItems }
 
-  // Každý běh má vlastní kontext → vlastní globály, vlastní Date/Math guardy.
+  // Each run has its own context → its own globals, its own Date/Math guards.
   const context = createContext({}, { name: `ultracode:${script.meta.name}`, codeGeneration: { strings: false, wasm: false } })
   const install = new Script(getRuntimeSource(), { filename: 'ultracode-runtime.js' }).runInContext(context) as (
     b: RuntimeBridge,
@@ -174,14 +174,14 @@ export async function runInSandbox(script: SandboxScript, shared: SandboxShared,
   install(bridge, config)
 
   const fn = new Script(script.code, { filename: script.filename }).runInContext(context) as unknown
-  if (typeof fn !== 'function') throw new Error('Skript nevytvořil spustitelnou funkci (interní chyba parseru).')
+  if (typeof fn !== 'function') throw new Error('Script did not create an executable function (internal parser error).')
 
   const value: unknown = await (fn as () => Promise<unknown>).call(undefined)
   let json: string | undefined
   try {
     json = JSON.stringify(value)
   } catch (e) {
-    throw new TypeError(`Návratová hodnota skriptu nejde serializovat do JSON: ${(e as Error).message}`)
+    throw new TypeError(`The script's return value cannot be serialized to JSON: ${(e as Error).message}`)
   }
   return json === undefined ? 'null' : json
 }

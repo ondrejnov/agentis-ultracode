@@ -1,10 +1,10 @@
 /**
- * Úryvky kódu v dokumentaci (```ts bloky v README.md a skills/**.md) musí být platné:
- *  - každý blok projde typovou kontrolou proti types/workflow.d.ts (úplné skripty s `export const meta`
- *    jako moduly, ostatní jako tělo async funkce s pomocnými funkcemi z patterns.md),
- *  - úplné skripty navíc projdou parseScript (pokud src/script/parse.ts existuje) bez chyb a varování.
+ * Code snippets in the documentation (```ts blocks in README.md and skills/**.md) must be valid:
+ *  - each block passes type checking against types/workflow.d.ts (full scripts with `export const meta`
+ *    as modules, the others as the body of an async function with helpers from patterns.md),
+ *  - full scripts must also pass parseScript (if src/script/parse.ts exists) without errors or warnings.
  *
- * Blok, který je záměrně nekompilovatelný (anti-vzor), se označí `ts nocheck`.
+ * A block that is intentionally non-compilable (anti-pattern) is marked `ts nocheck`.
  */
 import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -71,12 +71,12 @@ function virtualSource(b: Block): { text: string; offset: number } {
   return { text: head + b.code + '\n}\n', offset: head.split('\n').length - 1 }
 }
 
-describe('dokumentace: ts úryvky', () => {
-  test('nalezeny alespoň nějaké úryvky', () => {
-    assert.ok(blocks.length > 0, 'v README.md / skills/** nejsou žádné ```ts bloky')
+describe('documentation: ts snippets', () => {
+  test('found at least some snippets', () => {
+    assert.ok(blocks.length > 0, 'no ```ts blocks in README.md / skills/**')
   })
 
-  test('všechny úryvky projdou typovou kontrolou', () => {
+  test('all snippets pass type checking', () => {
     const cfg = ts.readConfigFile(join(ROOT, 'tsconfig.json'), ts.sys.readFile)
     const parsed = ts.parseJsonConfigFileContent(cfg.config, ts.sys, ROOT)
     const options: ts.CompilerOptions = { ...parsed.options, noEmit: true, noUnusedLocals: false }
@@ -100,10 +100,10 @@ describe('dokumentace: ts úryvky', () => {
     const problems: string[] = []
     for (const [name, v] of virtual) {
       const sf = program.getSourceFile(name)
-      assert.ok(sf, 'chybí zdroj ' + name)
+      assert.ok(sf, 'missing source ' + name)
       const diags = [...program.getSyntacticDiagnostics(sf), ...program.getSemanticDiagnostics(sf)]
       for (const d of diags) {
-        // top-level `return` v úplném skriptu je v pořádku (tělo skriptu je async funkce)
+        // top-level `return` in a full script is fine (the script body is an async function)
         if (v.block.full && d.code === 1108) continue
         const pos = d.start !== undefined ? sf.getLineAndCharacterOfPosition(d.start).line : 0
         const mdLine = v.block.line + Math.max(0, pos - v.offset)
@@ -114,16 +114,16 @@ describe('dokumentace: ts úryvky', () => {
   })
 
   const parsePath = join(ROOT, 'src', 'script', 'parse.ts')
-  test('úplné skripty v dokumentaci projdou parseScript', { skip: existsSync(parsePath) ? false : 'src/script/parse.ts zatím neexistuje' }, async () => {
+  test('full scripts in the documentation pass parseScript', { skip: existsSync(parsePath) ? false : 'src/script/parse.ts does not exist yet' }, async () => {
     const mod = (await import(pathToFileURL(parsePath).href)) as {
       parseScript: (s: string, f: string) => { ok: boolean; diagnostics: Array<{ level: string; message: string }> }
     }
     const full = blocks.filter((b) => b.full)
-    assert.ok(full.length > 0, 'dokumentace neobsahuje žádný úplný skript')
+    assert.ok(full.length > 0, 'the documentation contains no full script')
     for (const b of full) {
       const r = mod.parseScript(b.code, b.id)
       assert.equal(r.ok, true, `${b.id}: ${JSON.stringify(r.diagnostics)}`)
-      assert.deepEqual(r.diagnostics.filter((d) => d.level === 'warning'), [], `${b.id}: varování`)
+      assert.deepEqual(r.diagnostics.filter((d) => d.level === 'warning'), [], `${b.id}: warnings`)
     }
   })
 })

@@ -29,7 +29,7 @@ function renderAll(events: RunEvent[], opts: { timestamps?: boolean; verbose?: b
   return events.flatMap((e) => renderEvent(e, state, { style: plain, ...opts }))
 }
 
-describe('formátovací pomůcky', () => {
+describe('formatting helpers', () => {
   it('formatDuration', () => {
     assert.equal(formatDuration(0), '0 ms')
     assert.equal(formatDuration(250), '250 ms')
@@ -40,7 +40,7 @@ describe('formátovací pomůcky', () => {
     assert.equal(formatDuration(Number.NaN), '0 ms')
   })
 
-  it('formatCount a formatUsd', () => {
+  it('formatCount and formatUsd', () => {
     assert.equal(formatCount(950), '950')
     assert.equal(formatCount(1200), '1.2k')
     assert.equal(formatCount(2000), '2k')
@@ -50,25 +50,25 @@ describe('formátovací pomůcky', () => {
     assert.equal(formatUsd(12.345), '$12.35')
   })
 
-  it('plural a formatAge', () => {
-    assert.equal(plural(1, 'agent', 'agenti', 'agentů'), 'agent')
-    assert.equal(plural(3, 'agent', 'agenti', 'agentů'), 'agenti')
-    assert.equal(plural(0, 'agent', 'agenti', 'agentů'), 'agentů')
-    assert.equal(plural(11, 'agent', 'agenti', 'agentů'), 'agentů')
-    assert.equal(formatAge(5_000), 'před 5 s')
-    assert.equal(formatAge(3 * 60_000), 'před 3 min')
-    assert.equal(formatAge(5 * 3_600_000), 'před 5 h')
-    assert.equal(formatAge(3 * 86_400_000), 'před 3 dny')
+  it('plural and formatAge', () => {
+    assert.equal(plural(1, 'agent', 'agents', 'agents'), 'agent')
+    assert.equal(plural(3, 'agent', 'agents', 'agents'), 'agents')
+    assert.equal(plural(0, 'agent', 'agents', 'agents'), 'agents')
+    assert.equal(plural(11, 'agent', 'agents', 'agents'), 'agents')
+    assert.equal(formatAge(5_000), '5 s ago')
+    assert.equal(formatAge(3 * 60_000), '3 min ago')
+    assert.equal(formatAge(5 * 3_600_000), '5 h ago')
+    assert.equal(formatAge(3 * 86_400_000), '3 days ago')
   })
 
-  it('makeStyle(false) nevkládá escape sekvence, makeStyle(true) ano', () => {
+  it('makeStyle(false) emits no escape sequences, makeStyle(true) does', () => {
     assert.equal(makeStyle(false).red('x'), 'x')
     const on = makeStyle(true).red('x')
     assert.match(on, /\u001b\[31mx\u001b\[39m/)
     assert.equal(stripAnsi(on), 'x')
   })
 
-  it('formatTable zarovnává podle viditelné šířky (ANSI se nepočítá)', () => {
+  it('formatTable aligns by visible width (ANSI is not counted)', () => {
     const s = makeStyle(true)
     const rows = formatTable([
       [s.green('a'), 'x'],
@@ -78,13 +78,13 @@ describe('formátovací pomůcky', () => {
   })
 })
 
-describe('renderEvent (snapshoty bez barev)', () => {
-  it('typický průběh běhu', () => {
+describe('renderEvent (snapshots without colors)', () => {
+  it('typical run progress', () => {
     const events: RunEvent[] = [
-      ev('run_start', { runId: 'wf_1', name: 'demo', description: 'Ukázka', args: { a: 1 }, cwd: '/p', scriptPath: '/p/demo.ts', resumed: false, phases: [] }),
+      ev('run_start', { runId: 'wf_1', name: 'demo', description: 'Showcase', args: { a: 1 }, cwd: '/p', scriptPath: '/p/demo.ts', resumed: false, phases: [] }),
       ev('phase', { title: 'Scan', workflowPath: ['demo'] }),
-      ev('log', { message: 'Nalezeno 3 souborů', workflowPath: ['demo'] }),
-      ev('agent_start', { id: 1, label: 'scan-a', phase: 'Scan', workflowPath: ['demo'], promptPreview: 'Projdi…' }),
+      ev('log', { message: 'Found 3 files', workflowPath: ['demo'] }),
+      ev('agent_start', { id: 1, label: 'scan-a', phase: 'Scan', workflowPath: ['demo'], promptPreview: 'Scan…' }),
       ev('agent_tool', { id: 1, tool: 'Read' }),
       ev('agent_retry', { id: 1, attempt: 2, reason: 'stall 600 s' }),
       ev('agent_done', { id: 1, ok: true, cached: false, durationMs: 12_300, usage: USAGE, costUsd: 0.0123, toolCalls: 3 }),
@@ -96,35 +96,35 @@ describe('renderEvent (snapshoty bez barev)', () => {
     ]
     assert.deepEqual(renderAll(events), [
       'ultracode wf_1  demo',
-      '  Ukázka',
-      '== Fáze: Scan',
-      '[log] Nalezeno 3 souborů',
+      '  Showcase',
+      '== Phase: Scan',
+      '[log] Found 3 files',
       '  #1 start   scan-a',
-      '  #1 retry   pokus 2: stall 600 s',
-      '  #1 hotovo  scan-a  12.3 s  in 1.2k out 345  $0.0123  3 nástroje',
+      '  #1 retry   attempt 2: stall 600 s',
+      '  #1 done    scan-a  12.3 s  in 1.2k out 345  $0.0123  3 tools',
       '  #2 start   scan-b',
       '  #2 cache   scan-b',
       '  #3 start   scan-c  [haiku]',
-      '  #3 SELHAL  scan-c  5.0 s  $0.5000',
+      '  #3 FAILED  scan-c  5.0 s  $0.5000',
       '         exit 1: boom',
-      '  rozpočet: 1.2k / 5k výstupních tokenů (24 %)  |  $0.5000 / $2.00',
+      '  budget: 1.2k / 5k output tokens (24 %)  |  $0.5000 / $2.00',
     ])
   })
 
-  it('verbose přidá nástroje a náhled promptu, timestamps hodiny z ts', () => {
+  it('verbose adds tools and prompt preview, timestamps show the hour from ts', () => {
     const events: RunEvent[] = [
-      { t: 'agent_start', ts: '2026-01-01T10:05:09.000Z', id: 1, label: 'a', phase: null, workflowPath: ['w'], promptPreview: 'Udělej X\nči Y' },
+      { t: 'agent_start', ts: '2026-01-01T10:05:09.000Z', id: 1, label: 'a', phase: null, workflowPath: ['w'], promptPreview: 'Do X\nread Y' },
       { t: 'agent_tool', ts: '2026-01-01T10:05:10.000Z', id: 1, tool: 'Grep' },
     ]
     assert.deepEqual(renderAll(events, { verbose: true, timestamps: true }), [
       '[10:05:09]   #1 start   a',
-      '[10:05:09]          Udělej X či Y',
-      '[10:05:10]   #1 nástroj  Grep',
+      '[10:05:09]          Do X read Y',
+      '[10:05:10]   #1 tool  Grep',
     ])
     assert.deepEqual(renderAll(events), ['  #1 start   a'])
   })
 
-  it('vnořené workflow odsazuje a značí vstup/výstup', () => {
+  it('nested workflow is indented and marks entry/exit', () => {
     const events: RunEvent[] = [
       ev('workflow_enter', { name: 'child', workflowPath: ['parent', 'child'] }),
       ev('phase', { title: 'Sub', workflowPath: ['parent', 'child'] }),
@@ -132,14 +132,14 @@ describe('renderEvent (snapshoty bez barev)', () => {
       ev('workflow_exit', { name: 'child', workflowPath: ['parent', 'child'] }),
     ]
     assert.deepEqual(renderAll(events), [
-      '  >> vnořené workflow: child',
-      '  == Fáze: Sub',
+      '  >> nested workflow: child',
+      '  == Phase: Sub',
       '    #1 start   x',
-      '  << konec vnořeného workflow: child',
+      '  << end of nested workflow: child',
     ])
   })
 
-  it('víceřádkový log je zarovnaný; budget bez limitů se nevypisuje', () => {
+  it('multi-line log is aligned; budget without limits is not printed', () => {
     const lines = renderAll([
       ev('log', { message: 'a\nb', workflowPath: ['w'] }),
       ev('budget', { spentOutputTokens: 5, spentUsd: 0, limitOutputTokens: null, limitUsd: null }),
@@ -147,24 +147,24 @@ describe('renderEvent (snapshoty bez barev)', () => {
     assert.deepEqual(lines, ['[log] a', '      b'])
   })
 
-  it('resume a run_end', () => {
+  it('resume and run_end', () => {
     const lines = renderAll([
       ev('run_start', { runId: 'wf_2', name: 'demo', description: '', args: null, cwd: '/', scriptPath: '/s', resumed: true, phases: [] }),
       ev('run_end', {
         status: 'failed',
         durationMs: 65_000,
         totals: makeSummary().totals,
-        error: 'Překročen rozpočet',
+        error: 'Budget exceeded',
       }),
     ])
     assert.deepEqual(lines, [
-      'ultracode wf_2  demo  (pokračování)',
-      '== Konec: failed  1m05s  3 agenti  $0.0421',
-      '   Překročen rozpočet',
+      'ultracode wf_2  demo  (resumed)',
+      '== End: failed  1m05s  3 agents  $0.0421',
+      '   Budget exceeded',
     ])
   })
 
-  it('s barvami obsahuje escape sekvence, bez nich ne', () => {
+  it('with colors the output contains escape sequences, without them it does not', () => {
     const e = ev('agent_done', { id: 1, ok: false, cached: false, durationMs: 1, usage: USAGE, costUsd: 0, toolCalls: 0, error: 'x' })
     const colored = renderEvent(e, createRenderState(), { style: makeStyle(true) })
     assert.ok(colored.join('\n').includes('\u001b['))
@@ -172,39 +172,39 @@ describe('renderEvent (snapshoty bez barev)', () => {
     assert.ok(!plainOut.join('\n').includes('\u001b['))
   })
 
-  it('agent_done bez předchozího startu nespadne (použije náhradní label)', () => {
+  it('agent_done without a previous start does not crash (uses a fallback label)', () => {
     const lines = renderAll([ev('agent_done', { id: 9, ok: true, cached: false, durationMs: 100, usage: USAGE, costUsd: 0.001, toolCalls: 0 })])
     assert.equal(lines.length, 1)
-    assert.match(lines[0], /#9 hotovo {2}agent 9/)
+    assert.match(lines[0], /#9 done {4}agent 9/)
   })
 })
 
 describe('renderSummary', () => {
-  it('úspěšný běh', () => {
+  it('successful run', () => {
     assert.deepEqual(renderSummary(makeSummary(), plain), [
-      '-- Souhrn --',
-      'Běh:      wf_aaaaaaaa-111  demo',
-      'Stav:     completed',
-      'Doba:     1m05s',
-      'Agenti:   3 agenti (z cache 1)',
-      'Nástroje: 7',
-      'Tokeny:   in 1.5k, out 2.5k, cache čtení 10k, cache zápis 500',
-      'Cena:     $0.0421',
-      'Adresář:  /proj/.ultracode/runs/wf_aaaaaaaa-111',
+      '-- Summary --',
+      'Run:      wf_aaaaaaaa-111  demo',
+      'Status:   completed',
+      'Duration: 1m05s',
+      'Agents:   3 agents (from cache 1)',
+      'Tools:    7',
+      'Tokens:   in 1.5k, out 2.5k, cache read 10k, cache write 500',
+      'Cost:     $0.0421',
+      'Folder:   /proj/.ultracode/runs/wf_aaaaaaaa-111',
     ])
   })
 
-  it('selhaný běh s chybou a překročeným rozpočtem', () => {
+  it('failed run with an error and an exceeded budget', () => {
     const s = makeSummary({
       status: 'failed',
-      error: 'Skript vyhodil chybu',
+      error: 'Script threw an error',
       budgetExceeded: true,
     })
     s.totals.failedAgents = 2
     const lines = renderSummary(s, plain)
-    assert.ok(lines.includes('Stav:     failed  (rozpočet překročen)'))
-    assert.ok(lines.includes('Agenti:   3 agenti (z cache 1, selhalo 2)'))
-    assert.ok(lines.includes('Chyba:    Skript vyhodil chybu'))
+    assert.ok(lines.includes('Status:   failed  (budget exceeded)'))
+    assert.ok(lines.includes('Agents:   3 agents (from cache 1, failed 2)'))
+    assert.ok(lines.includes('Error:    Script threw an error'))
   })
 })
 
@@ -218,11 +218,11 @@ describe('digestEvents + renderStatus', () => {
     ev('phase', { title: 'Fix', workflowPath: ['demo'] }),
     ev('agent_start', { id: 2, label: 'b', phase: 'Fix', workflowPath: ['demo'], promptPreview: '' }),
     ev('agent_start', { id: 3, label: 'c', phase: 'Fix', workflowPath: ['demo'], promptPreview: '' }),
-    ev('agent_done', { id: 3, ok: false, cached: false, durationMs: 100, usage: USAGE, costUsd: 0, toolCalls: 0, error: 'chyba c' }),
-    ev('log', { message: 'ahoj', workflowPath: ['demo'] }),
+    ev('agent_done', { id: 3, ok: false, cached: false, durationMs: 100, usage: USAGE, costUsd: 0, toolCalls: 0, error: 'error c' }),
+    ev('log', { message: 'hello', workflowPath: ['demo'] }),
   ]
 
-  it('digest: agenti, fáze, aktuální fáze, retry', () => {
+  it('digest: agents, phases, current phase, retries', () => {
     const d = digestEvents(events)
     assert.deepEqual(d.agents.map((a) => [a.id, a.state, a.phase, a.retries]), [
       [1, 'done', 'Scan', 1],
@@ -235,10 +235,10 @@ describe('digestEvents + renderStatus', () => {
     ])
     assert.equal(d.currentPhase, 'Fix')
     assert.equal(d.ended, false)
-    assert.deepEqual(d.logs, ['ahoj'])
+    assert.deepEqual(d.logs, ['hello'])
   })
 
-  it('digest: resume dopisuje za starý run_end – po novém run_start už běh není ukončený', () => {
+  it('digest: resume appends after an old run_end – after a new run_start the run is no longer ended', () => {
     const resumed = [
       ...events,
       ev('run_end', { status: 'aborted', durationMs: 10, totals: makeSummary().totals }),
@@ -260,7 +260,7 @@ describe('digestEvents + renderStatus', () => {
     assert.ok(lines.some((l) => l.startsWith('  > Fix')), lines.join('\n'))
   })
 
-  it('status běžícího běhu: doba z nowMs, aktivní fáze, tabulka agentů', () => {
+  it('status of a running run: duration from nowMs, active phase, agents table', () => {
     const summary = makeSummary({ status: 'running', durationMs: 0, startedAt: '2026-01-01T10:00:00.000Z' })
     const lines = renderStatus({
       summary,
@@ -269,52 +269,52 @@ describe('digestEvents + renderStatus', () => {
       style: plain,
     })
     assert.deepEqual(lines, [
-      'Běh wf_aaaaaaaa-111  demo',
-      'Stav:     running',
-      'Doba:     2m00s (běží)',
-      'Skript:   /proj/.ultracode/workflows/demo.workflow.ts',
-      'Adresář:  /proj/.ultracode/runs/wf_aaaaaaaa-111',
+      'Run wf_aaaaaaaa-111  demo',
+      'Status:   running',
+      'Duration: 2m00s (running)',
+      'Script:   /proj/.ultracode/workflows/demo.workflow.ts',
+      'Folder:   /proj/.ultracode/runs/wf_aaaaaaaa-111',
       '',
-      'Fáze:',
+      'Phases:',
       '    Scan  1 agent',
-      '  > Fix  2 agenti',
+      '  > Fix  2 agents',
       '',
-      'Agenti:',
-      '  #1  hotovo  a  2.0 s  $0.0100  retry 1x',
-      '  #2  běží    b',
-      '  #3  SELHAL  c  100 ms  $0.00  chyba c',
+      'Agents:',
+      '  #1  done     a  2.0 s  $0.0100  retry 1x',
+      '  #2  running  b',
+      '  #3  FAILED   c  100 ms  $0.00  error c',
       '',
-      'Součty:',
-      '  Agenti:   3 agenti (z cache 1)',
-      '  Nástroje: 7',
-      '  Tokeny:   in 1.5k, out 2.5k, cache čtení 10k, cache zápis 500',
-      '  Cena:     $0.0421',
+      'Totals:',
+      '  Agents:   3 agents (from cache 1)',
+      '  Tools:    7',
+      '  Tokens:   in 1.5k, out 2.5k, cache read 10k, cache write 500',
+      '  Cost:     $0.0421',
     ])
   })
 
-  it('status dokončeného běhu ukáže výsledek', () => {
+  it('status of a completed run shows the result', () => {
     const lines = renderStatus({
       summary: makeSummary({ result: { ok: true } }),
       digest: digestEvents([]),
       nowMs: 0,
       style: plain,
     })
-    assert.ok(lines.includes('Výsledek: {"ok":true}'))
+    assert.ok(lines.includes('Result:   {"ok":true}'))
   })
 })
 
 describe('renderRunList', () => {
-  it('tabulka běhů', () => {
+  it('table of runs', () => {
     const now = Date.parse('2026-01-01T10:10:00.000Z')
     const lines = renderRunList(
-      [makeSummary(), makeSummary({ runId: 'wf_bbbbbbbb-222', name: 'jine', status: 'failed', startedAt: '2026-01-01T09:00:00.000Z' })],
+      [makeSummary(), makeSummary({ runId: 'wf_bbbbbbbb-222', name: 'other', status: 'failed', startedAt: '2026-01-01T09:00:00.000Z' })],
       now,
       plain,
     )
     assert.deepEqual(lines, [
-      '  ID               WORKFLOW  STAV       STÁŘÍ        AGENTI  CENA',
-      '  wf_aaaaaaaa-111  demo      completed  před 10 min  3       $0.0421',
-      '  wf_bbbbbbbb-222  jine      failed     před 1 h     3       $0.0421',
+      '  ID               WORKFLOW  STATUS     AGE         AGENTS  COST',
+      '  wf_aaaaaaaa-111  demo      completed  10 min ago  3       $0.0421',
+      '  wf_bbbbbbbb-222  other     failed     1 h ago     3       $0.0421',
     ])
     assert.deepEqual(renderRunList([], now, plain), [])
   })

@@ -1,14 +1,14 @@
 /**
- * Načtení a statická validace skriptu workflow.
+ * Loading and static validation of a workflow script.
  *
- * `parseScript()` nikdy nehází: všechny chyby a varování jsou v `diagnostics`.
+ * `parseScript()` never throws: all errors and warnings are in `diagnostics`.
  *
  * Postup:
- *  1. lexikální maska zdroje (komentáře/řetězce/regexy → mezery), viz scan.ts,
- *  2. nalezení a vyhodnocení `export const meta = {…}` jako ČISTÉHO literálu (meta-literal.ts) + validace,
- *  3. kontrola zakázaných konstruktů (import/require/export…) a varování (Date.now, Math.random, phase vs. meta),
- *  4. převod na spustitelný kód: `export` se odstraní, tělo se obalí do `(async function () {'use strict'; … \n})`
- *     na STEJNÉM řádku jako první řádek těla (čísla řádků zůstanou), a TS se odstraní `module.stripTypeScriptTypes`.
+ *  1. lexical mask of the source (comments/strings/regexes → spaces), see scan.ts,
+ *  2. finding and evaluating `export const meta = {…}` as a PLAIN literal (meta-literal.ts) + validation,
+ *  3. checking forbidden constructs (import/require/export…) and warnings (Date.now, Math.random, phase vs. meta),
+ *  4. conversion to executable code: `export` is removed, the body is wrapped in `(async function () {'use strict'; … \n})`
+ *     on the SAME line as the first body line (line numbers are kept), and TS is removed via `module.stripTypeScriptTypes`.
  */
 
 import { stripTypeScriptTypes } from 'node:module'
@@ -28,7 +28,7 @@ export interface ParsedScript {
   ok: boolean
   meta: WorkflowMeta | null
   diagnostics: ScriptDiagnostic[]
-  /** JS připravený pro vm: výraz s async funkcí, TS odstraněno. Prázdný řetězec, když `ok` je false. */
+  /** JS prepared for vm: an expression with an async function, TS removed. Empty string when `ok` is false. */
   code: string
 }
 
@@ -36,13 +36,13 @@ const META_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/
 const WRAP_PREFIX = "(async function () {'use strict';"
 const WRAP_SUFFIX = '\n})'
 
-/** Jednořádkový zápis diagnostiky pro CLI / ScriptValidationError. */
+/** One-line diagnostic format for the CLI / ScriptValidationError. */
 export function formatDiagnostic(d: ScriptDiagnostic, filename: string): string {
   const where = d.line ? `${filename}:${d.line}` : filename
-  return `${d.level === 'error' ? 'chyba' : 'varování'}: ${where}: ${d.message}`
+  return `${d.level === 'error' ? 'error' : 'warning'}: ${where}: ${d.message}`
 }
 
-/** `module.stripTypeScriptTypes` při prvním volání vypisuje ExperimentalWarning na stderr – potlačíme jen ten. */
+/** `module.stripTypeScriptTypes` prints an ExperimentalWarning to stderr on first call – we suppress only that one. */
 function stripTypes(code: string): string {
   const original = process.emitWarning
   process.emitWarning = ((warning: unknown, ...rest: unknown[]) => {
@@ -57,7 +57,7 @@ function stripTypes(code: string): string {
   }
 }
 
-/** Z `stack` chyby (`<soubor>:ŘÁDEK\n…`) vytáhne číslo řádku. */
+/** Extracts the line number from the error's `stack` (`<file>:LINE\n…`). */
 function lineFromStack(stack: unknown): number | undefined {
   if (typeof stack !== 'string') return undefined
   const m = /^[^\n]*?:(\d+)(?::\d+)?\n/.exec(stack)
@@ -70,36 +70,36 @@ function translateStripError(err: unknown): { message: string; line?: number; un
   const line = lineFromStack(e?.stack)
   if (e?.code === 'ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX') {
     let what = raw
-    if (/enum/i.test(raw)) what = 'enum (použij objekt `as const`)'
-    else if (/namespace/i.test(raw)) what = 'namespace (použij běžné objekty/funkce)'
-    else if (/parameter property/i.test(raw)) what = 'parameter property v konstruktoru (deklaruj pole explicitně)'
+    if (/enum/i.test(raw)) what = 'enum (use an object `as const`)'
+    else if (/namespace/i.test(raw)) what = 'namespace (use plain objects/functions)'
+    else if (/parameter property/i.test(raw)) what = 'parameter property in a constructor (declare the field explicitly)'
     else if (/import.*=|require/i.test(raw)) what = '`import x = require()`'
     return {
-      message: `nepodporovaná TS syntaxe: ${what}. Povolena je jen „erasable“ syntaxe (typy, interface, as, satisfies).`,
+      message: `unsupported TS syntax: ${what}. Only “erasable” syntax is allowed (types, interface, as, satisfies).`,
       line,
       unsupported: true,
     }
   }
-  return { message: `syntaktická chyba: ${raw}`, line, unsupported: false }
+  return { message: `syntax error: ${raw}`, line, unsupported: false }
 }
 
 interface MetaStatement {
   /** Offset slova `export`. */
   exportStart: number
-  /** Offset za posledním znakem literálu. */
+  /** Offset after the last character of the literal. */
   end: number
   node: LiteralNode | null
   firstStatement: boolean
 }
 
-/** Přeskočí bílé znaky v masce (komentáře jsou v ní již mezery). */
+/** Skips whitespace in the mask (comments are already spaces in it). */
 function skipWs(masked: string, from: number): number {
   let i = from
   while (i < masked.length && /\s/.test(masked[i]!)) i++
   return i
 }
 
-/** Najde offset prvního „příkazu“ v masce (první neprázdný znak). */
+/** Finds the offset of the first “statement” in the mask (first non-empty character). */
 function firstCodeOffset(masked: string): number {
   return skipWs(masked, masked.charCodeAt(0) === 0xfeff ? 1 : 0)
 }
@@ -119,53 +119,53 @@ function validateMeta(
   }
 
   if (node.kind !== 'object') {
-    err('meta musí být objekt', node.start)
+    err('meta must be an object', node.start)
     return null
   }
 
   const seen = new Set<string>()
   const byKey = new Map<string, { value: LiteralNode; keyStart: number }>()
   for (const p of node.props) {
-    if (seen.has(p.key)) warn(`meta: duplicitní klíč „${p.key}“ (platí poslední)`, p.keyStart)
+    if (seen.has(p.key)) warn(`meta: duplicate key “${p.key}” (the last one applies)`, p.keyStart)
     seen.add(p.key)
     byKey.set(p.key, { value: p.value, keyStart: p.keyStart })
   }
   const known = new Set(['name', 'description', 'whenToUse', 'phases'])
   for (const p of node.props) {
-    if (!known.has(p.key)) warn(`meta: neznámý klíč „${p.key}“ (je ignorován)`, p.keyStart)
+    if (!known.has(p.key)) warn(`meta: unknown key “${p.key}” (ignored)`, p.keyStart)
   }
 
   const out: WorkflowMeta = { name: '', description: '' }
 
   const name = byKey.get('name')
-  if (!name) err('meta.name je povinné', node.start)
-  else if (name.value.kind !== 'string') err('meta.name musí být řetězec', name.value.start)
+  if (!name) err('meta.name is required', node.start)
+  else if (name.value.kind !== 'string') err('meta.name must be a string', name.value.start)
   else if (!META_NAME_RE.test(name.value.value)) {
-    err(`meta.name „${name.value.value}“ není platné (povoleno: písmena, číslice, _ . -; musí začínat písmenem/číslicí)`, name.value.start)
+    err(`meta.name “${name.value.value}” is invalid (allowed: letters, digits, _ . -; must start with a letter/digit)`, name.value.start)
   } else out.name = name.value.value
 
   const description = byKey.get('description')
-  if (!description) err('meta.description je povinné', node.start)
-  else if (description.value.kind !== 'string') err('meta.description musí být řetězec', description.value.start)
-  else if (description.value.value.trim() === '') err('meta.description nesmí být prázdné', description.value.start)
+  if (!description) err('meta.description is required', node.start)
+  else if (description.value.kind !== 'string') err('meta.description must be a string', description.value.start)
+  else if (description.value.value.trim() === '') err('meta.description must not be empty', description.value.start)
   else out.description = description.value.value
 
   const whenToUse = byKey.get('whenToUse')
   if (whenToUse) {
-    if (whenToUse.value.kind !== 'string') err('meta.whenToUse musí být řetězec', whenToUse.value.start)
+    if (whenToUse.value.kind !== 'string') err('meta.whenToUse must be a string', whenToUse.value.start)
     else out.whenToUse = whenToUse.value.value
   }
 
   const phases = byKey.get('phases')
   if (phases) {
     if (phases.value.kind !== 'array') {
-      err('meta.phases musí být pole objektů { title, detail?, model? }', phases.value.start)
+      err('meta.phases must be an array of objects { title, detail?, model? }', phases.value.start)
     } else {
       const list: PhaseMeta[] = []
       const titles = new Set<string>()
       phases.value.items.forEach((item, idx) => {
         if (item.kind !== 'object') {
-          err(`meta.phases[${idx}] musí být objekt { title, detail?, model? }`, item.start)
+          err(`meta.phases[${idx}] must be an object { title, detail?, model? }`, item.start)
           return
         }
         const phase: PhaseMeta = { title: '' }
@@ -173,21 +173,21 @@ function validateMeta(
         for (const p of item.props) {
           if (p.key === 'title') {
             if (p.value.kind !== 'string' || p.value.value.trim() === '') {
-              err(`meta.phases[${idx}].title musí být neprázdný řetězec`, p.value.start)
+              err(`meta.phases[${idx}].title must be a non-empty string`, p.value.start)
             } else {
               phase.title = p.value.value
               titleOk = true
             }
           } else if (p.key === 'detail' || p.key === 'model') {
-            if (p.value.kind !== 'string') err(`meta.phases[${idx}].${p.key} musí být řetězec`, p.value.start)
+            if (p.value.kind !== 'string') err(`meta.phases[${idx}].${p.key} must be a string`, p.value.start)
             else phase[p.key] = p.value.value
           } else {
-            warn(`meta.phases[${idx}]: neznámý klíč „${p.key}“ (je ignorován)`, p.keyStart)
+            warn(`meta.phases[${idx}]: unknown key “${p.key}” (ignored)`, p.keyStart)
           }
         }
-        if (!item.props.some((p) => p.key === 'title')) err(`meta.phases[${idx}].title je povinné`, item.start)
+        if (!item.props.some((p) => p.key === 'title')) err(`meta.phases[${idx}].title is required`, item.start)
         if (titleOk) {
-          if (titles.has(phase.title)) warn(`meta.phases: duplicitní titul „${phase.title}“`, item.start)
+          if (titles.has(phase.title)) warn(`meta.phases: duplicate title “${phase.title}”`, item.start)
           titles.add(phase.title)
           if (!titleOffsets.has(phase.title)) titleOffsets.set(phase.title, item.start)
           list.push(phase)
@@ -201,7 +201,7 @@ function validateMeta(
   return errors1 > errors0 ? null : out
 }
 
-/** Najde příkaz `export const meta = {…}`. Nikdy nehází; chyby zapisuje do `diags`. */
+/** Finds the `export const meta = {…}`. statement. Never throws; writes errors to `diags`. */
 function locateMeta(
   src: string,
   masked: string,
@@ -215,13 +215,13 @@ function locateMeta(
     if (plain) {
       diags.push({
         level: 'error',
-        message: 'meta musí být exportováno: `export const meta = { name, description, … }`',
+        message: 'meta must be exported: `export const meta = { name, description, … }`',
         line: lineOf(plain.index),
       })
     } else {
       diags.push({
         level: 'error',
-        message: 'chybí `export const meta = { name, description, phases? }` (musí být první příkaz skriptu)',
+        message: 'missing `export const meta = { name, description, phases? }` (must be the first statement of the script)',
         line: 1,
       })
     }
@@ -232,12 +232,12 @@ function locateMeta(
   if (!firstStatement) {
     diags.push({
       level: 'warning',
-      message: '`export const meta` by měl být prvním příkazem skriptu (před ním smí být jen komentáře)',
+      message: '`export const meta` should be the first statement of the script (only comments may come before it)',
       line: lineOf(exportStart),
     })
   }
 
-  // Za `meta`: volitelná anotace typu `: Typ`, pak `=`.
+  // After `meta`: optional type annotation `: Type`, then `=`.
   let i = skipWs(masked, m.index + m[0].length)
   if (masked[i] === ':') {
     let depth = 0
@@ -251,7 +251,7 @@ function locateMeta(
     }
   }
   if (masked[i] !== '=') {
-    diags.push({ level: 'error', message: 'meta musí mít tvar `export const meta = { … }`', line: lineOf(m.index) })
+    diags.push({ level: 'error', message: 'meta must have the form `export const meta = { … }`', line: lineOf(m.index) })
     return { exportStart, end: i, node: null, firstStatement }
   }
   i = skipWs(masked, i + 1)
@@ -266,12 +266,12 @@ function locateMeta(
     if (e instanceof LiteralError) {
       diags.push({ level: 'error', message: e.message, line: lineOf(e.offset) })
     } else {
-      diags.push({ level: 'error', message: `meta se nepodařilo načíst: ${String((e as Error)?.message ?? e)}`, line: lineOf(i) })
+      diags.push({ level: 'error', message: `meta could not be loaded: ${String((e as Error)?.message ?? e)}`, line: lineOf(i) })
     }
     return { exportStart, end, node: null, firstStatement }
   }
 
-  // `as const` / `satisfies X` za literálem; nic dalšího (volání, tečka, operátor) být nesmí.
+  // `as const` / `satisfies X` after the literal; nothing else (call, dot, operator) may follow.
   let j = skipWs(masked, end)
   const tail = /^(?:as\s+const\b|as\s+[\w$.]+(?:<[^>]*>)?(?:\[\])*|satisfies\s+[\w$.]+(?:<[^>]*>)?)/.exec(masked.slice(j, j + 200))
   if (tail) j = skipWs(masked, j + tail[0].length)
@@ -279,7 +279,7 @@ function locateMeta(
   if (next !== undefined && next !== ';' && /[.(\[+\-*/%?&|,<>=!^~]/.test(next)) {
     diags.push({
       level: 'error',
-      message: 'meta musí být čistý literál: za objektem následuje výraz (volání, přístup k vlastnosti nebo operátor)',
+      message: 'meta must be a plain literal: an expression follows the object (call, property access or operator)',
       line: lineOf(j),
     })
     return { exportStart, end, node: null, firstStatement }
@@ -287,7 +287,7 @@ function locateMeta(
   return { exportStart, end, node, firstStatement }
 }
 
-/** Offsety výskytů identifikátoru `word`, kterým nepředchází `.` (vlastnost) ani znak identifikátoru. */
+/** Offsets of occurrences of identifier `word`, not preceded by `.` (property) or an identifier character. */
 function findWord(masked: string, word: string): number[] {
   const re = new RegExp(`(?<![\\w$])${word}(?![\\w$])`, 'g')
   const out: number[] = []
@@ -301,7 +301,7 @@ function findWord(masked: string, word: string): number[] {
   return out
 }
 
-/** Přečte řetězcový literál na offsetu (ve zdroji); vrací jeho hodnotu, nebo undefined (dynamický výraz). */
+/** Reads the string literal at the offset (in the source); returns its value, or undefined (dynamic expression). */
 function readStringAt(src: string, offset: number): string | undefined {
   const q = src[offset]
   if (q !== '"' && q !== "'" && q !== '`') return undefined
@@ -315,7 +315,7 @@ function readStringAt(src: string, offset: number): string | undefined {
       continue
     }
     if (ch === q) {
-      // `'a' + b` nebo `'a'.x` není prostý literál
+      // `'a' + b` or `'a'.x` is not a plain literal
       const after = skipWs(src, k + 1)
       if (src[after] !== undefined && /[+.([]/.test(src[after]!)) return undefined
       return out
@@ -344,7 +344,7 @@ function staticChecks(
     diags.push({ level: 'warning', message, line: lineOf(offset) })
   }
   const nextNonWs = (offset: number): string | undefined => masked[skipWs(masked, offset)]
-  /** `function require(x) {…}` nebo metoda `{ require(x) { … } }` – vlastní definice, ne volání modulového systému. */
+  /** `function require(x) {…}` or metoda `{ require(x) { … } }` – its own definition, not a call to the module system. */
   const isDefinition = (at: number, wordLength: number): boolean => {
     if (/(?:^|[^\w$])function\s*\*?\s*$/.test(masked.slice(Math.max(0, at - 24), at))) return true
     const open = skipWs(masked, at + wordLength)
@@ -361,31 +361,31 @@ function staticChecks(
     const nx = nextNonWs(at + 6)
     if (nx === ':') continue // vlastnost objektu
     if (isDefinition(at, 6)) continue
-    if (nx === '(') error('dynamický `import()` není povolen (skript nemá přístup k modulům)', at)
-    else if (nx === '.') error('`import.meta` není ve skriptu workflow dostupné', at)
-    else error('statický `import` není povolen: skript nemá importy, API (agent, parallel, …) jsou globály', at)
+    if (nx === '(') error('dynamic `import()` is not allowed (the script has no access to modules)', at)
+    else if (nx === '.') error('`import.meta` is not available in a workflow script', at)
+    else error('static `import` is not allowed: the script has no imports, the API (agent, parallel, …) is global', at)
   }
-  // Skript, který si `require` sám deklaruje (function/const/let/var), modulový systém nevolá.
+  // A script that declares `require` itself (function/const/let/var) does not call the module system.
   const declaresRequire = /(?<![\w$.])(?:function\s*\*?\s*|const\s+|let\s+|var\s+)require(?![\w$])/.test(masked)
   for (const at of declaresRequire ? [] : findWord(masked, 'require')) {
     if (isDefinition(at, 7)) continue
-    if (nextNonWs(at + 7) === '(') error('`require()` není povolen (skript nemá přístup k modulům ani k souborovému systému)', at)
+    if (nextNonWs(at + 7) === '(') error('`require()` is not allowed (the script has no access to modules or the filesystem)', at)
   }
   for (const at of findWord(masked, 'export')) {
     if (at === metaExportStart) continue
     if (nextNonWs(at + 6) === ':') continue // vlastnost objektu
-    if (/^\s*default\b/.test(masked.slice(at + 6, at + 40))) error('`export default` není povolen (výsledek vrať přes `return`)', at)
-    else error('`export` není povolen (výjimkou je jen `export const meta`)', at)
+    if (/^\s*default\b/.test(masked.slice(at + 6, at + 40))) error('`export default` is not allowed (return the result via `return`)', at)
+    else error('`export` is not allowed (the only exception is `export const meta`)', at)
   }
 
   for (const m of masked.matchAll(/(?<![\w$.])Date\s*\.\s*now(?![\w$])/g)) {
-    warn('`Date.now()` za běhu vyhodí chybu (rozbilo by resume); předej čas přes `args`', m.index)
+    warn('`Date.now()` throws at run time (it would break resume); pass the time via `args`', m.index)
   }
   for (const m of masked.matchAll(/(?<![\w$.])Math\s*\.\s*random(?![\w$])/g)) {
-    warn('`Math.random()` za běhu vyhodí chybu (rozbilo by resume); náhodu řeš variací podle indexu nebo přes `args`', m.index)
+    warn('`Math.random()` throws at run time (it would break resume); handle randomness by varying with the index or via `args`', m.index)
   }
   for (const m of masked.matchAll(/(?<![\w$.])new\s+Date\s*(?:\(\s*\)|(?=\s*[;,)\]}]|\s*$))/gm)) {
-    warn('`new Date()` bez argumentu za běhu vyhodí chybu (rozbilo by resume); předej čas přes `args`', m.index)
+    warn('`new Date()` without an argument throws at run time (it would break resume); pass the time via `args`', m.index)
   }
 
   // phase('X') / { phase: 'X' } versus meta.phases
@@ -395,11 +395,11 @@ function staticChecks(
     const after = skipWs(masked, at + 5)
     const c = masked[after]
     if (c !== '(' && c !== ':') continue
-    // `{ phase: x }` v objektu i `phase: string` v typu; zajímá nás jen literál řetězce
+    // `{ phase: x }` in an object and `phase: string` in a type; we only care about a string literal
     const argStart = skipWs(masked, after + 1)
     const value = readStringAt(src, argStart)
     if (value === undefined) {
-      // dynamický titul (proměnná, výraz): nelze říct, které fáze se použijí → potlačí varování „fáze bez volání“
+      // dynamic title (variable, expression): we can't tell which phases will be used → suppresses the “phase without call” warning
       if (masked[argStart] !== ')') dynamicPhase = true
       continue
     }
@@ -409,11 +409,11 @@ function staticChecks(
   if (declared && declared.length > 0) {
     const titles = new Set(declared.map((p) => p.title))
     for (const [title, at] of used) {
-      if (!titles.has(title)) warn(`phase „${title}“ není uvedena v meta.phases`, at)
+      if (!titles.has(title)) warn(`phase “${title}” is not listed in meta.phases`, at)
     }
     if (!dynamicPhase) {
       for (const p of declared) {
-        if (!used.has(p.title)) warn(`meta.phases obsahuje „${p.title}“, ale skript nikdy nevolá phase('${p.title}')`, titleOffsets.get(p.title) ?? 0)
+        if (!used.has(p.title)) warn(`meta.phases contains “${p.title}”, but the script never calls phase('${p.title}')`, titleOffsets.get(p.title) ?? 0)
       }
     }
   }
@@ -424,11 +424,11 @@ export function parseScript(source: string, filename: string): ParsedScript {
   const fail = (): ParsedScript => ({ ok: false, meta: null, diagnostics, code: '' })
 
   if (typeof source !== 'string') {
-    diagnostics.push({ level: 'error', message: 'zdroj skriptu musí být řetězec' })
+    diagnostics.push({ level: 'error', message: 'script source must be a string' })
     return fail()
   }
   if (source.trim() === '') {
-    diagnostics.push({ level: 'error', message: 'skript je prázdný', line: 1 })
+    diagnostics.push({ level: 'error', message: 'script is empty', line: 1 })
     return fail()
   }
 
@@ -438,7 +438,7 @@ export function parseScript(source: string, filename: string): ParsedScript {
 
   const scan = scanSource(src)
   for (const p of scan.problems) {
-    diagnostics.push({ level: 'error', message: `${p.message} (lexikální chyba)`, line: lineOf(p.offset) })
+    diagnostics.push({ level: 'error', message: `${p.message} (lexical error)`, line: lineOf(p.offset) })
   }
   const masked = scan.masked
 
@@ -448,10 +448,10 @@ export function parseScript(source: string, filename: string): ParsedScript {
   const titleOffsets = new Map<string, number>()
   if (stmt?.node) meta = validateMeta(stmt.node, lineOf, diagnostics, titleOffsets)
 
-  // 2) zakázané konstrukty a varování
+  // 2) forbidden constructs and warnings
   staticChecks(src, masked, meta, stmt ? stmt.exportStart : null, titleOffsets, lineOf, diagnostics)
 
-  // 3) převod na spustitelný kód
+  // 3) conversion to executable code
   let body = src
   if (stmt) body = src.slice(0, stmt.exportStart) + ' '.repeat(6) + src.slice(stmt.exportStart + 6)
   const wrapped = WRAP_PREFIX + body + WRAP_SUFFIX
@@ -462,7 +462,7 @@ export function parseScript(source: string, filename: string): ParsedScript {
   } catch (e) {
     const t = translateStripError(e)
     if (t.unsupported) {
-      // `namespace N { export … }` jinak nahlásí statická kontrola jako „export není povolen“ – přesnější je zpráva o TS.
+      // `namespace N { export … }` otherwise the static check would report it as “export is not allowed” – the TS message is more precise.
       for (let k = diagnostics.length - 1; k >= 0; k--) {
         const d = diagnostics[k]!
         if (d.level === 'error' && d.line === t.line && d.message.startsWith('`export`')) diagnostics.splice(k, 1)
@@ -473,13 +473,13 @@ export function parseScript(source: string, filename: string): ParsedScript {
     return finish(null)
   }
   try {
-    // jen kompilace (zachytí early errors typu duplicitní deklarace); nic se nespouští
+    // compilation only (catches early errors such as duplicate declarations); nothing is run
     new Script(code, { filename })
   } catch (e) {
     const err = e as { message?: string; stack?: string }
     const line = lineFromStack(err?.stack)
     const dup = diagnostics.some((d) => d.level === 'error' && d.line !== undefined && d.line === line)
-    if (!dup) diagnostics.push({ level: 'error', message: `syntaktická chyba: ${err?.message ?? String(e)}`, line })
+    if (!dup) diagnostics.push({ level: 'error', message: `syntax error: ${err?.message ?? String(e)}`, line })
     return finish(null)
   }
   return finish(code)

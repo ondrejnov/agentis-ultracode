@@ -1,17 +1,17 @@
 #!/usr/bin/env node
-// Tenký shim: načte přeložené CLI z dist/, jinak (vývoj) přímo TypeScript přes Node type-stripping.
+// Thin shim: loads the compiled CLI from dist/, otherwise (development) runs the TypeScript directly via Node type-stripping.
 import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const major = Number(process.versions.node.split('.')[0])
 if (major < 22) {
-  process.stderr.write(`ultracode: vyžaduje Node.js >= 22.18 (máš ${process.versions.node}).\n`)
+  process.stderr.write(`ultracode: requires Node.js >= 22.18 (you have ${process.versions.node}).\n`)
   process.exit(1)
 }
 
-// Zavřená rourou (`| head`, `| true`) nesmí shodit běh ani změnit exit kód: EPIPE/EIO na stdout/stderr
-// se ignoruje (průběh jen přestane být vidět), jiné chyby zápisu se vyhodí jako dřív.
+// A pipe closed early (`| head`, `| true`) must not crash the run or change the exit code: EPIPE/EIO on stdout/stderr
+// is ignored (progress just stops being visible), other write errors are rethrown as before.
 for (const stream of [process.stdout, process.stderr]) {
   stream.on('error', (e) => {
     if (e && (e.code === 'EPIPE' || e.code === 'EIO' || e.code === 'ECONNRESET')) return
@@ -22,7 +22,7 @@ for (const stream of [process.stdout, process.stderr]) {
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const distEntry = join(root, 'dist', 'cli', 'cli.js')
 const srcEntry = join(root, 'src', 'cli', 'cli.ts')
-// ULTRACODE_FORCE_SRC=1 vynutí spuštění ze zdrojů (vývoj/testy), i když existuje starší dist/.
+// ULTRACODE_FORCE_SRC=1 forces running from sources (development/tests), even if an older dist/ exists.
 const forceSrc = process.env.ULTRACODE_FORCE_SRC === '1' && existsSync(srcEntry)
 const entry = !forceSrc && existsSync(distEntry) ? distEntry : srcEntry
 
@@ -31,25 +31,25 @@ try {
   ;({ main } = await import(pathToFileURL(entry).href))
 } catch (e) {
   const detail = e instanceof Error ? e.message : String(e)
-  const hint = entry === srcEntry ? ' (chybí dist/, spusť „npm run build“)' : ''
-  process.stderr.write(`ultracode: nelze načíst ${entry}${hint}: ${detail}\n`)
+  const hint = entry === srcEntry ? ' (dist/ is missing, run "npm run build")' : ''
+  process.stderr.write(`ultracode: cannot load ${entry}${hint}: ${detail}\n`)
   process.exit(1)
 }
 
-// SIGINT/SIGTERM/SIGHUP → AbortController; druhý SIGINT = okamžitý konec.
+// SIGINT/SIGTERM/SIGHUP → AbortController; a second SIGINT = immediate exit.
 const controller = new AbortController()
 let interrupts = 0
 process.on('SIGINT', () => {
   interrupts++
   if (interrupts >= 2) process.exit(130)
-  process.stderr.write('\nultracode: přerušuji běh (dalším Ctrl+C skončím okamžitě)…\n')
+  process.stderr.write('\nultracode: interrupting run (press Ctrl+C again to exit immediately)…\n')
   controller.abort()
 })
 process.on('SIGTERM', () => {
   controller.abort()
 })
-// SIGHUP (zavření terminálu, pád SSH): bez handleru by proces skončil bez úklidu a agenti (detached) by
-// běželi osiřele. Nic nepíšeme na stderr – terminál už je pryč.
+// SIGHUP (terminal closed, SSH drop): without a handler the process would exit without cleanup and detached agents
+// would keep running orphaned. We write nothing to stderr – the terminal is already gone.
 process.on('SIGHUP', () => {
   controller.abort()
 })
@@ -69,13 +69,13 @@ try {
     { signal: controller.signal },
   )
 } catch (e) {
-  process.stderr.write(`ultracode: neočekávaná chyba: ${e instanceof Error ? (e.stack ?? e.message) : String(e)}\n`)
+  process.stderr.write(`ultracode: unexpected error: ${e instanceof Error ? (e.stack ?? e.message) : String(e)}\n`)
   code = 1
 }
 
 process.exitCode = code
-// pojistka: kdyby něco drželo event loop (zapomenutý potomek), nenech proces viset. Ale až po vyprázdnění
-// stdout/stderr: zápis do roury je asynchronní a pomalý odběratel by jinak dostal useknutý výstup.
+// safeguard: if something holds the event loop (a forgotten child), don't let the process hang. But only after
+// stdout/stderr are flushed: writes to a pipe are asynchronous and a slow reader would otherwise get truncated output.
 setTimeout(() => {
   const exit = () => process.exit(code)
   if (process.stdout.writableLength === 0 && process.stderr.writableLength === 0) exit()

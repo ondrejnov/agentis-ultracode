@@ -1,58 +1,58 @@
-# Vzory kvality pro workflow (TypeScript)
+# Quality patterns for workflows (TypeScript)
 
-Vzory se skládají libovolně. Každý je zde jako samostatný úryvek; kompletní skripty jsou
-v `examples/*.workflow.ts`. Úryvky předpokládají globály runtime (`agent`, `parallel`, `pipeline`, `log`,
-`budget`, `args`) a deklarují si vstupy, které používají.
+Patterns compose freely. Each one is here as a standalone snippet; complete scripts are
+in `examples/*.workflow.ts`. The snippets assume the runtime globals (`agent`, `parallel`, `pipeline`, `log`,
+`budget`, `args`) and declare the inputs they use.
 
-## Obsah
+## Contents
 
-0. Pomocné funkce
-1. Adversarial verify (skeptici vyvracejí)
-2. Perspective-diverse verify (každý jiná čočka)
-3. Judge panel (porota)
-4. Loop-until-dry (smyčka do vyschnutí)
-5. Multi-modal sweep (různé způsoby hledání)
-6. Completeness critic (co chybí?)
-7. Pipeline vs. bariéra + smell test
-8. Kdy je bariéra správně
-9. Partitions bez překryvu cest
-10. Loop-until-green (opravuj, dokud neprojde)
-11. Rozpočtové smyčky
-12. Hybrid: scout inline, pak fan-out
-13. Syntéza s omezeným vstupem (map-reduce)
-14. Žádné tiché ořezy
-15. ID a citace přidělené kódem
+0. Helper functions
+1. Adversarial verify (skeptics try to refute)
+2. Perspective-diverse verify (each a different lens)
+3. Judge panel
+4. Loop-until-dry
+5. Multi-modal sweep (different ways of searching)
+6. Completeness critic (what is missing?)
+7. Pipeline vs. barrier + smell test
+8. When a barrier is correct
+9. Partitions without path overlap
+10. Loop-until-green (fix until it passes)
+11. Budget loops
+12. Hybrid: scout inline, then fan-out
+13. Synthesis with bounded input (map-reduce)
+14. No silent cuts
+15. IDs and citations assigned by code
 
 ---
 
-## 0. Pomocné funkce
+## 0. Helper functions
 
-Skript nemá importy, takže si pomocné funkce definuj na začátku. Tyhle se hodí skoro vždy:
+A script has no imports, so define helper functions at the top. These are almost always useful:
 
 ```ts
-/** Zbaví pole `null`/`undefined` a zachová typ. `filter(Boolean)` typ nezúží. */
+/** Removes `null`/`undefined` from an array and keeps the type. `filter(Boolean)` does not narrow the type. */
 const present = <T>(xs: Array<T | null | undefined>): T[] => xs.filter((x): x is T => x !== null && x !== undefined)
 
-/** Rozdělí pole na dávky. */
+/** Splits an array into batches. */
 const chunk = <T>(xs: T[], size: number): T[][] => {
   const out: T[][] = []
   for (let i = 0; i < xs.length; i += size) out.push(xs.slice(i, i + size))
   return out
 }
 
-/** Stabilní klíč pro dedup (bez rozdílů ve velikosti písmen a interpunkci). */
+/** Stable key for dedup (ignores case and punctuation differences). */
 const normKey = (s: string): string => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim().slice(0, 160)
 
 const demo = present([1, null, 2])
-log(`present: ${demo.length}, chunks: ${chunk(demo, 1).length}, key: ${normKey('Ahoj, světe!')}`)
+log(`present: ${demo.length}, chunks: ${chunk(demo, 1).length}, key: ${normKey('Hello, world!')}`)
 ```
 
 ## 1. Adversarial verify
 
-**Kdy:** nález/claim musí přežít, než mu uvěříš. Prevence „věrohodných, ale chybných“ výsledků.
+**When:** a finding/claim must survive before you believe it. Prevention of "plausible but wrong" results.
 
-**Jak:** N nezávislých skeptiků na nález; každý má **vyvrátit**; nález žije při většině „nevyvráceno“.
-Skeptik nedostane autorovo zdůvodnění, jen tvrzení a důkaz. Selhání skeptiků nesmí nález tiše potvrdit.
+**How:** N independent skeptics per finding; each must **refute**; the finding survives if most say "not refuted".
+A skeptic gets no author justification, only the claim and the evidence. Skeptic failures must not silently confirm the finding.
 
 ```ts
 interface Verdict {
@@ -77,21 +77,21 @@ async function survives(claim: string, evidence: string, votes = 3): Promise<{ o
   )
   const cast = results.filter((v): v is Verdict => v !== null)
   const against = cast.filter((v) => v.refuted).length
-  // kvórum: potřebujeme aspoň 2 platné hlasy (nebo všechny, je-li hlasů méně); remíza = vyvráceno
+  // quorum: we need at least 2 valid votes (or all of them, if fewer votes were cast); a tie = refuted
   const quorum = Math.min(2, votes)
   return { ok: cast.length >= quorum && against * 2 < cast.length, cast: cast.length, against }
 }
 
-const verdict = await survives('Funkce delete() nekontroluje vlastníka záznamu', 'src/api/items.ts:42', 3)
-log(`přežilo: ${verdict.ok} (${verdict.cast} hlasů, ${verdict.against} proti)`)
+const verdict = await survives('The delete() function does not check the record owner', 'src/api/items.ts:42', 3)
+log(`survived: ${verdict.ok} (${verdict.cast} votes, ${verdict.against} against)`)
 ```
 
-**Pozor:** bez kvóra by `null` hlasy vypadaly jako „nikdo nevyvrátil“ a nález by prošel. Vracej i počty
-(`cast`, `against`), ať je vidět, jak silný konsenzus byl.
+**Warning:** without a quorum, `null` votes would look like "nobody refuted it" and the finding would pass. Return the counts too
+(`cast`, `against`) so it is visible how strong the consensus was.
 
 ## 2. Perspective-diverse verify
 
-**Kdy:** nález může selhat vícero způsoby. N stejných skeptiků má stejnou slepou skvrnu; různé čočky ne.
+**When:** a finding can fail in several ways. N identical skeptics share the same blind spot; different lenses do not.
 
 ```ts
 const LENSES = [
@@ -100,7 +100,7 @@ const LENSES = [
   { id: 'reproduction', ask: 'Construct a concrete input and walk it through the code. If you cannot, refute.' },
 ]
 
-const finding = { title: 'SQL injection v řazení', file: 'src/list.ts', line: 17 }
+const finding = { title: 'SQL injection in sorting', file: 'src/list.ts', line: 17 }
 
 const votes = await parallel(
   LENSES.map((lens) => () =>
@@ -119,22 +119,22 @@ const votes = await parallel(
   ),
 )
 const refutedBy = LENSES.filter((_, i) => votes[i] && votes[i]!.refuted).map((l) => l.id)
-log(`vyvráceno čočkami: ${refutedBy.join(', ') || 'žádnou'}`)
+log(`refuted by lenses: ${refutedBy.join(', ') || 'none'}`)
 ```
 
-**Pozor:** čočky řaď podle důležitosti — při `votes < LENSES.length` se použije prefix (`LENSES.slice(0, votes)`).
+**Warning:** order the lenses by importance — when `votes < LENSES.length`, a prefix is used (`LENSES.slice(0, votes)`).
 
 ## 3. Judge panel
 
-**Kdy:** prostor řešení je široký (návrh architektury, plán, refaktor). Jeden pokus iterovaný dokola
-konverguje k lokálnímu optimu; N nezávislých pokusů z různých úhlů a porota jsou lepší.
+**When:** the solution space is wide (architecture design, plan, refactor). One attempt iterated over and over
+converges to a local optimum; N independent attempts from different angles and a panel are better.
 
-**Jak:** generuj N pokusů z **různých** úhlů → porotci je anonymně hodnotí → syntéza z vítěze + nejlepší
-nápady z ostatních. Všechny tři kroky jsou závislé na celé množině, takže bariéry jsou tu správně.
+**How:** generate N attempts from **different** angles → judges score them anonymously → synthesis from the winner + the best
+ideas from the others. All three steps depend on the whole set, so barriers are correct here.
 
 ```ts
-const task = 'Navrhni, jak rozdělit monolitický modul billing na služby.'
-const ANGLES = ['MVP-first: nejmenší krok, který přinese hodnotu', 'risk-first: nejdřív odstraň největší riziko', 'user-first: začni od dopadu na uživatele']
+const task = 'Propose how to split the monolithic billing module into services.'
+const ANGLES = ['MVP-first: the smallest step that delivers value', 'risk-first: remove the biggest risk first', 'user-first: start from the impact on users']
 
 const PLAN = {
   type: 'object',
@@ -146,7 +146,7 @@ phase('Draft')
 const drafts = present(
   await parallel(
     ANGLES.map((angle, i) => () =>
-      agent<{ title: string; steps: string[]; risks: string[] }>(`${task}\nPřístup: ${angle}. Navrhni plán nezávisle, bez ohledu na jiné možnosti.`, {
+      agent<{ title: string; steps: string[]; risks: string[] }>(`${task}\nApproach: ${angle}. Propose a plan independently, regardless of other options.`, {
         label: `draft:${i + 1}`,
         phase: 'Draft',
         schema: PLAN,
@@ -154,7 +154,7 @@ const drafts = present(
     ),
   ),
 )
-if (drafts.length < 2) throw new Error('Porota potřebuje aspoň dva návrhy.')
+if (drafts.length < 2) throw new Error('The panel needs at least two drafts.')
 
 phase('Judge')
 const SCORE = {
@@ -164,36 +164,36 @@ const SCORE = {
 }
 const judges = present(
   await parallel(
-    ['správnost a úplnost', 'proveditelnost a náklady', 'riziko a vratnost'].map((criterion, j) => () =>
+    ['correctness and completeness', 'feasibility and cost', 'risk and reversibility'].map((criterion, j) => () =>
       agent<{ scores: number[]; bestIdx: number; comment: string }>(
-        `Ohodnoť návrhy podle kritéria „${criterion}“ (0-10). Vrať skóre ve stejném pořadí a index nejlepšího.\n${drafts.map((d, i) => `# Návrh ${i}\n${JSON.stringify(d)}`).join('\n\n')}`,
+        `Score the drafts by the criterion "${criterion}" (0-10). Return the scores in the same order and the index of the best one.\n${drafts.map((d, i) => `# Draft ${i}\n${JSON.stringify(d)}`).join('\n\n')}`,
         { label: `judge:${j + 1}`, phase: 'Judge', schema: SCORE, effort: 'high' },
       ),
     ),
   ),
 )
 
-// vítěz se počítá v kódu, ne agentem
+// the winner is computed in code, not by an agent
 const totals = drafts.map((_, i) => judges.reduce((sum, j) => sum + (j.scores[i] ?? 0), 0))
 const winner = totals.indexOf(Math.max(...totals))
-log(`vítěz: návrh ${winner} (${totals.join(' / ')})`)
+log(`winner: draft ${winner} (${totals.join(' / ')})`)
 
 phase('Synthesize')
 const final = await agent(
-  `Vytvoř finální plán: vyjdi z vítězného návrhu a přidej nejlepší nápady z ostatních (a vysvětli, odkud jsou).\nVítěz:\n${JSON.stringify(drafts[winner])}\nOstatní:\n${JSON.stringify(drafts.filter((_, i) => i !== winner))}\nPoznámky poroty:\n${judges.map((j) => j.comment).join('\n')}`,
+  `Create the final plan: start from the winning draft and add the best ideas from the others (and explain where they come from).\nWinner:\n${JSON.stringify(drafts[winner])}\nOthers:\n${JSON.stringify(drafts.filter((_, i) => i !== winner))}\nJudge notes:\n${judges.map((j) => j.comment).join('\n')}`,
   { label: 'synthesize', phase: 'Synthesize' },
 )
 return { winner, totals, final }
 ```
 
-**Pozor:** úhly musí být opravdu různé, jinak je to jen N kopií. Porotci nesmí vědět, který návrh „vyhrává“.
+**Warning:** the angles must really be different, otherwise it is just N copies. Judges must not know which draft is "winning".
 
 ## 4. Loop-until-dry
 
-**Kdy:** neznámý počet nálezů (bugy, případy, okrajové stavy). Prosté `while (count < N)` mine ocas.
+**When:** an unknown number of findings (bugs, cases, edge states). A plain `while (count < N)` mines the tail.
 
-**Jak:** hledej v kolech, dokud K po sobě jdoucích kol nevrátí nic nového. Dedup vůči **všem viděným**
-(včetně zamítnutých), jinak se zamítnuté vracejí a smyčka nikdy nekonverguje.
+**How:** search in rounds until K consecutive rounds return nothing new. Dedup against **all seen** findings
+(including rejected ones), otherwise rejected ones come back and the loop never converges.
 
 ```ts
 interface Bug {
@@ -201,7 +201,7 @@ interface Bug {
   title: string
 }
 
-const FINDERS = ['hledej chyby v ošetření chyb', 'hledej chyby v souběžnosti', 'hledej chyby v práci s časem a časovými zónami']
+const FINDERS = ['look for bugs in error handling', 'look for bugs in concurrency', 'look for bugs in time and time zone handling']
 const BUGS = {
   type: 'object',
   properties: {
@@ -219,13 +219,13 @@ let dry = 0
 let round = 0
 
 while (dry < 2 && round < 6) {
-  // strop kol (round < 6) je pojistka; bez něj by agent, který pořád něco "najde", držel smyčku
+  // the round cap (round < 6) is a safety net; without it an agent that keeps "finding" something would keep the loop going
   round++
   const found = present(
     await parallel(
       FINDERS.map((prompt, i) => () =>
         agent<{ bugs: Bug[] }>(
-          `${prompt} v adresáři src/. Kolo ${round}. Už známé nehlásej:\n${[...seen].slice(-30).join('\n') || '(nic)'}\nNic neupravuj.`,
+          `${prompt} in the src/ directory. Round ${round}. Do not report already known ones:\n${[...seen].slice(-30).join('\n') || '(nothing)'}\nDo not modify anything.`,
           { label: `find:r${round}:${i + 1}`, phase: 'Find', schema: BUGS },
         ),
       ),
@@ -238,31 +238,31 @@ while (dry < 2 && round < 6) {
     continue
   }
   dry = 0
-  for (const b of fresh) seen.add(`${b.file}|${normKey(b.title)}`) // dedup vůči VŠEM viděným
-  confirmed.push(...fresh) // sem patří verifikace (vzor 1) — zde zjednodušeno
-  log(`kolo ${round}: ${fresh.length} nových, celkem ${confirmed.length}`)
+  for (const b of fresh) seen.add(`${b.file}|${normKey(b.title)}`) // dedup against ALL seen findings
+  confirmed.push(...fresh) // verification (pattern 1) belongs here — simplified here
+  log(`round ${round}: ${fresh.length} new, ${confirmed.length} in total`)
 }
 return { rounds: round, bugs: confirmed }
 ```
 
-**Pozor:** v kombinaci s verifikací dedupuj vůči `seen`, ne vůči `confirmed`. Vždy dej strop kol.
-`normKey` je z oddílu 0.
+**Warning:** when combined with verification, dedup against `seen`, not against `confirmed`. Always set a round cap.
+`normKey` is from section 0.
 
 ## 5. Multi-modal sweep
 
-**Kdy:** žádný jediný způsob hledání nenajde všechno (rešerše, audit, hledání použití API).
+**When:** no single search method finds everything (research, audit, finding API usages).
 
-**Jak:** paralelní agenti, každý hledá **jinak**: podle kontejneru (adresář), obsahu (grep vzorů), entity
-(symbol/jméno), času (historie, změny). Každý je slepý k ostatním — to je záměr. Výsledky se slučují a dedupují
-až v kódu.
+**How:** parallel agents, each searching **differently**: by container (directory), content (grep of patterns), entity
+(symbol/name), time (history, changes). Each is blind to the others — that is intentional. Results are merged and deduplicated
+only in code.
 
 ```ts
-const target = 'funkce legacyCharge()'
+const target = 'function legacyCharge()'
 const MODES = [
-  { id: 'by-container', how: 'projdi adresářovou strukturu a zjisti, které moduly s tím pracují' },
-  { id: 'by-content', how: 'grepuj přímá volání, reflexi, dynamická volání přes řetězec a konfiguraci' },
-  { id: 'by-entity', how: 'sleduj symbol přes re-exporty, aliasy a typy; hledej i testy a dokumentaci' },
-  { id: 'by-time', how: 'projdi historii (git log -S) a TODO/FIXME, které se k tomu vztahují' },
+  { id: 'by-container', how: 'walk the directory structure and find which modules work with it' },
+  { id: 'by-content', how: 'grep for direct calls, reflection, dynamic calls via strings, and configuration' },
+  { id: 'by-entity', how: 'follow the symbol through re-exports, aliases, and types; also look at tests and documentation' },
+  { id: 'by-time', how: 'walk the history (git log -S) and the TODO/FIXME comments related to it' },
 ]
 
 const HITS = {
@@ -279,7 +279,7 @@ const HITS = {
 const sweeps = await parallel(
   MODES.map((m) => () =>
     agent<{ hits: Array<{ file: string; line?: number; note: string }> }>(
-      `Najdi všechna místa, která používají nebo ovlivňují: ${target}.\nTvůj způsob hledání (jen ten): ${m.how}.\nNic neupravuj. Vrať soubor, řádek a krátkou poznámku.`,
+      `Find all places that use or affect: ${target}.\nYour search method (this one only): ${m.how}.\nDo not modify anything. Return the file, the line, and a short note.`,
       { label: `sweep:${m.id}`, phase: 'Sweep', schema: HITS, disallowedTools: ['Edit', 'Write'] },
     ),
   ),
@@ -299,17 +299,17 @@ const failedModes = MODES.filter((_, i) => sweeps[i] === null).map((m) => m.id)
 return { hits: [...byKey.values()], failedModes }
 ```
 
-**Pozor:** místa nalezená jen jedním způsobem jsou cenná (ukazují, co by ostatní minuly) — `foundBy` je
-signál úplnosti. Selhané způsoby vždy vrať.
+**Warning:** places found by only one method are valuable (they show what the others missed) — `foundBy` is the
+completeness signal. Always return the failed methods.
 
 ## 6. Completeness critic
 
-**Kdy:** po sběru dat, před syntézou. Poslední agent se ptá „co chybí?“ — modalita, kterou jsme nespustili,
-claim bez ověření, nepřečtený zdroj. Co najde, se stane dalším kolem práce.
+**When:** after gathering data, before synthesis. The last agent asks "what is missing?" — a modality we did not run, an
+unverified claim, an unread source. What it finds becomes another round of work.
 
 ```ts
-const question = 'Proč CI občas selhává na testech integrace?'
-const gathered = ['Test A používá sdílenou DB bez izolace', 'Test B závisí na pořadí spuštění']
+const question = 'Why does CI sometimes fail on the integration tests?'
+const gathered = ['Test A uses a shared DB without isolation', 'Test B depends on the execution order']
 
 const CRITIC = {
   type: 'object',
@@ -329,13 +329,13 @@ const CRITIC = {
 
 for (let round = 1; round <= 2; round++) {
   const critic = await agent<{ complete: boolean; missing: Array<{ aspect: string; query: string }> }>(
-    `Jsi kritik úplnosti. Otázka: "${question}"\nDosud zjištěno:\n${gathered.map((g) => '- ' + g).join('\n')}\nUrči, zda to stačí na důkladnou a vyváženou odpověď. Pokud ne, vyjmenuj nejvýš 4 konkrétní mezery (aspekt + dotaz, který ji zaplní). complete=true jen když bys odpověď podepsal. Nic neupravuj.`,
+    `You are a completeness critic. Question: "${question}"\nFound so far:\n${gathered.map((g) => '- ' + g).join('\n')}\nDetermine whether this is enough for a thorough and balanced answer. If not, list at most 4 concrete gaps (an aspect + the query that fills it). complete=true only if you would sign the answer. Do not modify anything.`,
     { label: `critic:r${round}`, phase: 'Critic', schema: CRITIC },
   )
   if (!critic || critic.complete || critic.missing.length === 0) break
   const more = await parallel(
     critic.missing.slice(0, 4).map((m, i) => () =>
-      agent(`Zaplň tuto mezeru: ${m.aspect}. Dotaz: ${m.query}. Vrať krátká, ověřitelná zjištění.`, { label: `gap:r${round}:${i + 1}`, phase: 'Fill' }),
+      agent(`Fill this gap: ${m.aspect}. Query: ${m.query}. Return short, verifiable findings.`, { label: `gap:r${round}:${i + 1}`, phase: 'Fill' }),
     ),
   )
   gathered.push(...present(more))
@@ -343,22 +343,22 @@ for (let round = 1; round <= 2; round++) {
 return gathered
 ```
 
-**Pozor:** kritik, který selže (`null`), nesmí smyčku zacyklit ani prohlásit „kompletní“ — v ukázce
-smyčku ukončí a výsledek se vrací bez verdiktu (zaloguj to).
+**Warning:** a critic that fails (`null`) must neither loop forever nor declare "complete" — in the example
+the loop ends and the result is returned without a verdict (log it).
 
-## 7. Pipeline vs. bariéra + smell test
+## 7. Pipeline vs. barrier + smell test
 
-**Špatně** — bariéra, která nic nepotřebuje:
+**Wrong** — a barrier that needs nothing:
 
 ```ts nocheck
 const audits = await parallel(files.map((f) => () => agent(`audit ${f}`, { schema: AUDIT })))
-const findings = audits.filter(Boolean).flatMap((a) => a.findings)        // jen transformace
+const findings = audits.filter(Boolean).flatMap((a) => a.findings)        // just a transformation
 const verdicts = await parallel(findings.map((f) => () => agent(`verify ${f.title}`, { schema: V })))
 ```
 
-Nejpomalejší audit zdržuje verifikaci všech ostatních souborů.
+The slowest audit delays the verification of all the other files.
 
-**Správně** — pipeline; transformace uvnitř stage, každý soubor teče nezávisle:
+**Right** — pipeline; the transformation goes inside a stage, each file flows independently:
 
 ```ts
 const files = ['src/a.ts', 'src/b.ts', 'src/c.ts']
@@ -384,12 +384,12 @@ const results = await pipeline(
 return present(results)
 ```
 
-**Kontrolní otázka:** potřebuje stage N vidět výsledky VŠECH položek stage N−1? Ne → pipeline.
+**Control question:** does stage N need to see the results of ALL items of stage N−1? No → pipeline.
 
-## 8. Kdy je bariéra správně
+## 8. When a barrier is correct
 
-Tři oprávněné důvody: **dedup přes celou množinu** před drahým krokem, **early-exit** při nule nálezů,
-**srovnání** („ostatní nálezy“ v promptu).
+There are three legitimate reasons: **dedup across the whole set** before an expensive step, **early exit** when there are zero findings,
+and **comparison** ("other findings" in the prompt).
 
 ```ts
 const modes = ['A', 'B', 'C']
@@ -399,27 +399,27 @@ const FINDINGS = {
   required: ['items'],
 }
 
-const all = await parallel(modes.map((m) => () => agent<{ items: Array<{ key: string; text: string }> }>(`hledej způsobem ${m}`, { phase: 'Find', schema: FINDINGS })))
+const all = await parallel(modes.map((m) => () => agent<{ items: Array<{ key: string; text: string }> }>(`search using method ${m}`, { phase: 'Find', schema: FINDINGS })))
 
-// bariéra: dedup potřebuje všechny najednou
+// barrier: dedup needs all of them at once
 const unique = new Map<string, string>()
 for (const r of present(all)) for (const it of r.items) if (!unique.has(it.key)) unique.set(it.key, it.text)
 
-if (unique.size === 0) return { findings: [], note: 'Nic nenalezeno, verifikace přeskočena.' } // early-exit
+if (unique.size === 0) return { findings: [], note: 'Nothing found, verification skipped.' } // early exit
 
 const verified = await parallel(
-  [...unique.entries()].map(([key, text]) => () => agent<{ real: boolean }>(`ověř: ${text}`, { phase: 'Verify', schema: { type: 'object', properties: { real: { type: 'boolean' } }, required: ['real'] } }).then((v) => ({ key, text, real: !!v && v.real }))),
+  [...unique.entries()].map(([key, text]) => () => agent<{ real: boolean }>(`verify: ${text}`, { phase: 'Verify', schema: { type: 'object', properties: { real: { type: 'boolean' } }, required: ['real'] } }).then((v) => ({ key, text, real: !!v && v.real }))),
 )
 return present(verified).filter((v) => v.real)
 ```
 
-## 9. Partitions bez překryvu cest
+## 9. Partitions without path overlap
 
-**Kdy:** agenti **zapisují** do stejného working tree (migrace, hromadné opravy). Runtime nemá worktree
-izolaci, takže dva agenti na stejném souboru si tiše přepíší práci.
+**When:** agents **write** to the same working tree (migrations, bulk fixes). The runtime has no worktree
+isolation, so two agents on the same file would silently overwrite each other's work.
 
-**Jak:** oddíl = sada cest; vlastnictví je disjunktní; překryv se kontroluje **v kódu před prvním agentem**;
-cizí soubory se nesmí měnit, jen hlásit. Průřezové změny proběhnou před oddíly v samostatné fázi.
+**How:** a partition = a set of paths; ownership is disjoint; overlap is checked **in code before the first agent**;
+foreign files must not be changed, only reported. Cross-cutting changes run before the partitions in a separate phase.
 
 ```ts
 interface Partition {
@@ -433,14 +433,14 @@ const PARTITIONS: Partition[] = [
   { key: 'lib', paths: ['src/lib'] },
 ]
 
-// deterministická kontrola překryvu (stejná cesta nebo jedna uvnitř druhé); cesty se nejdřív kanonizují
-// (bez '', '.', '//', '..'), jinak by 'app/../app' nebo '.' kontrolu obešly. Prázdná cesta = celý kořen.
+// deterministic overlap check (same path or one inside the other); paths are first canonicalized
+// (no '', '.', '//', '..'), otherwise 'app/../app' or '.' would get past the check. An empty path = the whole root.
 const norm = (p: string): string => {
   const out: string[] = []
   for (const seg of p.split('/')) {
     if (seg === '' || seg === '.') continue
     if (seg === '..') {
-      if (out.length === 0) throw new Error('Cesta vede nad kořen: ' + p)
+      if (out.length === 0) throw new Error('Path escapes the root: ' + p)
       out.pop()
     } else out.push(seg)
   }
@@ -452,7 +452,7 @@ for (const p of PARTITIONS) {
   for (const raw of p.paths) {
     const path = norm(raw)
     const hit = owners.find((o) => clash(o.path, path))
-    if (hit) throw new Error(`Oddíly se překrývají: ${p.key} (${raw}) vs. ${hit.key} (${hit.path || '.'})`)
+    if (hit) throw new Error(`Partitions overlap: ${p.key} (${raw}) vs. ${hit.key} (${hit.path || '.'})`)
     owners.push({ path, key: p.key })
   }
 }
@@ -471,7 +471,7 @@ const results = await pipeline(
   PARTITIONS,
   (p: Partition) =>
     agent<{ filesChanged: string[]; summary: string; outsidePartition: string[] }>(
-      `Oprav deprecated volání v oddílu "${p.key}". Smíš měnit JEN soubory pod: ${p.paths.join(', ')}.\nOstatní oddíly upravují jiní agenti současně: ${PARTITIONS.filter((x) => x.key !== p.key).flatMap((x) => x.paths).join(', ')}.\nZměnu mimo svůj oddíl neprováděj; popiš ji (soubor, řádek, přesná změna) v "outsidePartition".`,
+      `Fix deprecated calls in partition "${p.key}". You may change ONLY files under: ${p.paths.join(', ')}.\nOther partitions are being edited by other agents at the same time: ${PARTITIONS.filter((x) => x.key !== p.key).flatMap((x) => x.paths).join(', ')}.\nDo not make changes outside your partition; describe them (file, line, exact change) in "outsidePartition".`,
       { label: `fix:${p.key}`, phase: 'Fix', schema: RESULT },
     ),
 )
@@ -480,16 +480,16 @@ const failed = PARTITIONS.filter((_, i) => results[i] === null).map((p) => p.key
 return { results: present(results), failed, outside: present(results).flatMap((r) => r.outsidePartition) }
 ```
 
-**Pozor:** „vše kromě X“ vyjádři výčtem podadresářů, ne negací, ať jde překryv zkontrolovat.
-Shromážděné `outsidePartition` zpracuj dalším kolem (nebo ho předej uživateli).
+**Warning:** express "everything except X" as an enumeration of subdirectories, not as a negation, so the overlap can be checked.
+Process the collected `outsidePartition` in another round (or hand it to the user).
 
 ## 10. Loop-until-green
 
-**Kdy:** „opravuj, dokud příkaz neprojde“ (testy, build, lint, typecheck).
+**When:** "fix until the command passes" (tests, build, lint, typecheck).
 
-**Jak:** kolo = *měření* (agent spustí příkaz a vrátí exit kód + selhání) → *oprava* (agenti s disjunktními
-soubory) → znovu měření. Stop: exit 0, **2 kola po sobě bez poklesu selhání**, strop kol, rozpočet. Po
-dosažení zelené nezávislé potvrzení jiným agentem (a kontrola, že nikdo netestoval „zeleně“ odstraněním testů).
+**How:** round = *measurement* (an agent runs the command and returns the exit code + failures) → *fix* (agents with disjoint
+files) → measure again. Stop: exit 0, **2 consecutive rounds without a drop in failures**, round cap, budget. Once green, an independent
+confirmation by another agent (and a check that nobody made it "green" by removing tests).
 
 ```ts
 const COMMAND = 'npm test'
@@ -521,11 +521,11 @@ let status = 'max-rounds'
 
 for (let round = 1; round <= MAX_ROUNDS; round++) {
   const run = await agent<Report>(
-    `Kolo ${round}. Spusť přesně: ${COMMAND}. Nic neopravuj. Vrať exit kód, skutečný počet selhání a seznam selhání (id, soubor, shrnutí).`,
+    `Round ${round}. Run exactly: ${COMMAND}. Do not fix anything. Return the exit code, the actual number of failures, and the list of failures (id, file, summary).`,
     { label: `run:round-${round}`, phase: 'Run', schema: RUN, effort: 'low', disallowedTools: ['Edit', 'Write'] },
   )
   if (!run) {
-    // selhal měřicí agent, ne příkaz: počítej jako kolo bez pokroku, ať se smyčka nezacyklí
+    // the measuring agent failed, not the command: count it as a round without progress so the loop cannot spin forever
     stalled++
     if (stalled >= STALL_LIMIT) { status = 'no-progress'; break }
     continue
@@ -535,87 +535,87 @@ for (let round = 1; round <= MAX_ROUNDS; round++) {
   const n = Math.max(run.totalFailures, run.failures.length)
   if (n < best) { best = n; stalled = 0 } else { stalled++ }
   if (stalled >= STALL_LIMIT) { status = 'no-progress'; break }
-  if (round === MAX_ROUNDS) break // po posledním měření už neopravuj (neověřená oprava)
+  if (round === MAX_ROUNDS) break // after the last measurement, do not fix anymore (an unverified fix)
 
   const byFile = new Map<string, string[]>()
   for (const f of run.failures) byFile.set(f.file ?? '(unknown)', [...(byFile.get(f.file ?? '(unknown)') ?? []), `${f.id}: ${f.summary}`])
   await parallel(
     [...byFile.entries()].map(([file, items]) => () =>
-      agent(`Oprav selhání v souboru ${file} (a jen v něm). Selhání:\n${items.join('\n')}\nNeoslabuj testy ani příkaz.`, { label: `fix:r${round}:${file}`, phase: 'Fix' }),
+      agent(`Fix the failures in file ${file} (and only in it). Failures:\n${items.join('\n')}\nDo not weaken the tests or the command.`, { label: `fix:r${round}:${file}`, phase: 'Fix' }),
     ),
   )
 }
 return { status, best: best === Infinity ? null : best }
 ```
 
-**Pozor:** měření musí dělat jiný agent než oprava; „opravil jsem to“ od opraváře nic neznamená. Plnou
-verzi (skupiny souborů, potvrzení, rozpočet) má `examples/fix-until-green.workflow.ts`.
+**Warning:** the measurement must be done by a different agent than the fix; "I fixed it" from the fixer means nothing. The full
+version (file groups, confirmation, budget) is in `examples/fix-until-green.workflow.ts`.
 
-## 11. Rozpočtové smyčky
+## 11. Budget loops
 
-Dva způsoby, jak škálovat práci podle `--max-tokens` / `--max-usd`.
+Two ways to scale work according to `--max-tokens` / `--max-usd`.
 
-**Dynamicky** — dělej kola, dokud je rozpočet:
+**Dynamically** — run rounds as long as there is budget:
 
 ```ts
 const notes: string[] = []
-// guard na budget.total: bez limitu je remaining() Infinity a smyčka by běžela do 1000 agentů
+// guard on budget.total: without a limit remaining() is Infinity and the loop would run up to 1000 agents
 while (budget.total !== null && budget.remaining() > 50_000 && notes.length < 40) {
-  const r = await agent(`Najdi další zajímavý problém v src/. Už známé:\n${notes.slice(-20).join('\n')}`, { label: `probe:${notes.length + 1}` })
+  const r = await agent(`Find another interesting problem in src/. Already known:\n${notes.slice(-20).join('\n')}`, { label: `probe:${notes.length + 1}` })
   if (!r) break
   notes.push(r)
-  log(`${notes.length} nálezů, zbývá ${Math.round(budget.remaining() / 1000)}k tokenů`)
+  log(`${notes.length} findings, ${Math.round(budget.remaining() / 1000)}k tokens left`)
 }
 ```
 
-**Staticky** — velikost flotily z rozpočtu:
+**Statically** — fleet size from the budget:
 
 ```ts
 const FLEET = budget.total !== null ? Math.max(1, Math.min(20, Math.floor(budget.total / 100_000))) : 5
-log(`flotila: ${FLEET} agentů`)
+log(`fleet: ${FLEET} agents`)
 const outs = await parallel(
-  Array.from({ length: FLEET }, (_, i) => () => agent(`Prozkoumej oblast č. ${i + 1} z ${FLEET}.`, { label: `fleet:${i + 1}` })),
+  Array.from({ length: FLEET }, (_, i) => () => agent(`Explore area no. ${i + 1} of ${FLEET}.`, { label: `fleet:${i + 1}` })),
 )
-log(`hotovo: ${outs.filter(Boolean).length}/${FLEET}`)
+log(`done: ${outs.filter(Boolean).length}/${FLEET}`)
 ```
 
-**Pozor:** vždy i tvrdý strop počtu (`< 40`, `Math.min(20, …)`), nezávislý na rozpočtu; rozpočet počítá jen
-výstupní tokeny. Při `--max-usd` použij `budget.totalUsd` / `budget.remainingUsd()`.
+**Warning:** always have a hard cap on the count (`< 40`, `Math.min(20, …)`), independent of the budget; the budget counts only
+output tokens. With `--max-usd` use `budget.totalUsd` / `budget.remainingUsd()`.
 
-## 12. Hybrid: scout inline, pak fan-out
+## 12. Hybrid: scout inline, then fan-out
 
-Nejlepší workflow začínají tím, že *ty* zjistíš rozsah běžnými nástroji a předáš ho skriptu:
+The best workflows start with *you* determining the scope using ordinary tools and passing it to the script:
 
 ```bash
-# 1) rozsah zjisti sám
+# 1) determine the scope yourself
 git diff --name-only origin/main...HEAD -- 'src/**/*.ts' > /tmp/changed.txt
-# 2) předej jako args
+# 2) pass as args
 ultracode run review-changes --args "$(jq -Rn '{files: [inputs]}' < /tmp/changed.txt)"
 ```
 
-Ve skriptu se vstup validuje, zahazuje se duplicitní práce a ořezy se logují:
+In the script, the input is validated, duplicate work is dropped, and cuts are logged:
 
 ```ts
 const input = (args ?? {}) as { files?: string[]; maxFiles?: number }
 if (!Array.isArray(input.files) || input.files.length === 0) {
-  throw new Error('Chybí args.files (neprázdné pole cest).')
+  throw new Error('Missing args.files (non-empty array of paths).')
 }
 const unique = [...new Set(input.files)].sort()
 const cap = input.maxFiles ?? 50
 const files = unique.slice(0, cap)
-if (unique.length > files.length) log(`Ořez: ${unique.length} → ${files.length}; vynecháno: ${unique.slice(cap).join(', ')}`)
+if (unique.length > files.length) log(`Cut: ${unique.length} → ${files.length}; omitted: ${unique.slice(cap).join(', ')}`)
 
-const reviews = await pipeline(files, (f: string) => agent(`Zrecenzuj změny v ${f}.`, { label: `review:${f}`, phase: 'Review' }))
+const reviews = await pipeline(files, (f: string) => agent(`Review the changes in ${f}.`, { label: `review:${f}`, phase: 'Review' }))
 return { reviewed: present(reviews).length, requested: unique.length, failed: files.length - present(reviews).length }
 ```
 
-Když rozsah nejde zjistit předem, udělej první fázi s jedním agentem a schema (`{ files: [...] }`) — jako
-`Discover` v `examples/audit-routes.workflow.ts`.
+When the scope cannot be determined in advance, do a first phase with one agent and a schema (`{ files: [...] }`) — like
+`Discover` in `examples/audit-routes.workflow.ts`.
 
-## 13. Syntéza s omezeným vstupem (map-reduce)
+## 13. Synthesis with bounded input (map-reduce)
 
-Syntetizující agent s tisíci nálezy v promptu zahltí kontext a mělce se rozhodne. Řazení a ořez dělej
-v kódu; je-li dat hodně, redukuj ve vrstvách.
+A synthesizing agent with thousands of findings in the prompt gets its context flooded and decides superficially. Do sorting and cutting
+in code; if there is a lot of data, reduce in layers.
 
 ```ts
 interface Item {
@@ -623,14 +623,14 @@ interface Item {
   text: string
 }
 
-const items: Item[] = Array.from({ length: 120 }, (_, i) => ({ id: `F${i + 1}`, text: `nález ${i + 1}` }))
+const items: Item[] = Array.from({ length: 120 }, (_, i) => ({ id: `F${i + 1}`, text: `finding ${i + 1}` }))
 const BATCH = 30
 
-// map: dávky → mezisouhrny (každá dávka nezávisle)
+// map: batches → partial summaries (each batch independently)
 const partials = present(
   await parallel(
     chunk(items, BATCH).map((batch, i) => () =>
-      agent(`Shrň tyto nálezy do max. 10 bodů a zachovej id v hranatých závorkách:\n${batch.map((b) => `[${b.id}] ${b.text}`).join('\n')}`, {
+      agent(`Summarize these findings into at most 10 points and keep the ids in square brackets:\n${batch.map((b) => `[${b.id}] ${b.text}`).join('\n')}`, {
         label: `reduce:batch-${i + 1}`,
         phase: 'Synthesize',
       }),
@@ -638,62 +638,62 @@ const partials = present(
   ),
 )
 
-// reduce: jeden agent nad mezisouhrny
-const report = await agent(`Z těchto mezisouhrnů napiš závěrečný report; zachovej odkazy na id:\n${partials.join('\n---\n')}`, {
+// reduce: one agent over the partial summaries
+const report = await agent(`Write the final report from these partial summaries; keep the id references:\n${partials.join('\n---\n')}`, {
   label: 'reduce:final',
   phase: 'Synthesize',
 })
 return { batches: partials.length, expected: Math.ceil(items.length / BATCH), report }
 ```
 
-**Pozor:** `chunk` je z oddílu 0. Porovnej `batches` s `expected`, ať je vidět, že dávka vypadla.
+**Warning:** `chunk` is from section 0. Compare `batches` with `expected` so that a dropped batch is visible.
 
-## 14. Žádné tiché ořezy
+## 14. No silent cuts
 
-Každé omezení pokrytí (top-N, sampling, `slice`, strop kol, „jen první stránka“) musí být **vidět**.
+Every coverage limit (top-N, sampling, `slice`, round cap, "only the first page") must be **visible**.
 
 ```ts
-const candidates = Array.from({ length: 130 }, (_, i) => `soubor-${i}.ts`)
+const candidates = Array.from({ length: 130 }, (_, i) => `file-${i}.ts`)
 const LIMIT = 100
 const selected = candidates.slice(0, LIMIT)
 const dropped = candidates.slice(LIMIT)
 
 if (dropped.length > 0) {
-  log(`Nezpracováno ${dropped.length} z ${candidates.length} (limit ${LIMIT}): ${dropped.slice(0, 10).join(', ')}${dropped.length > 10 ? ', …' : ''}`)
+  log(`Not processed ${dropped.length} of ${candidates.length} (limit ${LIMIT}): ${dropped.slice(0, 10).join(', ')}${dropped.length > 10 ? ', …' : ''}`)
 }
 return { processed: selected.length, dropped }
 ```
 
-Totéž platí pro selhání: `ok.length < total` se zaloguje a vrátí, nikdy jen `.filter(Boolean)`.
+The same applies to failures: `ok.length < total` is logged and returned, never just `.filter(Boolean)`.
 
-## 15. ID a citace přidělené kódem
+## 15. IDs and citations assigned by code
 
-LLM si vymýšlí odkazy, čísla řádků i identifikátory. Aby výsledek nelhal:
+LLMs invent references, line numbers, and identifiers. To keep the result from lying:
 
-1. **ID přiděluj v kódu** (`F1…Fn`) a agentovi dej jen ta.
-2. Agent vrací **ID**, ne texty: „seřaď F3, F1, F7“, „cituj [C2]“.
-3. Po návratu **zahoď neznámá ID** a texty/URL doplň z dat.
+1. **Assign IDs in code** (`F1…Fn`) and give the agent only those.
+2. The agent returns **IDs**, not texts: "sort F3, F1, F7", "cite [C2]".
+3. After it returns, **discard unknown IDs** and fill in texts/URLs from the data.
 
 ```ts
 const sources = [
-  { url: 'https://example.com/a', claim: 'A je pomalé' },
-  { url: 'https://example.com/b', claim: 'B je rychlé' },
+  { url: 'https://example.com/a', claim: 'A is slow' },
+  { url: 'https://example.com/b', claim: 'B is fast' },
 ]
 const claims = sources.map((s, i) => ({ id: `C${i + 1}`, ...s }))
 const known = new Map(claims.map((c) => [c.id, c]))
 
 const answer = await agent(
-  `Odpověz jedním odstavcem. Cituj jen přes id v hranatých závorkách, např. [C1]. Nic jiného nepřidávej.\n${claims.map((c) => `[${c.id}] ${c.claim}`).join('\n')}`,
+  `Answer in one paragraph. Cite only via ids in square brackets, e.g. [C1]. Do not add anything else.\n${claims.map((c) => `[${c.id}] ${c.claim}`).join('\n')}`,
   { label: 'answer', phase: 'Synthesize' },
 )
 
 const order: string[] = []
 const rendered = (answer ?? '').replace(/\[(C\d+)\]/g, (_m: string, id: string) => {
-  if (!known.has(id)) return '' // vymyšlené ID zmizí
+  if (!known.has(id)) return '' // invented ID disappears
   if (!order.includes(id)) order.push(id)
   return `[${order.indexOf(id) + 1}]`
 })
 return { text: rendered, sources: order.map((id, i) => ({ n: i + 1, url: known.get(id)!.url })) }
 ```
 
-Plná verze s víceidovými citacemi `[C1, C3]` je v `examples/deep-research.workflow.ts`.
+The full version with multi-ID citations `[C1, C3]` is in `examples/deep-research.workflow.ts`.

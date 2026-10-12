@@ -1,12 +1,12 @@
 /**
- * Robustní souborové primitivy enginu: atomický zápis, serializovaný append JSONL a slučující se zapisovač stavu.
- * Žádná z tříd nehází z hlavních metod — chyby zápisu se hlásí přes `onError`, aby výpadek disku neshodil běh.
+ * Robust file primitives of the engine: atomic write, serialized JSONL append and a coalescing state writer.
+ * None of the classes throw from their main methods — write errors are reported via `onError` so that a disk failure does not crash the run.
  */
 import { randomBytes } from 'node:crypto'
 import { appendFile, mkdir, open, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 
-/** Atomický zápis: dočasný soubor ve stejném adresáři + rename. Čtenář nikdy neuvidí napůl zapsaný soubor. */
+/** Atomic write: a temporary file in the same directory + rename. A reader never sees a half-written file. */
 export async function writeFileAtomic(path: string, data: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true })
   const tmp = `${path}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`
@@ -20,15 +20,15 @@ export async function writeFileAtomic(path: string, data: string): Promise<void>
 }
 
 /**
- * Zajistí, že neprázdný soubor končí `\n`. Po násilně ukončeném procesu může poslední JSONL řádek chybět
- * konec; bez tohoto kroku by se další append slepil s useknutým řádkem a poškodil i nový záznam.
+ * Ensures that a non-empty file ends with `\n`. After a forcibly terminated process the last JSONL line may lack its
+ * ending; without this step the next append would be glued onto the truncated line and corrupt the new record as well.
  */
 export async function ensureTrailingNewline(path: string): Promise<void> {
   let fh
   try {
     fh = await open(path, 'r')
   } catch {
-    return // soubor neexistuje
+    return // file does not exist
   }
   try {
     const { size } = await fh.stat()
@@ -48,8 +48,8 @@ interface PendingLine {
 }
 
 /**
- * Append-only JSONL soubor. Souběžná volání `append()` se řadí do fronty a zapisují se ve stejném pořadí,
- * v jednom `appendFile` na dávku. Vrácený Promise se splní, až je řádek na disku (nikdy neodmítne).
+ * Append-only JSONL file. Concurrent `append()` calls are queued and written in the same order,
+ * in one `appendFile` per batch. The returned Promise resolves once the line is on disk (it never rejects).
  */
 export class JsonlAppender {
   private readonly path: string
@@ -77,7 +77,7 @@ export class JsonlAppender {
     })
   }
 
-  /** Počká, až se vyprázdní fronta. */
+  /** Waits until the queue is drained. */
   async flush(): Promise<void> {
     while (this.writing) await this.writing
   }
@@ -105,8 +105,8 @@ export class JsonlAppender {
 }
 
 /**
- * Zapisovač stavového souboru (run.json): žádosti o zápis se slučují — zapisuje se vždy nejnovější stav,
- * nikdy dva zápisy souběžně. `request()` se splní, až proběhl zápis započatý po jeho zavolání.
+ * Writer of the state file (run.json): write requests are coalesced — always the latest state is written,
+ * never two writes at the same time. `request()` resolves once a write started after its call has completed.
  */
 export class StateFileWriter {
   private readonly path: string

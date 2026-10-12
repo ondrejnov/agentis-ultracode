@@ -1,95 +1,95 @@
-/** České nápovědy CLI. */
+/** CLI help texts. */
 
-export const MAIN_HELP = `ultracode — dynamická workflow nad \`claude -p\`
+export const MAIN_HELP = `ultracode — dynamic workflows on top of \`claude -p\`
 
-Použití:
-  ultracode <příkaz> [volby]
+Usage:
+  ultracode <command> [options]
 
-Příkazy:
-  run <workflow|cesta>     spustí workflow (jméno z .ultracode/workflows/ nebo cesta ke skriptu)
-  resume <runId>           pokračuje v přerušeném/selhaném běhu (stejný skript i args)
-  status [runId]           stav běhu (bez id: poslední běh)
-  list                     seznam běhů a dostupných workflow
-  logs <runId>             události běhu; --follow sleduje, --agent <n> ukáže prompt a výsledek agenta
-  validate <cesta...>      zkontroluje skripty workflow (exit 2 při chybě)
-  types                    zapíše types/workflow.d.ts pro psaní skriptů
-  skill install            nainstaluje authoring skill pro Claude do ~/.claude/skills/ nebo projektu
-  init                     vytvoří .ultracode/workflows/ s ukázkovým workflow a typy
-  help [příkaz]            tato nápověda
+Commands:
+  run <workflow|path>      runs a workflow (name from .ultracode/workflows/ or path to a script)
+  resume <runId>           continues an interrupted/failed run (same script and args)
+  status [runId]           run status (without id: the latest run)
+  list                     lists runs and available workflows
+  logs <runId>             run events; --follow watches, --agent <n> shows the agent's prompt and result
+  validate <path...>       checks workflow scripts (exit 2 on error)
+  types                    writes types/workflow.d.ts for writing scripts
+  skill install            installs the authoring skill for Claude into ~/.claude/skills/ or the project
+  init                     creates .ultracode/workflows/ with a sample workflow and types
+  help [command]           this help
 
-Globální volby:
-  --help, -h               nápověda (i pro konkrétní příkaz)
-  --version                verze
+Global options:
+  --help, -h               help (also for a specific command)
+  --version                version
 
-Výstup \`run\`: stdout = JSON výsledek skriptu (s --json celé shrnutí běhu), stderr = průběh pro člověka.
-Exit kódy: 0 dokončeno, 1 běh selhal, 2 chybné použití / neplatný skript / neznámé workflow, 130 přerušeno.
+Output of \`run\`: stdout = JSON result of the script (with --json the whole run summary), stderr = progress for humans.
+Exit codes: 0 completed, 1 run failed, 2 incorrect usage / invalid script / unknown workflow, 130 interrupted.
 
-Podrobnosti ke každému příkazu: ultracode <příkaz> --help
+Details for each command: ultracode <command> --help
 `
 
-const RUN_OPTIONS = `Volby:
-  --args <json>            vstup workflow (globál \`args\`)
-  --args-file <cesta>      vstup workflow ze souboru s JSON
-  --cwd <adresář>          projektový adresář (cwd agentů a kořen .ultracode/); default aktuální
-  --concurrency <n>        max. souběžných agentů (default min(16, CPU-2))
-  --max-agents <n>         max. agentů za běh (default 1000)
-  --max-tokens <n>         tvrdý strop výstupních tokenů
-  --max-usd <x>            tvrdý strop útrat v USD
-  --model <m>              výchozí model agentů
-  --effort <úroveň>        výchozí effort agentů: low|medium|high|xhigh|max
-  --run-id <id>            vlastní id běhu
-  --quiet, -q              potlačí průběh na stderr
-  --verbose                zobrazí i volání nástrojů a náhled promptů
-  --json                   na stdout celé shrnutí běhu místo samotného výsledku
-  --no-color               vypne barvy (jinak jen na TTY a bez NO_COLOR)`
+const RUN_OPTIONS = `Options:
+  --args <json>            workflow input (global \`args\`)
+  --args-file <path>       workflow input from a JSON file
+  --cwd <dir>              project directory (agents' cwd and root of .ultracode/); default current
+  --concurrency <n>        max. concurrent agents (default min(16, CPU-2))
+  --max-agents <n>         max. agents per run (default 1000)
+  --max-tokens <n>         hard cap on output tokens
+  --max-usd <x>            hard cap on spending in USD
+  --model <m>              default model of agents
+  --effort <level>         default effort of agents: low|medium|high|xhigh|max
+  --run-id <id>            custom run id
+  --quiet, -q              suppresses progress on stderr
+  --verbose                also shows tool calls and prompt previews
+  --json                   whole run summary on stdout instead of just the result
+  --no-color               disables colors (otherwise only on a TTY and without NO_COLOR)`
 
 export const COMMAND_HELP: Record<string, string> = {
-  run: `Použití: ultracode run <workflow|cesta> [volby]
+  run: `Usage: ultracode run <workflow|path> [options]
 
-Spustí workflow. Argument je cesta ke skriptu (obsahuje „/“ nebo končí .ts/.js)
-nebo jméno hledané v <cwd>/.ultracode/workflows/ (a rodičovských adresářích),
-~/.ultracode/workflows a $ULTRACODE_WORKFLOWS_DIR.
-
-${RUN_OPTIONS}
-  --resume <runId>         pokračuje v běhu (bez zadaného workflow se použije uložený skript a args)
-`,
-  resume: `Použití: ultracode resume <runId> [volby]
-
-Pokračuje v běhu: dokončená volání agentů se stejným promptem vrátí uložený výsledek,
-zbytek se spustí znovu. Používá skript a args uložené v běhu (lze přepsat --args).
+Runs a workflow. The argument is a path to a script (contains "/" or ends with .ts/.js)
+or a name searched for in <cwd>/.ultracode/workflows/ (and parent directories),
+~/.ultracode/workflows and $ULTRACODE_WORKFLOWS_DIR.
 
 ${RUN_OPTIONS}
+  --resume <runId>         continues the run (without a given workflow the stored script and args are used)
 `,
-  status: `Použití: ultracode status [runId] [--json] [--cwd dir]
+  resume: `Usage: ultracode resume <runId> [options]
 
-Ukáže stav běhu, fáze, agenty a součty. Bez runId se použije nejnovější běh.
+Continues the run: completed agent calls with the same prompt return the stored result,
+the rest is run again. Uses the script and args stored in the run (can be overridden with --args).
+
+${RUN_OPTIONS}
 `,
-  list: `Použití: ultracode list [--limit n] [--json] [--cwd dir]
+  status: `Usage: ultracode status [runId] [--json] [--cwd dir]
 
-Seznam běhů (nejnovější první) a dostupných workflow.
+Shows run status, phases, agents and totals. Without a runId the latest run is used.
 `,
-  logs: `Použití: ultracode logs <runId> [--follow] [--agent n] [--cwd dir]
+  list: `Usage: ultracode list [--limit n] [--json] [--cwd dir]
 
-Vypíše události běhu čitelně. --follow sleduje běh do konce.
---agent <n> vypíše prompt a výsledek agenta (z agents/<n>/).
+List of runs (newest first) and available workflows.
 `,
-  validate: `Použití: ultracode validate <cesta...> [--json]
+  logs: `Usage: ultracode logs <runId> [--follow] [--agent n] [--cwd dir]
 
-Zkontroluje skripty (meta, syntaxe, zakázané konstrukce). Exit 2, pokud některý skript není platný.
+Prints run events in a readable form. --follow follows the run until it ends.
+--agent <n> prints the prompt and result of an agent (from agents/<n>/).
 `,
-  types: `Použití: ultracode types [--out dir] [--cwd dir]
+  validate: `Usage: ultracode validate <path...> [--json]
 
-Zapíše workflow.d.ts do <dir> (default <cwd>/.ultracode/) a vypíše řádek
-\`/// <reference path="…" />\` pro skripty v .ultracode/workflows/.
+Checks scripts (meta, syntax, forbidden constructs). Exit 2 if any script is invalid.
 `,
-  skill: `Použití: ultracode skill install [--user|--project] [--force]
+  types: `Usage: ultracode types [--out dir] [--cwd dir]
 
-Zkopíruje skill ultracode-workflow do ~/.claude/skills/ (--user, default; respektuje
-CLAUDE_CONFIG_DIR) nebo do <cwd>/.claude/skills/ (--project). Bez --force nic nepřepisuje.
+Writes workflow.d.ts to <dir> (default <cwd>/.ultracode/) and prints the line
+\`/// <reference path="…" />\` for scripts in .ultracode/workflows/.
 `,
-  init: `Použití: ultracode init [--force] [--cwd dir]
+  skill: `Usage: ultracode skill install [--user|--project] [--force]
 
-Vytvoří .ultracode/workflows/ s ukázkovým hello.workflow.ts a vygeneruje typy.
-Existující soubory nepřepisuje (bez --force).
+Copies the ultracode-workflow skill to ~/.claude/skills/ (--user, default; respects
+CLAUDE_CONFIG_DIR) or to <cwd>/.claude/skills/ (--project). Without --force nothing is overwritten.
+`,
+  init: `Usage: ultracode init [--force] [--cwd dir]
+
+Creates .ultracode/workflows/ with a sample hello.workflow.ts and generates types.
+Existing files are not overwritten (without --force).
 `,
 }

@@ -29,19 +29,19 @@ function runJson(runId: string, startedAt: string, extra: Record<string, unknown
 }
 
 describe('store', () => {
-  test('runsRoot a bezpečné ID', () => {
+  test('runsRoot and safe IDs', () => {
     assert.equal(runsRoot('/a/b'), '/a/b/.ultracode/runs')
     assert.ok(isSafeRunId('wf_003aa2c5-8ce'))
     for (const bad of ['', '..', '../x', 'a/b', '.hidden', 'a b']) assert.equal(isSafeRunId(bad), false, bad)
   })
 
-  test('listRuns: nejnovější první, odolné vůči poškozenému run.json a cizím souborům', () => {
+  test('listRuns: newest first, resilient to a corrupt run.json and foreign files', () => {
     const p = makeProject()
     try {
       writeRun(p.cwd, 'wf_aaaaaaaa-001', { 'run.json': runJson('wf_aaaaaaaa-001', '2026-01-01T10:00:00.000Z') })
       writeRun(p.cwd, 'wf_bbbbbbbb-002', { 'run.json': runJson('wf_bbbbbbbb-002', '2026-01-03T10:00:00.000Z', { status: 'failed', error: 'x' }) })
       writeRun(p.cwd, 'wf_cccccccc-003', { 'run.json': runJson('wf_cccccccc-003', '2026-01-02T10:00:00.000Z', { result: { a: 1 }, budgetExceeded: true }) })
-      writeRun(p.cwd, 'wf_corrupt0-004', { 'run.json': '{"runId": "wf_corru' }) // useknutý JSON, žádné události
+      writeRun(p.cwd, 'wf_corrupt0-004', { 'run.json': '{"runId": "wf_corru' }) // truncated JSON, no events
       writeRun(p.cwd, 'wf_empty000-005', {})
       writeRun(p.cwd, 'wf_badshape-006', { 'run.json': JSON.stringify({ hello: 'world' }) })
       writeFileSync(join(runsRoot(p.cwd), 'stray-file.txt'), 'x')
@@ -58,7 +58,7 @@ describe('store', () => {
     }
   })
 
-  test('listRuns na neexistujícím adresáři vrací []', () => {
+  test('listRuns on a non-existent directory returns []', () => {
     const p = makeProject()
     try {
       assert.deepEqual(listRuns(p.cwd), [])
@@ -69,7 +69,7 @@ describe('store', () => {
     }
   })
 
-  test('poškozený run.json se rekonstruuje z events.jsonl (run_start/run_end)', () => {
+  test('a corrupt run.json is reconstructed from events.jsonl (run_start/run_end)', () => {
     const p = makeProject()
     try {
       const start = { t: 'run_start', ts: '2026-02-01T00:00:00.000Z', runId: 'wf_rec00000-001', name: 'rec', description: '', args: null, cwd: '/c', scriptPath: '/c/s.ts', resumed: false, phases: [] }
@@ -81,13 +81,13 @@ describe('store', () => {
       assert.equal(runs[1].status, 'failed')
       assert.equal(runs[1].error, 'bum')
       assert.equal(runs[1].totals.usage.outputTokens, 7)
-      // bez run_end a bez živého držitele zámku je to násilně ukončený (přerušený) běh, ne běžící
+      // without run_end and without a live lock holder it is a forcibly terminated (aborted) run, not a running one
       assert.equal(runs[0].status, 'aborted')
-      assert.match(runs[0].error ?? '', /neběží/)
-      // se zámkem živého procesu (my) je to skutečně běžící běh
+      assert.match(runs[0].error ?? '', /no longer running/)
+      // with the lock of a live process (ours) it really is a running run
       writeFileSync(join(p.cwd, '.ultracode', 'runs', 'wf_run00000-002', '.lock'), JSON.stringify({ pid: process.pid, ts: 'x' }))
       assert.equal(readRunSummary(p.cwd, 'wf_run00000-002')?.status, 'running')
-      // zámek mrtvého procesu to nezmění
+      // a dead process lock does not change it
       writeFileSync(join(p.cwd, '.ultracode', 'runs', 'wf_run00000-002', '.lock'), JSON.stringify({ pid: 2 ** 22 + 999, ts: 'x' }))
       assert.equal(readRunSummary(p.cwd, 'wf_run00000-002')?.status, 'aborted')
     } finally {
@@ -95,11 +95,11 @@ describe('store', () => {
     }
   })
 
-  test('readEvents přeskočí nečitelné řádky, zachová pořadí; readRunSummary odmítne průchod mimo runs/', () => {
+  test('readEvents skips unreadable lines and keeps order; readRunSummary rejects paths outside runs/', () => {
     const p = makeProject()
     try {
       writeRun(p.cwd, 'wf_ev000000-001', {
-        'events.jsonl': ['{"t":"log","ts":"1","message":"a","workflowPath":[]}', 'tohle neni json', '{"nope":1}', '{"t":"phase","ts":"2","title":"T","workflowPath":[]}', '{"t":"log","ts":"3","mess'].join('\n'),
+        'events.jsonl': ['{"t":"log","ts":"1","message":"a","workflowPath":[]}', 'this is not json', '{"nope":1}', '{"t":"phase","ts":"2","title":"T","workflowPath":[]}', '{"t":"log","ts":"3","mess'].join('\n'),
       })
       const ev = readEvents(p.cwd, 'wf_ev000000-001')
       assert.deepEqual(ev.map((e) => e.t), ['log', 'phase'])
@@ -111,7 +111,7 @@ describe('store', () => {
     }
   })
 
-  test('listRuns na reálných bězích: pořadí podle startedAt a shoda s návratovou hodnotou', async () => {
+  test('listRuns on real runs: order by startedAt and match with the return value', async () => {
     const p = makeProject()
     try {
       const deps = scriptDeps(async (api) => api.agent('x'))

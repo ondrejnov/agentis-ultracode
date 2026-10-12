@@ -8,8 +8,8 @@ import { ScriptValidationError, WorkflowNotFoundError } from '../../src/errors.t
 import type { RunEvent } from '../../src/types.ts'
 import { eventsOf, journalOf, makeProject, makeRunner, readJsonFile, scriptDeps, sleep, waitFor } from './helpers.ts'
 
-describe('selhání agentů', () => {
-  test('selhání agenta → null, failedAgents, důvod v eventu, nezapíše se do journalu; resume ho spustí znovu', async () => {
+describe('agent failures', () => {
+  test('agent failure → null, failedAgents, reason in the event, not written to the journal; resume runs it again', async () => {
     const p = makeProject()
     try {
       const file = p.script()
@@ -36,7 +36,7 @@ describe('selhání agentů', () => {
     }
   })
 
-  test('výjimka z runneru se promění v null (běh nespadne)', async () => {
+  test('runner exception becomes null (the run does not crash)', async () => {
     const p = makeProject()
     try {
       const stub = makeRunner({ throws: (r) => r.prompt === 'kaboom' })
@@ -55,7 +55,7 @@ describe('selhání agentů', () => {
     }
   })
 
-  test('se schema bez structured_output je to selhání (null), ne prázdný objekt', async () => {
+  test('with a schema and no structured_output it is a failure (null), not an empty object', async () => {
     const p = makeProject()
     try {
       const stub = makeRunner({ respond: () => null })
@@ -71,7 +71,7 @@ describe('selhání agentů', () => {
     }
   })
 
-  test('agent_retry a agent_tool z onProgress se zapíšou jako události', async () => {
+  test('agent_retry and agent_tool from onProgress are written as events', async () => {
     const p = makeProject()
     try {
       const runner = async (req: any) => {
@@ -81,7 +81,7 @@ describe('selhání agentů', () => {
         req.onProgress?.({ kind: 'tool', name: 'Edit' })
         return {
           ok: true,
-          text: 'hotovo',
+          text: 'done',
           structured: undefined,
           usage: { inputTokens: 1, outputTokens: 2, cacheReadTokens: 0, cacheCreationTokens: 0 },
           costUsd: 0.5,
@@ -110,20 +110,20 @@ describe('selhání agentů', () => {
   })
 })
 
-describe('chyby skriptu a použití', () => {
-  test('chyba skriptu → status failed s error včetně stack řádku; nehází', async () => {
+describe('script errors and usage', () => {
+  test('script error → status failed with error including the stack line; does not throw', async () => {
     const p = makeProject()
     try {
       const stub = makeRunner()
       const summary = await runWorkflow(
         { workflow: p.script(), cwd: p.cwd, runner: stub.runner },
         scriptDeps(async (api) => {
-          await api.agent('před chybou')
-          throw new TypeError('boom ve skriptu')
+          await api.agent('before error')
+          throw new TypeError('boom in script')
         }),
       )
       assert.equal(summary.status, 'failed')
-      assert.match(summary.error ?? '', /TypeError: boom ve skriptu/)
+      assert.match(summary.error ?? '', /TypeError: boom in script/)
       assert.match(summary.error ?? '', /\n\s+at /)
       assert.equal(summary.result, undefined)
       assert.equal(existsSync(join(summary.runDir, 'result.json')), false)
@@ -139,7 +139,7 @@ describe('chyby skriptu a použití', () => {
     }
   })
 
-  test('chyba serializovaná přes worker (prostý objekt se stackem) se zobrazí čitelně', async () => {
+  test('error serialized via worker (plain object with stack) is shown readably', async () => {
     const p = makeProject()
     try {
       const summary = await runWorkflow(
@@ -158,7 +158,7 @@ describe('chyby skriptu a použití', () => {
     }
   })
 
-  test('neplatný skript → ScriptValidationError s diagnostikou a bez založeného běhu', async () => {
+  test('invalid script → ScriptValidationError with diagnostics and without a created run', async () => {
     const p = makeProject()
     try {
       const file = p.script('bad.workflow.ts', '// INVALID\n')
@@ -166,7 +166,7 @@ describe('chyby skriptu a použití', () => {
         runWorkflow({ workflow: file, cwd: p.cwd, runner: makeRunner().runner }, scriptDeps(async () => null)),
         (e: unknown) => {
           assert.ok(e instanceof ScriptValidationError)
-          assert.deepEqual(e.diagnostics, ['řádek 1: chybí export const meta'])
+          assert.deepEqual(e.diagnostics, ['line 1: missing export const meta'])
           assert.match(e.message, /bad\.workflow\.ts/)
           return true
         },
@@ -178,10 +178,10 @@ describe('chyby skriptu a použití', () => {
     }
   })
 
-  test('neexistující workflow → WorkflowNotFoundError; prázdné workflow bez resume → chyba použití', async () => {
+  test('nonexistent workflow → WorkflowNotFoundError; empty workflow without resume → usage error', async () => {
     const p = makeProject()
     try {
-      await assert.rejects(runWorkflow({ workflow: 'neexistuje', cwd: p.cwd, runner: makeRunner().runner }, scriptDeps(async () => null)), WorkflowNotFoundError)
+      await assert.rejects(runWorkflow({ workflow: 'nonexistent', cwd: p.cwd, runner: makeRunner().runner }, scriptDeps(async () => null)), WorkflowNotFoundError)
       await assert.rejects(runWorkflow({ workflow: './nope.ts', cwd: p.cwd, runner: makeRunner().runner }, scriptDeps(async () => null)), WorkflowNotFoundError)
       await assert.rejects(
         runWorkflow({ workflow: '', cwd: p.cwd, runner: makeRunner().runner }, scriptDeps(async () => null)),
@@ -192,7 +192,7 @@ describe('chyby skriptu a použití', () => {
     }
   })
 
-  test('agent() s neprázdným promptem je povinný a isolation je odmítnuto jasnou chybou', async () => {
+  test('agent() requires a non-empty prompt and isolation is rejected with a clear error', async () => {
     const p = makeProject()
     try {
       const stub = makeRunner()
@@ -217,7 +217,7 @@ describe('chyby skriptu a použití', () => {
     }
   })
 
-  test('chyba v onEvent callbacku běh neovlivní', async () => {
+  test('error in onEvent callback does not affect the run', async () => {
     const p = makeProject()
     try {
       const summary = await runWorkflow(
@@ -226,7 +226,7 @@ describe('chyby skriptu a použití', () => {
           cwd: p.cwd,
           runner: makeRunner().runner,
           onEvent: () => {
-            throw new Error('callback selhal')
+            throw new Error('callback failed')
           },
         },
         scriptDeps(async (api) => api.agent('x')),
@@ -238,15 +238,15 @@ describe('chyby skriptu a použití', () => {
     }
   })
 
-  test('varování z parseru se objeví jako log události', async () => {
+  test('parser warnings appear as log events', async () => {
     const p = makeProject()
     try {
       const deps = scriptDeps(async () => null)
-      deps.parseScript = () => ({ ok: true, meta: { name: 'w', description: 'd' }, diagnostics: [{ level: 'warning', message: 'phase X není v meta', line: 7 }] })
+      deps.parseScript = () => ({ ok: true, meta: { name: 'w', description: 'd' }, diagnostics: [{ level: 'warning', message: 'phase X is not in meta', line: 7 }] })
       const summary = await runWorkflow({ workflow: p.script(), cwd: p.cwd, runner: makeRunner().runner }, deps)
       const logs = eventsOf(summary).filter((e) => e.t === 'log')
       assert.equal(logs.length, 1)
-      assert.ok(logs[0].t === 'log' && /řádek 7.*phase X/.test(logs[0].message))
+      assert.ok(logs[0].t === 'log' && /line 7.*phase X/.test(logs[0].message))
     } finally {
       p.cleanup()
     }
@@ -254,7 +254,7 @@ describe('chyby skriptu a použití', () => {
 })
 
 describe('abort', () => {
-  test('abort za běhu: status aborted, procesy uklizeny, journal zachován a běh jde obnovit', async () => {
+  test('abort during the run: status aborted, processes cleaned up, journal kept and the run can be resumed', async () => {
     const p = makeProject()
     try {
       const file = p.script()
@@ -274,11 +274,11 @@ describe('abort', () => {
       await waitFor(() => seen.filter((e) => e.t === 'agent_start' && e.promptPreview.startsWith('slow')).length === 2)
       ac.abort()
       const s1 = await promise
-      assert.ok(Date.now() - t0 < 3000, 'abort musí běh ukončit rychle')
+      assert.ok(Date.now() - t0 < 3000, 'abort must end the run quickly')
       assert.equal(s1.status, 'aborted')
       assert.equal(stub.inFlight, 0)
-      assert.ok(stub.calls[1].signal?.aborted && stub.calls[2].signal?.aborted, 'signal se musí předat runneru')
-      // run.json je konzistentní a čitelný
+      assert.ok(stub.calls[1].signal?.aborted && stub.calls[2].signal?.aborted, 'signal must be passed to the runner')
+      // run.json is consistent and readable
       const onDisk = readJsonFile(join(s1.runDir, 'run.json'))
       assert.equal(onDisk.status, 'aborted')
       assert.ok(onDisk.endedAt)
@@ -287,10 +287,10 @@ describe('abort', () => {
       const events = eventsOf(s1)
       const end = events[events.length - 1]
       assert.ok(end.t === 'run_end' && end.status === 'aborted')
-      // journal: jen dokončený agent
+      // journal: only the completed agent
       assert.deepEqual(journalOf(s1).map((e) => e.label), ['fast'])
 
-      // resume doběhne bez opakování 'fast'
+      // resume finishes without repeating 'fast'
       const stub2 = makeRunner()
       const s2 = await runWorkflow({ workflow: file, cwd: p.cwd, runner: stub2.runner, resumeRunId: s1.runId }, body)
       assert.equal(s2.status, 'completed')
@@ -301,7 +301,7 @@ describe('abort', () => {
     }
   })
 
-  test('abort ve frontě za semaforem: čekající agenti se nespustí a vrací null', async () => {
+  test('abort while queued behind the semaphore: waiting agents are not started and return null', async () => {
     const p = makeProject()
     try {
       const ac = new AbortController()
@@ -321,7 +321,7 @@ describe('abort', () => {
     }
   })
 
-  test('skript, který abort ignoruje a visí, se po grace době uzavře jako aborted', async () => {
+  test('a script that ignores abort and hangs is closed as aborted after the grace period', async () => {
     const p = makeProject()
     try {
       const ac = new AbortController()
@@ -345,18 +345,18 @@ describe('abort', () => {
     }
   })
 
-  test('opožděný výsledek agenta po uzavření běhu nic nepřidá za run_end ani do journalu', async () => {
+  test('a late agent result after the run is closed adds nothing after run_end or to the journal', async () => {
     const p = makeProject()
     try {
       const ac = new AbortController()
       let calls = 0
-      // runner ignoruje signal a skončí až po 250 ms (už po uzavření běhu)
+      // the runner ignores the signal and finishes only after 250 ms (already after the run is closed)
       const stuckRunner = async () => {
         calls++
         await sleep(250)
         return {
           ok: true,
-          text: 'pozdě',
+          text: 'late',
           structured: undefined,
           usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0 },
           costUsd: 0.1,
@@ -367,8 +367,8 @@ describe('abort', () => {
         }
       }
       const deps = scriptDeps(async (api) => {
-        await api.agent('visí')
-        return 'nikdy'
+        await api.agent('hangs')
+        return 'never'
       })
       const promise = runWorkflow({ workflow: p.script(), cwd: p.cwd, runner: stuckRunner, signal: ac.signal }, { ...deps, abortGraceMs: 40 })
       await waitFor(() => calls === 1)
@@ -387,7 +387,7 @@ describe('abort', () => {
     }
   })
 
-  test('signál přerušený před startem: skript ani runner se nespustí, běh je aborted a resumovatelný', async () => {
+  test('signal aborted before start: neither the script nor the runner starts, the run is aborted and resumable', async () => {
     const p = makeProject()
     try {
       const stub = makeRunner()
@@ -408,7 +408,7 @@ describe('abort', () => {
     }
   })
 
-  test('nedoawaitovaný agent po skončení skriptu je zrušen (žádní sirotci) a běh se nezasekne', async () => {
+  test('a non-awaited agent after the script ends is cancelled (no orphans) and the run does not hang', async () => {
     const p = makeProject()
     try {
       const stub = makeRunner({ delayMs: 10_000 })
@@ -418,7 +418,7 @@ describe('abort', () => {
         scriptDeps(async (api) => {
           void api.agent('fire and forget')
           await sleep(20)
-          return 'hotovo'
+          return 'done'
         }),
       )
       assert.ok(Date.now() - t0 < 3000)

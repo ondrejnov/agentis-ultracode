@@ -220,77 +220,6 @@ Subagenti dostávají `CLAUDE_CODE_DISABLE_WORKFLOWS=1`, aby z nich nevznikala r
 - Agenti sdílejí jeden working tree: workflow, které zapisuje, musí rozdělit práci po disjunktních cestách.
 - `--max-usd` a `--max-tokens` nastavuj u každého nového fan-outu.
 
-## Integrace do Agentisu
-
-Adapter spouští workflow jako YAML s bash kroky; `ultracode` se zavolá z kroku, jeho JSON výstup se
-zpracuje deterministicky a publikuje jako komentář do tasku. Příklad `.agentis/workflows/ultracode-audit.yaml`
-(pojmenované workflow — output root je `$AGENTIS_RUN_DIR`, proto `outputs/…`):
-
-```yaml
-version: 1
-extends: _base
-# Spouští se přes adapter option `workflow = ultracode-audit` (nebo followup akcí).
-# Image musí obsahovat node >= 22.18, `ultracode`, `claude` (přihlášený přes mounty ~/.claude z _base.yaml) a `jq`.
-workflow:
-  timeoutSeconds: 14400
-  env:
-    ULTRACODE_WORKFLOW: audit-routes
-    ULTRACODE_MAX_USD: "20"
-    ULTRACODE_MAX_CONCURRENCY: "8"
-  steps:
-    - name: Run ultracode
-      run: |
-        mkdir -p "$AGENTIS_RUN_DIR/outputs"
-        # Zadání z tasku jde do args jako DATA (jq), ne do shellu.
-        ARGS="$(jq -Rn --rawfile scope "$AGENTIS_PROMPT_FILE" '{root: ".", scope: $scope, language: "česky"}')"
-        status=0
-        ultracode run "$ULTRACODE_WORKFLOW" \
-          --cwd "$WORKDIR" \
-          --args "$ARGS" \
-          --max-usd "$ULTRACODE_MAX_USD" \
-          --run-id "agentis-$AGENTIS_RUN_ID" \
-          --json \
-          > "$AGENTIS_RUN_DIR/outputs/run.json" || status=$?
-        # exit 1 = běh selhal (shrnutí je v run.json), 2 = chybné použití; krok v obou případech selže
-        exit "$status"
-      outputs:
-        - type: artifact
-          name: Ultracode run summary
-          path: outputs/run.json
-
-    - name: Render report
-      run: |
-        jq -r '
-          "## Audit routes\n\n"
-          + (.result.report.summary // "Bez souhrnu.")
-          + "\n\n**Souborů:** \(.result.stats.files // 0), **potvrzených nálezů:** \(.result.stats.confirmed // 0), "
-          + "**náklady:** $\(.totals.costUsd // 0 | . * 100 | round / 100)\n\n"
-          + ((.result.confirmed // []) | map("- **\(.severity)** `\(.file)`: \(.title)") | join("\n"))
-        ' "$AGENTIS_RUN_DIR/outputs/run.json" > "$AGENTIS_RUN_DIR/outputs/report.md"
-      outputs:
-        - type: agent_comment
-          bodyFrom: outputs/report.md
-          name: Ultracode audit
-          status: done
-
-    - name: Report failure
-      always: true
-      run: |
-        [ "${AGENTIS_WORKFLOW_STATUS:-success}" = "failed" ] || exit 0
-        mkdir -p "$AGENTIS_RUN_DIR/outputs"
-        error="$(jq -r '.error // "neznámá chyba"' "$AGENTIS_RUN_DIR/outputs/run.json" 2>/dev/null | head -c 1500 || true)"
-        printf 'Ultracode skončil chybou v kroku „%s“.\n\n```\n%s\n```\n' "${AGENTIS_FAILED_STEP:-?}" "$error" \
-          > "$AGENTIS_RUN_DIR/outputs/failure.md"
-      outputs:
-        - type: agent_comment
-          bodyFrom: outputs/failure.md
-          status: blocked
-```
-
-> [!NOTE]
-> Příklad je ověřený validátorem Agentis adapteru (`validate_workflow.py`), ne živým během. Skript
-> `audit-routes` musí být dostupný v projektu v `.ultracode/workflows/` (nebo přes
-> `ULTRACODE_WORKFLOWS_DIR`) a `.ultracode/runs/` patří do `.gitignore`.
 
 ## Srovnání s workflow v Claude Code
 
@@ -321,7 +250,6 @@ Mimo rozsah verze 1, v pořadí, v jakém dávají smysl:
 4. **Stagger prompt-cache** — rozložení startu agentů se sdíleným prefixem, ať se cache zahřeje jednou.
 5. **Čekání na usage limit** — pauza běhu a automatické pokračování místo `null` u agentů.
 6. **Pauza a restart jednotlivého agenta.**
-7. **Nativní Agentis integrace** — dnes jen bash krok z příkladu výše.
 
 Známá omezení verze 1:
 

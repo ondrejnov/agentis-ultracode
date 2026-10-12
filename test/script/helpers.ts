@@ -1,5 +1,5 @@
 /**
- * Pomocné funkce pro testy modulu SCRIPT: mock hooků enginu (žádný reálný claude) a zkratky pro runScript.
+ * Helper functions for SCRIPT module tests: engine hook mock (no real claude) and shortcuts for runScript.
  */
 
 import { runScript } from '../../src/script/host.ts'
@@ -17,7 +17,7 @@ export type RecordedEvent =
 export interface MockHooks {
   hooks: ScriptHooks
   events: RecordedEvent[]
-  /** Všechna agent() volání (prompty) v pořadí příchodu. */
+  /** All agent() calls (prompts) in order of arrival. */
   prompts(): string[]
   logs(): string[]
 }
@@ -44,7 +44,7 @@ export function makeHooks(options: MockOptions = {}): MockHooks {
     async loadWorkflow(ref, call) {
       events.push({ t: 'load', ref, call })
       if (options.loadWorkflow) return options.loadWorkflow(ref, call)
-      throw new Error('loadWorkflow není v testu nastaven')
+      throw new Error('loadWorkflow is not configured in this test')
     },
     workflowEnter(name, call) {
       events.push({ t: 'enter', name, call })
@@ -71,7 +71,7 @@ export function budgetBuffer(init: { spent?: number; total?: number; spentUsd?: 
   return buf
 }
 
-/** Minimální platné meta; tělo skriptu začíná na ŘÁDKU 2. */
+/** Minimal valid meta; the script body starts on LINE 2. */
 export const META = "export const meta = { name: 't', description: 'test' }\n"
 
 export interface RunOpts {
@@ -83,7 +83,7 @@ export interface RunOpts {
   filename?: string
 }
 
-/** Spustí `body` (s přidaným meta na řádku 1). */
+/** Runs `body` (with meta added on line 1). */
 export function run(body: string, opts: RunOpts = {}): Promise<RunScriptResult> {
   return runWithMeta(META + body, opts)
 }
@@ -100,7 +100,7 @@ export function runWithMeta(source: string, opts: RunOpts = {}): Promise<RunScri
   })
 }
 
-/** Ruční Promise, kterou test vyřeší, až chce. */
+/** Manual Promise, resolved by the test when it wants. */
 export interface Deferred<T> {
   promise: Promise<T>
   resolve(value: T): void
@@ -117,11 +117,11 @@ export function deferred<T>(): Deferred<T> {
   return { promise, resolve, reject }
 }
 
-/** Počká, až `predicate()` začne platit (kontrola po 5 ms), nebo vyhodí po `timeoutMs`. */
-export async function waitFor(predicate: () => boolean, timeoutMs = 5000, what = 'podmínka'): Promise<void> {
+/** Waits until `predicate()` becomes true (checked every 5 ms), or throws after `timeoutMs`. */
+export async function waitFor(predicate: () => boolean, timeoutMs = 5000, what = 'condition'): Promise<void> {
   const start = Date.now()
   while (!predicate()) {
-    if (Date.now() - start > timeoutMs) throw new Error(`Timeout při čekání na: ${what}`)
+    if (Date.now() - start > timeoutMs) throw new Error(`Timeout while waiting for: ${what}`)
     await new Promise((r) => setTimeout(r, 5))
   }
 }

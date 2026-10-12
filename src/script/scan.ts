@@ -1,16 +1,16 @@
 /**
- * Minimální lexikální skener JavaScriptu/TypeScriptu pro statickou analýzu skriptů workflow.
+ * Minimal lexical scanner for JavaScript/TypeScript for static analysis of workflow scripts.
  *
- * Nepoužívá žádný parser; ví jen o tom, co je „kód“ a co je řetězec, šablona, komentář nebo regex literál.
- * Výsledkem je „maskovaná“ kopie zdroje (stejná délka, tedy stejné offsety i čísla řádků), ve které je obsah
- * řetězců/komentářů/regexů nahrazen mezerami. Nad ní pak jde bezpečně hledat klíčová slova pomocí regexů
- * (`import`, `require(`, `Date.now`, …) bez falešných poplachů z textu v řetězcích.
+ * Uses no parser; it only knows what is “code” and what is a string, template, comment or regex literal.
+ * The result is a “masked” copy of the source (same length, hence the same offsets and line numbers), in which the content
+ * of strings/comments/regexes is replaced by spaces. Keywords can then be safely searched for with regexes
+ * (`import`, `require(`, `Date.now`, …) without false alarms from text inside strings.
  *
- * Pravidla masky:
- *  - komentáře: celé nahrazeny mezerami (konce řádků zachovány),
- *  - řetězce '…' a "…": uvozovky zůstanou, obsah → mezery,
- *  - šablony `…`: zpětné apostrofy zůstanou, textový obsah → mezery, výrazy uvnitř `${ … }` zůstanou jako kód,
- *  - regex literály: celé → mezery (lomítka zůstanou nezměněná jen u dělení).
+ * Masking rules:
+ *  - comments: entirely replaced by spaces (line ends kept),
+ *  - strings '…' and "…": quotes stay, content → spaces,
+ *  - templates `…`: backticks stay, text content → spaces, expressions inside `${ … }` stay as code,
+ *  - regex literals: entirely → spaces (slashes stay unchanged only for division).
  */
 
 export interface ScanProblem {
@@ -19,15 +19,15 @@ export interface ScanProblem {
 }
 
 export interface ScanResult {
-  /** Stejně dlouhý text jako zdroj; obsah řetězců, komentářů a regexů je nahrazen mezerami. */
+  /** Text of the same length as the source; the content of strings, comments and regexes is replaced by spaces. */
   masked: string
-  /** Offsety sekvencí `${` ve všech šablonových literálech. */
+  /** Offsets of `${` sequences in all template literals. */
   substitutions: number[]
-  /** Neukončený řetězec/komentář/šablona apod. */
+  /** Unterminated string/comment/template etc. */
   problems: ScanProblem[]
 }
 
-/** Klíčová slova, po kterých následující `/` začíná regex (ne dělení). */
+/** Keywords after which a following `/` starts a regex (not division). */
 const REGEX_AFTER_WORD = new Set([
   'return', 'typeof', 'instanceof', 'in', 'of', 'new', 'delete', 'void', 'throw', 'case', 'do', 'else', 'yield', 'await',
 ])
@@ -38,12 +38,12 @@ type Prev =
   | { kind: 'word'; value: string }
   | { kind: 'value' }
 
-/** Konec řádku podle ECMAScript (LF, CR, U+2028, U+2029). */
+/** Line terminator per ECMAScript (LF, CR, U+2028, U+2029). */
 const isLineBreak = (ch: string): boolean => {
   const code = ch.charCodeAt(0)
   return code === 10 || code === 13 || code === 0x2028 || code === 0x2029
 }
-/** Bílý znak mimo konce řádků nebo konec řádku (NBSP a BOM se berou jako mezera). */
+/** Whitespace other than line terminators, or a line terminator (NBSP and BOM count as space). */
 const isWhitespace = (ch: string): boolean => {
   const code = ch.charCodeAt(0)
   return code === 32 || code === 9 || code === 11 || code === 12 || code === 0xa0 || code === 0xfeff || isLineBreak(ch)
@@ -58,7 +58,7 @@ export function scanSource(src: string): ScanResult {
   const substitutions: number[] = []
   const problems: ScanProblem[] = []
 
-  /** Nahradí znaky <from, to) mezerami, konce řádků nechá. */
+  /** Replaces characters <from, to) with spaces, keeps line terminators. */
   const blank = (from: number, to: number): void => {
     for (let k = from; k < to; k++) {
       const ch = chars[k]!
@@ -66,7 +66,7 @@ export function scanSource(src: string): ScanResult {
     }
   }
 
-  /** Řetězec začínající uvozovkou na `i`; vrací index za koncovou uvozovkou. */
+  /** String starting with a quote at `i`; returns the index after the closing quote. */
   const scanString = (i: number, quote: string): number => {
     let k = i + 1
     while (k < n) {
@@ -80,18 +80,18 @@ export function scanSource(src: string): ScanResult {
         return k + 1
       }
       if (ch === '\n' || ch === '\r') {
-        problems.push({ message: 'neukončený řetězec', offset: i })
+        problems.push({ message: 'unterminated string', offset: i })
         blank(i + 1, k)
         return k
       }
       k++
     }
-    problems.push({ message: 'neukončený řetězec', offset: i })
+    problems.push({ message: 'unterminated string', offset: i })
     blank(i + 1, n)
     return n
   }
 
-  /** Šablonový literál začínající zpětným apostrofem na `i`; vrací index za koncovým apostrofem. */
+  /** Template literal starting with a backtick at `i`; returns the index after the closing backtick. */
   const scanTemplate = (i: number): number => {
     let k = i + 1
     let textStart = k
@@ -114,12 +114,12 @@ export function scanSource(src: string): ScanResult {
       }
       k++
     }
-    problems.push({ message: 'neukončená šablona', offset: i })
+    problems.push({ message: 'unterminated template', offset: i })
     blank(textStart, n)
     return n
   }
 
-  /** Pokus o regex literál na `i`. Vrací index za ním, nebo -1 (pak je `/` dělení). */
+  /** Attempt at a regex literal at `i`. Returns the index after it, or -1 (then `/` is division). */
   const tryRegex = (i: number): number => {
     let k = i + 1
     let inClass = false
@@ -145,7 +145,7 @@ export function scanSource(src: string): ScanResult {
   }
 
   /**
-   * Skenuje kód od `start`. V režimu `inSubst` skončí na uzavírací `}` odpovídající `${` a vrátí index za ní.
+   * Scans code from `start`. In `inSubst` mode it ends at the closing `}` matching `${` and returns the index after it.
    */
   const scanCode = (start: number, inSubst: boolean): number => {
     let i = start
@@ -167,7 +167,7 @@ export function scanSource(src: string): ScanResult {
       if (c === '/' && src[i + 1] === '*') {
         const end = src.indexOf('*/', i + 2)
         if (end < 0) {
-          problems.push({ message: 'neukončený komentář', offset: i })
+          problems.push({ message: 'unterminated comment', offset: i })
           blank(i, n)
           return n
         }
@@ -220,7 +220,7 @@ export function scanSource(src: string): ScanResult {
         let k = i + 1
         while (k < n && isIdentPart(src[k]!)) k++
         const word = src.slice(i, k)
-        // `a.in / 2` – slovo za tečkou je vlastnost, ne klíčové slovo
+        // `a.in / 2` – a word after a dot is a property, not a keyword
         const afterDot: boolean = prev.kind === 'punct' && prev.value === '.'
         prev = afterDot ? { kind: 'value' } : { kind: 'word', value: word }
         i = k
@@ -236,7 +236,7 @@ export function scanSource(src: string): ScanResult {
       prev = { kind: 'punct', value: c }
       i++
     }
-    if (inSubst) problems.push({ message: 'neukončený výraz ${ } v šabloně', offset: start })
+    if (inSubst) problems.push({ message: 'unterminated ${ } expression in template', offset: start })
     return n
   }
 
@@ -244,7 +244,7 @@ export function scanSource(src: string): ScanResult {
   return { masked: chars.join(''), substitutions, problems }
 }
 
-/** Tabulka začátků řádků pro převod offset → číslo řádku (1-based). */
+/** Table of line starts for converting offset → line number (1-based). */
 export function buildLineIndex(src: string): number[] {
   const starts = [0]
   for (let i = 0; i < src.length; i++) {

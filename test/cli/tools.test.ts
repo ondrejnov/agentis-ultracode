@@ -10,13 +10,13 @@ import { makeDiscovery, makeIO, tmpDir, writeFile } from './helpers.ts'
 
 const REAL_ROOT = join(import.meta.dirname, '..', '..')
 
-/** Fake parser: řídí se obsahem souboru. */
+/** Fake parser: behaves according to the file content. */
 const fakeParse: ParseScriptFn = (source, filename) => {
   const diagnostics: Array<{ level: 'error' | 'warning'; message: string; line?: number }> = []
-  if (source.includes('BAD')) diagnostics.push({ level: 'error', message: 'chybí export const meta', line: 1 })
+  if (source.includes('BAD')) diagnostics.push({ level: 'error', message: 'missing export const meta', line: 1 })
   if (source.includes('SYNTAX')) diagnostics.push({ level: 'error', message: 'Unexpected token', line: 12 })
-  if (source.includes('WARN')) diagnostics.push({ level: 'warning', message: 'fáze „X“ není v meta.phases', line: 7 })
-  if (source.includes('THROW')) throw new Error(`parser spadl na ${filename}`)
+  if (source.includes('WARN')) diagnostics.push({ level: 'warning', message: 'phase “X” is not in meta.phases', line: 7 })
+  if (source.includes('THROW')) throw new Error(`parser crashed on ${filename}`)
   const ok = !diagnostics.some((d) => d.level === 'error')
   return {
     ok,
@@ -27,38 +27,38 @@ const fakeParse: ParseScriptFn = (source, filename) => {
 }
 
 describe('validate', () => {
-  it('platný skript → OK, exit 0, výstup na stdout', async () => {
+  it('valid script → OK, exit 0, output on stdout', async () => {
     const dir = tmpDir()
     writeFile(join(dir, 'a.workflow.ts'), 'GOOD')
     const cap = makeIO({ cwd: dir })
     const code = await main(['validate', 'a.workflow.ts'], cap.io, { parseScript: fakeParse })
     assert.equal(code, 0)
-    assert.match(cap.out(), /^OK {2}a\.workflow\.ts {2}\(fake, 2 fáze\)/)
-    assert.match(cap.out(), /Vše v pořádku \(1 soubor\)/)
+    assert.match(cap.out(), /^OK {2}a\.workflow\.ts {2}\(fake, 2 phases\)/)
+    assert.match(cap.out(), /All good \(1 file\)/)
     assert.equal(cap.err(), '')
   })
 
-  it('chyba s řádkem → exit 2, výpis path:řádek', async () => {
+  it('error with a line → exit 2, output path:line', async () => {
     const dir = tmpDir()
     writeFile(join(dir, 'bad.ts'), 'BAD SYNTAX')
     const cap = makeIO({ cwd: dir })
     const code = await main(['validate', 'bad.ts'], cap.io, { parseScript: fakeParse })
     assert.equal(code, 2)
-    assert.match(cap.out(), /^CHYBA {2}bad\.ts/)
-    assert.match(cap.out(), /bad\.ts:1: chyba: chybí export const meta/)
-    assert.match(cap.out(), /bad\.ts:12: chyba: Unexpected token/)
-    assert.match(cap.out(), /Neplatné skripty: 1 z 1/)
+    assert.match(cap.out(), /^ERROR {2}bad\.ts/)
+    assert.match(cap.out(), /bad\.ts:1: error: missing export const meta/)
+    assert.match(cap.out(), /bad\.ts:12: error: Unexpected token/)
+    assert.match(cap.out(), /Invalid scripts: 1 of 1\./)
   })
 
-  it('samotné varování nevadí (exit 0) a je vypsáno', async () => {
+  it('a warning alone does not fail (exit 0) and is printed', async () => {
     const dir = tmpDir()
     writeFile(join(dir, 'w.ts'), 'WARN')
     const cap = makeIO({ cwd: dir })
     assert.equal(await main(['validate', 'w.ts'], cap.io, { parseScript: fakeParse }), 0)
-    assert.match(cap.out(), /w\.ts:7: varování: fáze „X“/)
+    assert.match(cap.out(), /w\.ts:7: warning: phase “X”/)
   })
 
-  it('více souborů: jeden špatný → exit 2, ostatní se zkontrolují', async () => {
+  it('multiple files: one bad → exit 2, the others are still checked', async () => {
     const dir = tmpDir()
     writeFile(join(dir, 'ok.ts'), 'GOOD')
     writeFile(join(dir, 'bad.ts'), 'BAD')
@@ -66,25 +66,25 @@ describe('validate', () => {
     const code = await main(['validate', 'ok.ts', 'bad.ts', 'ok.ts'], cap.io, { parseScript: fakeParse })
     assert.equal(code, 2)
     assert.equal((cap.out().match(/^OK /gm) ?? []).length, 2)
-    assert.match(cap.out(), /Neplatné skripty: 1 z 3/)
+    assert.match(cap.out(), /Invalid scripts: 1 of 3\./)
   })
 
-  it('neexistující soubor a adresář → exit 2', async () => {
+  it('non-existent file and a directory → exit 2', async () => {
     const dir = tmpDir()
     const cap = makeIO({ cwd: dir })
-    assert.equal(await main(['validate', 'nic.workflow.ts', '.'], cap.io, { parseScript: fakeParse }), 2)
-    assert.match(cap.out(), /soubor nelze přečíst/)
+    assert.equal(await main(['validate', 'nothing.workflow.ts', '.'], cap.io, { parseScript: fakeParse }), 2)
+    assert.match(cap.out(), /file cannot be read/)
   })
 
-  it('výjimka parseru neshodí příkaz', async () => {
+  it('a parser exception does not crash the command', async () => {
     const dir = tmpDir()
     writeFile(join(dir, 't.ts'), 'THROW')
     const cap = makeIO({ cwd: dir })
     assert.equal(await main(['validate', 't.ts'], cap.io, { parseScript: fakeParse }), 2)
-    assert.match(cap.out(), /parser selhal: parser spadl/)
+    assert.match(cap.out(), /parser failed: parser crashed/)
   })
 
-  it('jméno workflow se dohledá přes discovery', async () => {
+  it('workflow name is resolved via discovery', async () => {
     const dir = tmpDir()
     const p = join(dir, 'elsewhere', 'x.workflow.ts')
     writeFile(p, 'GOOD')
@@ -93,7 +93,7 @@ describe('validate', () => {
     assert.equal(code, 0)
   })
 
-  it('--json: pole reportů; bez cesty → exit 2', async () => {
+  it('--json: array of reports; without a path → exit 2', async () => {
     const dir = tmpDir()
     writeFile(join(dir, 'a.ts'), 'GOOD')
     writeFile(join(dir, 'b.ts'), 'BAD')
@@ -107,21 +107,21 @@ describe('validate', () => {
     assert.equal(await main(['validate'], none.io, { parseScript: fakeParse }), 2)
   })
 
-  it('šablona hello.workflow.ts projde skutečným parserem (pokud je k dispozici)', async (t) => {
+  it('hello.workflow.ts template passes the real parser (if available)', async (t) => {
     let parse: ParseScriptFn
     try {
       parse = (await import('../../src/script/parse.ts')).parseScript
     } catch {
-      t.skip('src/script/parse.ts zatím není k dispozici')
+      t.skip('src/script/parse.ts is not available yet')
       return
     }
     const res = parse(HELLO_WORKFLOW, 'hello.workflow.ts')
-    assert.deepEqual(res.diagnostics.filter((d) => d.level === 'error'), [], 'šablona nesmí mít chyby')
+    assert.deepEqual(res.diagnostics.filter((d) => d.level === 'error'), [], 'template must not contain errors')
     assert.equal(res.ok, true)
     assert.equal(res.meta?.name, 'hello')
   })
 
-  it('titul phase() v šabloně odpovídá meta.phases', () => {
+  it('phase() titles in the template match meta.phases', () => {
     const used = [...HELLO_WORKFLOW.matchAll(/phase\('([^']+)'\)/g)].map((m) => m[1])
     const declared = [...HELLO_WORKFLOW.matchAll(/title: '([^']+)'/g)].map((m) => m[1])
     assert.deepEqual(used, declared)
@@ -132,13 +132,13 @@ function fakePackage(): string {
   const root = tmpDir('uc-pkg-')
   writeFile(join(root, 'package.json'), JSON.stringify({ name: 'x', version: '9.8.7' }))
   writeFile(join(root, 'types', 'workflow.d.ts'), 'declare function agent(): void\n')
-  writeFile(join(root, 'skills', 'ultracode-workflow', 'SKILL.md'), '---\nname: ultracode-workflow\n---\nobsah\n')
+  writeFile(join(root, 'skills', 'ultracode-workflow', 'SKILL.md'), '---\nname: ultracode-workflow\n---\ncontent\n')
   writeFile(join(root, 'skills', 'ultracode-workflow', 'references', 'api.md'), 'API\n')
   return root
 }
 
 describe('types', () => {
-  it('default: zapíše <cwd>/.ultracode/workflow.d.ts a vypíše reference path', async () => {
+  it('default: writes <cwd>/.ultracode/workflow.d.ts and prints the reference path', async () => {
     const root = fakePackage()
     const cwd = tmpDir()
     const cap = makeIO({ cwd })
@@ -146,36 +146,36 @@ describe('types', () => {
     assert.equal(code, 0)
     assert.equal(readFileSync(join(cwd, '.ultracode', 'workflow.d.ts'), 'utf8'), 'declare function agent(): void\n')
     assert.equal(cap.out(), '/// <reference path="../workflow.d.ts" />\n')
-    assert.match(cap.err(), /Typy zapsány: .*workflow\.d\.ts/)
+    assert.match(cap.err(), /Types written: .*workflow\.d\.ts/)
   })
 
-  it('--out relativní k cwd procesu, reference path vůči .ultracode/workflows', async () => {
+  it('--out is relative to the process cwd, reference path relative to .ultracode/workflows', async () => {
     const root = fakePackage()
     const cwd = tmpDir()
     const cap = makeIO({ cwd })
-    const code = await main(['types', '--out', 'typy/ven'], cap.io, { packageRoot: root })
+    const code = await main(['types', '--out', 'types/out'], cap.io, { packageRoot: root })
     assert.equal(code, 0)
-    assert.ok(existsSync(join(cwd, 'typy', 'ven', 'workflow.d.ts')))
-    assert.equal(cap.out(), '/// <reference path="../../typy/ven/workflow.d.ts" />\n')
+    assert.ok(existsSync(join(cwd, 'types', 'out', 'workflow.d.ts')))
+    assert.equal(cap.out(), '/// <reference path="../../types/out/workflow.d.ts" />\n')
   })
 
-  it('přepíše starší verzi typů', async () => {
+  it('overwrites an older version of the types', async () => {
     const root = fakePackage()
     const cwd = tmpDir()
-    writeFile(join(cwd, '.ultracode', 'workflow.d.ts'), 'STARE')
+    writeFile(join(cwd, '.ultracode', 'workflow.d.ts'), 'OLD')
     await main(['types'], makeIO({ cwd }).io, { packageRoot: root })
     assert.match(readFileSync(join(cwd, '.ultracode', 'workflow.d.ts'), 'utf8'), /declare function agent/)
   })
 
-  it('chybějící zdrojový soubor → exit 1; zbytečné argumenty → 2', async () => {
+  it('missing source file → exit 1; superfluous arguments → 2', async () => {
     const cwd = tmpDir()
     const cap = makeIO({ cwd })
     assert.equal(await main(['types'], cap.io, { packageRoot: tmpDir() }), 1)
-    assert.match(cap.err(), /Zápis typů selhal/)
+    assert.match(cap.err(), /Writing types failed/)
     assert.equal(await main(['types', 'extra'], makeIO({ cwd }).io, { packageRoot: fakePackage() }), 2)
   })
 
-  it('skutečný balíček obsahuje types/workflow.d.ts', async () => {
+  it('the real package contains types/workflow.d.ts', async () => {
     const cwd = tmpDir()
     const cap = makeIO({ cwd })
     assert.equal(await main(['types'], cap.io, { packageRoot: REAL_ROOT }), 0)
@@ -184,19 +184,19 @@ describe('types', () => {
 })
 
 describe('skill install', () => {
-  it('--project kopíruje celý strom do <cwd>/.claude/skills/ultracode-workflow', async () => {
+  it('--project copies the whole tree to <cwd>/.claude/skills/ultracode-workflow', async () => {
     const root = fakePackage()
     const cwd = tmpDir()
     const cap = makeIO({ cwd })
     const code = await main(['skill', 'install', '--project'], cap.io, { packageRoot: root })
     assert.equal(code, 0)
     const dest = join(cwd, '.claude', 'skills', 'ultracode-workflow')
-    assert.match(readFileSync(join(dest, 'SKILL.md'), 'utf8'), /obsah/)
+    assert.match(readFileSync(join(dest, 'SKILL.md'), 'utf8'), /content/)
     assert.equal(readFileSync(join(dest, 'references', 'api.md'), 'utf8'), 'API\n')
-    assert.match(cap.out(), /nainstalován \(2 souborů\)/)
+    assert.match(cap.out(), /installed \(2 files\)/)
   })
 
-  it('default (--user) jde do $HOME/.claude/skills; CLAUDE_CONFIG_DIR má přednost', async () => {
+  it('default (--user) goes to $HOME/.claude/skills; CLAUDE_CONFIG_DIR takes precedence', async () => {
     const root = fakePackage()
     const home = tmpDir()
     const a = makeIO({ cwd: tmpDir(), env: { HOME: home } })
@@ -209,35 +209,35 @@ describe('skill install', () => {
     assert.ok(existsSync(join(cfg, 'skills', 'ultracode-workflow', 'SKILL.md')))
   })
 
-  it('nic nepřepisuje bez --force; s --force přepíše', async () => {
+  it('overwrites nothing without --force; with --force it overwrites', async () => {
     const root = fakePackage()
     const cwd = tmpDir()
     const dest = join(cwd, '.claude', 'skills', 'ultracode-workflow')
-    writeFile(join(dest, 'SKILL.md'), 'MOJE ÚPRAVY')
+    writeFile(join(dest, 'SKILL.md'), 'MY EDITS')
 
     const cap = makeIO({ cwd })
     const code = await main(['skill', 'install', '--project'], cap.io, { packageRoot: root })
     assert.equal(code, 2)
     assert.match(cap.err(), /--force/)
-    assert.equal(readFileSync(join(dest, 'SKILL.md'), 'utf8'), 'MOJE ÚPRAVY', 'soubor nesmí být přepsán')
-    assert.ok(!existsSync(join(dest, 'references')), 'nesmí se zkopírovat ani zbytek')
+    assert.equal(readFileSync(join(dest, 'SKILL.md'), 'utf8'), 'MY EDITS', 'file must not be overwritten')
+    assert.ok(!existsSync(join(dest, 'references')), 'the rest must not be copied either')
 
     const forced = makeIO({ cwd })
     assert.equal(await main(['skill', 'install', '--project', '--force'], forced.io, { packageRoot: root }), 0)
-    assert.match(readFileSync(join(dest, 'SKILL.md'), 'utf8'), /obsah/)
+    assert.match(readFileSync(join(dest, 'SKILL.md'), 'utf8'), /content/)
     assert.ok(existsSync(join(dest, 'references', 'api.md')))
   })
 
-  it('opakovaná instalace identického skillu je OK i bez --force', async () => {
+  it('repeated install of an identical skill is OK even without --force', async () => {
     const root = fakePackage()
     const cwd = tmpDir()
     await main(['skill', 'install', '--project'], makeIO({ cwd }).io, { packageRoot: root })
     const cap = makeIO({ cwd })
     assert.equal(await main(['skill', 'install', '--project'], cap.io, { packageRoot: root }), 0)
-    assert.match(cap.out(), /již nainstalován a aktuální/)
+    assert.match(cap.out(), /already installed and up to date/)
   })
 
-  it('--user a --project současně / bez podpříkazu / neznámý podpříkaz → 2', async () => {
+  it('--user and --project together / no subcommand / unknown subcommand → 2', async () => {
     const root = fakePackage()
     const e = (argv: string[]) => main(argv, makeIO({ cwd: tmpDir() }).io, { packageRoot: root })
     assert.equal(await e(['skill', 'install', '--user', '--project']), 2)
@@ -245,16 +245,16 @@ describe('skill install', () => {
     assert.equal(await e(['skill', 'remove']), 2)
   })
 
-  it('balíček bez skillu → exit 1', async () => {
+  it('package without a skill → exit 1', async () => {
     const root = tmpDir()
     const cap = makeIO({ cwd: tmpDir() })
     assert.equal(await main(['skill', 'install', '--project'], cap.io, { packageRoot: root }), 1)
-    assert.match(cap.err(), /chybí skill/)
+    assert.match(cap.err(), /Skill is missing from the package/)
   })
 
-  it('skutečný skill z balíčku se dá nainstalovat (pokud existuje)', async (t) => {
+  it('the real skill from the package can be installed (if it exists)', async (t) => {
     if (!existsSync(join(REAL_ROOT, 'skills', 'ultracode-workflow', 'SKILL.md'))) {
-      t.skip('skills/ultracode-workflow ještě není k dispozici')
+      t.skip('skills/ultracode-workflow is not available yet')
       return
     }
     const cwd = tmpDir()
@@ -264,7 +264,7 @@ describe('skill install', () => {
 })
 
 describe('init', () => {
-  it('vytvoří workflows/hello.workflow.ts, typy a .gitignore', async () => {
+  it('creates workflows/hello.workflow.ts, the types and .gitignore', async () => {
     const root = fakePackage()
     const cwd = tmpDir()
     const cap = makeIO({ cwd })
@@ -273,79 +273,79 @@ describe('init', () => {
     assert.equal(readFileSync(join(cwd, '.ultracode', 'workflows', 'hello.workflow.ts'), 'utf8'), HELLO_WORKFLOW)
     assert.ok(existsSync(join(cwd, '.ultracode', 'workflow.d.ts')))
     assert.match(readFileSync(join(cwd, '.ultracode', '.gitignore'), 'utf8'), /^runs\/$/m)
-    assert.match(cap.out(), /Vytvořen: .*hello\.workflow\.ts/)
+    assert.match(cap.out(), /Created: .*hello\.workflow\.ts/)
   })
 
-  it('nepřepíše upravený hello bez --force; s --force ano', async () => {
+  it('does not overwrite a modified hello without --force; with --force it does', async () => {
     const root = fakePackage()
     const cwd = tmpDir()
     await main(['init'], makeIO({ cwd }).io, { packageRoot: root })
     const hello = join(cwd, '.ultracode', 'workflows', 'hello.workflow.ts')
-    writeFileSync(hello, 'MOJE')
+    writeFileSync(hello, 'MINE')
     const cap = makeIO({ cwd })
     assert.equal(await main(['init'], cap.io, { packageRoot: root }), 0)
-    assert.equal(readFileSync(hello, 'utf8'), 'MOJE')
-    assert.match(cap.out(), /Ponechán \(už existuje\)/)
+    assert.equal(readFileSync(hello, 'utf8'), 'MINE')
+    assert.match(cap.out(), /Kept \(already exists\)/)
     assert.equal(await main(['init', '--force'], makeIO({ cwd }).io, { packageRoot: root }), 0)
     assert.equal(readFileSync(hello, 'utf8'), HELLO_WORKFLOW)
   })
 
-  it('selhání (chybí typy v balíčku) → exit 1', async () => {
+  it('failure (types missing from the package) → exit 1', async () => {
     const cap = makeIO({ cwd: tmpDir() })
     assert.equal(await main(['init'], cap.io, { packageRoot: tmpDir() }), 1)
-    assert.match(cap.err(), /Inicializace selhala/)
+    assert.match(cap.err(), /Initialization failed/)
   })
 })
 
-describe('nápověda a verze', () => {
-  it('--help / -h / help → stdout, exit 0, česky se všemi příkazy', async () => {
+describe('help and version', () => {
+  it('--help / -h / help → stdout, exit 0, with all commands', async () => {
     for (const argv of [['--help'], ['-h'], ['help']]) {
       const cap = makeIO()
       assert.equal(await main(argv, cap.io, {}), 0)
-      for (const word of ['run', 'resume', 'status', 'list', 'logs', 'validate', 'types', 'skill install', 'init', 'Exit kódy', 'Použití']) {
-        assert.ok(cap.out().includes(word), `${argv.join(' ')}: chybí „${word}“`)
+      for (const word of ['run', 'resume', 'status', 'list', 'logs', 'validate', 'types', 'skill install', 'init', 'Exit codes', 'Usage']) {
+        assert.ok(cap.out().includes(word), `${argv.join(' ')}: missing “${word}”`)
       }
       assert.equal(cap.err(), '')
     }
   })
 
-  it('bez argumentů: nápověda na stderr, exit 2', async () => {
+  it('no arguments: help on stderr, exit 2', async () => {
     const cap = makeIO()
     assert.equal(await main([], cap.io, {}), 2)
-    assert.match(cap.err(), /Použití:/)
+    assert.match(cap.err(), /Usage:/)
     assert.equal(cap.out(), '')
   })
 
-  it('nápověda konkrétního příkazu: help <cmd> i <cmd> --help (bez spuštění příkazu)', async () => {
+  it('help for a specific command: help <cmd> and <cmd> --help (without running the command)', async () => {
     const a = makeIO()
     assert.equal(await main(['help', 'run'], a.io, {}), 0)
-    assert.match(a.out(), /Použití: ultracode run/)
+    assert.match(a.out(), /Usage: ultracode run/)
     assert.match(a.out(), /--max-usd/)
     let engineCalled = false
     const b = makeIO()
     const code = await main(['run', '--help'], b.io, {
       runWorkflow: async () => {
         engineCalled = true
-        throw new Error('nesmí být voláno')
+        throw new Error('must not be called')
       },
     })
     assert.equal(code, 0)
     assert.equal(engineCalled, false)
-    assert.match(b.out(), /Použití: ultracode run/)
+    assert.match(b.out(), /Usage: ultracode run/)
     const c = makeIO()
     assert.equal(await main(['skill', 'install', '-h'], c.io, {}), 0)
     assert.match(c.out(), /skill install/)
   })
 
-  it('neznámé téma nápovědy a neznámý příkaz → 2', async () => {
+  it('unknown help topic and unknown command → 2', async () => {
     const a = makeIO()
-    assert.equal(await main(['help', 'nic'], a.io, {}), 2)
+    assert.equal(await main(['help', 'nothing'], a.io, {}), 2)
     const b = makeIO()
     assert.equal(await main(['--cwd', 'x', 'run'], b.io, {}), 2)
-    assert.match(b.err(), /příkaz musí být první/)
+    assert.match(b.err(), /must be the first argument/)
   })
 
-  it('--version vypíše verzi z package.json balíčku', async () => {
+  it('--version prints the version from package.json', async () => {
     const cap = makeIO()
     assert.equal(await main(['--version'], cap.io, { packageRoot: fakePackage() }), 0)
     assert.equal(cap.out(), 'ultracode 9.8.7\n')

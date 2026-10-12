@@ -1,70 +1,70 @@
-# Referenční pravidla psaní workflow (výtah z Claude Code `workflow-authoring` + docs)
+# Reference rules for writing workflows (excerpt from Claude Code `workflow-authoring` + docs)
 
-Zdroj pravdy pro sémantiku, kterou naše runtime napodobuje. Skripty z Claude Code jsou JS; u nás TS, jinak 1:1.
+Source of truth for the semantics that our runtime imitates. Claude Code scripts are JS; ours are TS, otherwise 1:1.
 
-## Tvar skriptu
+## Script shape
 
 ```js
-export const meta = {            // PURE LITERAL: žádné proměnné, volání, spread, šablony s ${}
-  name: 'find-flaky-tests',      // povinné
-  description: 'Find flaky tests and propose fixes',   // povinné, jedna věta
-  whenToUse: '…',                // volitelné
-  phases: [                      // volitelné; titulní řetězce MUSÍ přesně odpovídat phase('…')
+export const meta = {            // PURE LITERAL: no variables, calls, spread, templates with ${}
+  name: 'find-flaky-tests',      // required
+  description: 'Find flaky tests and propose fixes',   // required, one sentence
+  whenToUse: '…',                // optional
+  phases: [                      // optional; title strings MUST exactly match phase('…')
     { title: 'Scan', detail: 'grep test logs for retries' },
     { title: 'Fix', detail: 'one agent per flaky test', model: 'sonnet' },
   ],
 }
 phase('Scan')
 const flaky = await agent('grep CI logs for retry markers', { schema: FLAKY_SCHEMA })
-return flaky          // návratová hodnota = výsledek běhu (JSON)
+return flaky          // return value = run result (JSON)
 ```
 
-Tělo je async kontext: top-level `await` i `return`. Žádné `import`/`import()`/`require`, žádný filesystem/shell
-ve skriptu (to dělají agenti), `Date.now()`/`Math.random()`/`new Date()` bez argumentu **vyhazují** (rozbily by resume).
-Časové razítko ani náhodu dej přes `args`; náhodu pro agenty řeš variací promptu/labelu podle indexu.
+The body is an async context: top-level `await` and `return` both work. No `import`/`import()`/`require`, no filesystem/shell
+in the script (agents do that), and `Date.now()`/`Math.random()`/`new Date()` without an argument **throw** (they would break resume).
+Pass the timestamp or randomness via `args`; for agents' randomness, vary the prompt/label by index.
 
 ## API
 
-- `agent(prompt, opts?)` → string | objekt (se `schema`) | `null` (selhání/přerušení). Opts: `label, phase, schema, model, effort, …`.
-  Bez schema vrací finální text. Se schema je agent donucen vrátit validovaný objekt.
-- `pipeline(items, stage1, stage2, …)` → pole výsledků; každá položka prochází stagemi nezávisle, **bez bariéry**.
-  Stage dostane `(prevResult, originalItem, index)`. Stage, která vyhodí chybu → položka `null`, zbylé stage se přeskočí.
-  Do další stage se předává i `null` (pokud ho předchozí stage VRÁTILA) → ošetři (`fixed ? … : 'FIXER FAILED'`).
-- `parallel(thunks)` → BARIÉRA; thunk co vyhodí → `null`; funkce nikdy neodmítne. Vždy `.filter(Boolean)`.
-- `phase(title)`, `log(message)`, `args`, `budget {total, spent(), remaining()}`, `workflow(nameOrRef, args)` (1 úroveň vnoření).
-- Limity: souběžnost min(16, CPU-2); 1000 agentů/běh; 4096 položek v jednom `parallel`/`pipeline`;
-  schema: kořen `{type:'object', properties}`, `required ⊆ properties`; protimluvné schema vyhodí chybu ještě před startem agenta.
+- `agent(prompt, opts?)` → string | object (with `schema`) | `null` (failure/abort). Opts: `label, phase, schema, model, effort, …`.
+  Without a schema it returns the final text. With a schema the agent is forced to return a validated object.
+- `pipeline(items, stage1, stage2, …)` → array of results; each item passes through the stages independently, **without a barrier**.
+  A stage receives `(prevResult, originalItem, index)`. A stage that throws → the item is `null` and the remaining stages are skipped.
+  A `null` is also passed to the next stage (if the previous stage RETURNED it) → handle it (`fixed ? … : 'FIXER FAILED'`).
+- `parallel(thunks)` → BARRIER; a thunk that throws → `null`; the function never rejects. Always `.filter(Boolean)`.
+- `phase(title)`, `log(message)`, `args`, `budget {total, spent(), remaining()}`, `workflow(nameOrRef, args)` (1 level of nesting).
+- Limits: concurrency min(16, CPU-2); 1000 agents per run; 4096 items in one `parallel`/`pipeline`;
+  schema: root `{type:'object', properties}`, `required ⊆ properties`; a contradictory schema throws an error before the agent starts.
 
-## Výchozí je pipeline(), bariéra jen když je nutná
+## Default is pipeline(), barrier only when needed
 
-Bariéra (`await parallel(...)` mezi fázemi) je správně JEN když stage N potřebuje křížový kontext ze všech výsledků N-1:
-dedup přes celou množinu před drahým krokem, early-exit při nule nálezů, prompt odkazuje na „ostatní nálezy“.
-NENÍ důvod: „potřebuju to zploštit/filtrovat“ (udělej uvnitř stage), „fáze jsou koncepčně oddělené“, „čistší kód“.
+A barrier (`await parallel(...)` between phases) is correct ONLY when stage N needs cross-context from all results of stage N-1:
+dedup across the whole set before an expensive step, early exit when there are zero findings, a prompt that refers to "the other findings".
+It is NOT a reason: "I need to flatten/filter it" (do it inside the stage), "the phases are conceptually separate", "cleaner code".
 
-Smell test: `const a = await parallel(…); const b = transform(a); const c = await parallel(b.map(…))` — prostřední
-transformace bariéru nepotřebuje → přepiš na `pipeline(items, stageA, r => transform([r]).flat(), stageB)`.
+Smell test: `const a = await parallel(…); const b = transform(a); const c = await parallel(b.map(…))` — the middle
+transformation does not need a barrier → rewrite as `pipeline(items, stageA, r => transform([r]).flat(), stageB)`.
 
-## Vzory kvality
+## Quality patterns
 
-- **Adversarial verify**: N nezávislých skeptiků na nález, každý má vyvrátit; přežije při ≥ většině „nevyvráceno“.
+- **Adversarial verify**: N independent skeptics per finding, each must refute it; it survives if at least a majority say "not refuted".
   `Default to refuted=true if uncertain.`
-- **Perspective-diverse verify**: různé čočky (correctness, security, perf, reprodukce) místo N stejných.
-- **Judge panel**: N nezávislých pokusů z různých úhlů → paralelní porotci → syntéza z vítěze + nejlepší nápady z ostatních.
-- **Loop-until-dry**: dokud K po sobě jdoucích kol nevrátí nic nového; dedup proti VŠEM dosud viděným (ne jen potvrzeným).
-- **Multi-modal sweep**: paralelní agenti hledající různými způsoby (po kontejneru, obsahu, entitě, času).
-- **Completeness critic**: poslední agent: „co chybí – nespuštěná modalita, neověřené tvrzení, nepřečtený zdroj?“
-- **Žádné tiché ořezy**: když workflow omezuje pokrytí (top-N, sampling), `log()` co zahodil.
-- **Loop-until-budget**: `while (budget.total && budget.remaining() > 50_000) {…}` — vždy hlídej `budget.total`, jinak je `remaining()` `Infinity`.
-- Scale to the ask: „najdi chyby“ → pár hledačů + 1 verifikace; „důkladný audit“ → víc hledačů, 3–5 hlasů, syntéza.
+- **Perspective-diverse verify**: different lenses (correctness, security, perf, reproduction) instead of N identical ones.
+- **Judge panel**: N independent attempts from different angles → parallel judges → synthesis from the winner + the best ideas from the others.
+- **Loop-until-dry**: until K consecutive rounds return nothing new; dedup against ALL seen findings (not just the confirmed ones).
+- **Multi-modal sweep**: parallel agents searching in different ways (by container, content, entity, time).
+- **Completeness critic**: last agent: "what is missing — an unrun modality, an unverified claim, an unread source?"
+- **No silent cuts**: when a workflow limits coverage (top-N, sampling), `log()` what it discarded.
+- **Loop-until-budget**: `while (budget.total && budget.remaining() > 50_000) {…}` — always guard `budget.total`, otherwise `remaining()` is `Infinity`.
+- Scale to the ask: "find bugs" → a couple of finders + 1 verification; "thorough audit" → more finders, 3–5 votes, synthesis.
 
 ## Resume
 
-Běh lze obnovit: dokončená volání `agent()` se stejným promptem/volbami vrátí uložený výsledek okamžitě,
-první změněné/nové a vše po něm běží znovu. Stejný skript + stejné `args` → 100 % cache hit.
+A run can be resumed: completed `agent()` calls with the same prompt/options immediately return the stored result,
+the first changed/new one and everything after it run again. The same script + the same `args` → 100% cache hit.
 
-## Praktické zásady promptů pro subagenty
+## Practical prompt guidelines for subagents
 
-Subagent je řekl, že jeho finální text JE návratová hodnota (ne zpráva člověku) → vrací surová data.
-Pro strukturu použij `schema`, ne parsování textu. Do promptu dej vše potřebné (agenti nesdílejí kontext),
-vymezení práce (které soubory/oblast), co vrátit, a co NEdělat. Ve fan-outu dělej partitions bez překryvu cest,
-protože agenti zapisují do stejného working tree.
+A subagent is told that its final text IS the return value (not a message to a human) → it returns raw data.
+For structure use `schema`, not text parsing. Put everything the agent needs into the prompt (agents do not share context),
+the scope of the work (which files/area), what to return, and what NOT to do. In a fan-out, use partitions with no path overlap,
+because the agents write to the same working tree.

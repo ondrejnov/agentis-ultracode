@@ -4,14 +4,14 @@ import { BudgetExceededError, ScriptValidationError } from '../../src/errors.ts'
 import { BUDGET_SLOTS } from '../../src/types.ts'
 import { META, budgetBuffer, deferred, makeHooks, run, runWithMeta, waitFor } from './helpers.ts'
 
-describe('běh skriptu: základ', () => {
-  it('vrátí návratovou hodnotu a meta; top-level await a return fungují', async () => {
+describe('script run: basics', () => {
+  it('returns the return value and meta; top-level await and return work', async () => {
     const res = await run('const a = await Promise.resolve(20)\nconst b = await new Promise((r) => r(22))\nreturn { sum: a + b }\n')
     assert.deepEqual(res.value, { sum: 42 })
     assert.deepEqual(res.meta, { name: 't', description: 'test' })
   })
 
-  it('serializace návratu: undefined → null, Date → ISO, undefined klíče zmizí, funkce se zahodí', async () => {
+  it('return serialization: undefined → null, Date → ISO, undefined keys vanish, functions are dropped', async () => {
     assert.equal((await run('return undefined\n')).value, null)
     assert.equal((await run('const x = 1\n')).value, null)
     assert.deepEqual((await run('return { a: undefined, b: () => 1, d: new Date(0), n: null, arr: [1, undefined] }\n')).value, {
@@ -22,17 +22,17 @@ describe('běh skriptu: základ', () => {
     assert.deepEqual((await run('return new Map([[1, 2]])\n')).value, {})
   })
 
-  it('nevyhodnotitelná návratová hodnota (BigInt, cyklus) → chyba', async () => {
-    await assert.rejects(run('return 10n\n'), /nejde serializovat do JSON/)
-    await assert.rejects(run('const o = {}; o.self = o; return o\n'), /nejde serializovat do JSON/)
+  it('unserializable return value (BigInt, cycle) → error', async () => {
+    await assert.rejects(run('return 10n\n'), /cannot be serialized to JSON/)
+    await assert.rejects(run('const o = {}; o.self = o; return o\n'), /cannot be serialized to JSON/)
   })
 
-  it('návratová hodnota je obyčejný JSON objekt hlavního realmu (deepStrictEqual)', async () => {
-    const res = await run('return { a: [1, { b: "c" }], s: "řetězec" }\n')
-    assert.deepStrictEqual(res.value, { a: [1, { b: 'c' }], s: 'řetězec' })
+  it('return value is a plain JSON object of the main realm (deepStrictEqual)', async () => {
+    const res = await run('return { a: [1, { b: "c" }], s: "string" }\n')
+    assert.deepStrictEqual(res.value, { a: [1, { b: 'c' }], s: 'string' })
   })
 
-  it('args: objekt, pole, primitiva, undefined', async () => {
+  it('args: object, array, primitives, undefined', async () => {
     assert.deepEqual((await run('return args\n', { args: { files: ['a', 'b'], n: 2 } })).value, { files: ['a', 'b'], n: 2 })
     assert.deepEqual((await run('return [Array.isArray(args), args.length, args instanceof Array]\n', { args: [1, 2, 3] })).value, [true, 3, true])
     assert.equal((await run('return args\n', { args: 'text' })).value, 'text')
@@ -41,20 +41,20 @@ describe('běh skriptu: základ', () => {
     assert.deepEqual((await run('return [typeof args, args === undefined]\n')).value, ['undefined', true])
   })
 
-  it('args, které nejdou serializovat, hodí chybu před startem', async () => {
+  it('args that cannot be serialized throw an error before start', async () => {
     const cyc: Record<string, unknown> = {}
     cyc.self = cyc
-    await assert.rejects(run('return 1\n', { args: cyc }), /args nejde serializovat/)
+    await assert.rejects(run('return 1\n', { args: cyc }), /The args value cannot be serialized to JSON/)
   })
 
-  it('neplatný skript → ScriptValidationError s diagnostikou, hooky se nezavolají', async () => {
+  it('invalid script → ScriptValidationError with diagnostics, hooks are not called', async () => {
     const m = makeHooks()
     await assert.rejects(
       runWithMeta("const x = require('fs')\n", { hooks: m.hooks }),
       (e: unknown) => {
         assert.ok(e instanceof ScriptValidationError)
         assert.equal(e.code, 'SCRIPT_INVALID')
-        assert.ok(e.diagnostics.some((d) => /chybí `export const meta/.test(d)))
+        assert.ok(e.diagnostics.some((d) => /missing `export const meta/.test(d)))
         assert.ok(e.diagnostics.some((d) => /require/.test(d)))
         return true
       },
@@ -62,19 +62,19 @@ describe('běh skriptu: základ', () => {
     assert.equal(m.events.length, 0)
   })
 
-  it('chyba skriptu: původní zpráva a stack s číslem řádku skriptu a jeho jménem', async () => {
-    const body = 'const a = 1\n\nfunction boom() {\n  throw new RangeError("špatná hodnota 42")\n}\nboom()\n'
-    await assert.rejects(run(body, { filename: 'muj-skript.ts' }), (e: unknown) => {
+  it('script error: original message and stack with script line number and its name', async () => {
+    const body = 'const a = 1\n\nfunction boom() {\n  throw new RangeError("bad value 42")\n}\nboom()\n'
+    await assert.rejects(run(body, { filename: 'my-script.ts' }), (e: unknown) => {
       assert.ok(e instanceof RangeError)
-      assert.equal(e.message, 'špatná hodnota 42')
-      assert.match(e.stack ?? '', /muj-skript\.ts:5:/, e.stack) // META je řádek 1, throw je na řádku 5
-      assert.match(e.stack ?? '', /muj-skript\.ts:7:/) // volání boom()
+      assert.equal(e.message, 'bad value 42')
+      assert.match(e.stack ?? '', /my-script\.ts:5:/, e.stack) // META is line 1, throw is on line 5
+      assert.match(e.stack ?? '', /my-script\.ts:7:/) // call boom()
       assert.ok(!/ultracode-runtime/.test(e.stack ?? ''))
       return true
     })
   })
 
-  it('chyba po await má také správný řádek', async () => {
+  it('error after await also has the correct line', async () => {
     const body = 'await agent("x")\n\nconst o = null\nreturn o.pole\n'
     await assert.rejects(run(body, { filename: 'wf.ts' }), (e: unknown) => {
       assert.ok(e instanceof TypeError)
@@ -83,33 +83,33 @@ describe('běh skriptu: základ', () => {
     })
   })
 
-  it('vyhozená hodnota, která není Error, se zachová jako zpráva', async () => {
-    await assert.rejects(run('throw "jen text"\n'), (e: unknown) => {
+  it('a thrown non-Error value is kept as a message', async () => {
+    await assert.rejects(run('throw "just text"\n'), (e: unknown) => {
       assert.ok(e instanceof Error)
-      assert.equal(e.message, 'jen text')
+      assert.equal(e.message, 'just text')
       return true
     })
   })
 
-  it('skript uvázlý na Promise, která se nikdy nevyřeší, skončí chybou místo visení', async () => {
+  it('script stuck on a Promise that never resolves ends with an error instead of hanging', async () => {
     const t0 = Date.now()
-    await assert.rejects(run('await new Promise(() => {})\n'), /uvázl/)
+    await assert.rejects(run('await new Promise(() => {})\n'), /is stuck/)
     assert.ok(Date.now() - t0 < 3000)
   })
 
-  it('ale čekání na pomalého agenta uváznutí není', async () => {
+  it('but waiting for a slow agent is not a hang', async () => {
     const d = deferred<string>()
     const m = makeHooks({ agent: () => d.promise })
-    const p = run('return await agent("pomalý")\n', { hooks: m.hooks })
+    const p = run('return await agent("slow")\n', { hooks: m.hooks })
     await waitFor(() => m.prompts().length === 1)
     await new Promise((r) => setTimeout(r, 120))
-    d.resolve('hotovo')
-    assert.equal((await p).value, 'hotovo')
+    d.resolve('done')
+    assert.equal((await p).value, 'done')
   })
 })
 
-describe('izolace a determinismus', () => {
-  it('v kontextu nejsou process, require, setTimeout, fetch, Buffer, module…', async () => {
+describe('isolation and determinism', () => {
+  it('the context has no process, require, module…', async () => {
     const res = await run(
       `return {
   process: typeof process, require: typeof require, module: typeof module, setTimeout: typeof setTimeout,
@@ -120,7 +120,7 @@ describe('izolace a determinismus', () => {
     for (const [k, v] of Object.entries(res.value as Record<string, string>)) assert.equal(v, 'undefined', k)
   })
 
-  it('standardní builtins jsou k dispozici', async () => {
+  it('standard builtins are available', async () => {
     const res = await run(
       `return [
   JSON.stringify({ a: 1 }), Math.max(1, 5), [3, 1, 2].sort().join(''), new Map([[1, 2]]).size, new Set([1, 1]).size,
@@ -130,7 +130,7 @@ describe('izolace a determinismus', () => {
     assert.deepEqual(res.value, ['{"a":1}', 5, '123', 1, 1, 'b', true, 'function', 4, true])
   })
 
-  it('eval a new Function jsou zakázané', async () => {
+  it('eval and new Function are forbidden', async () => {
     const res = await run(
       `const out = []
 for (const f of [() => eval('1+1'), () => new Function('return 1')()]) {
@@ -141,14 +141,14 @@ return out\n`,
     assert.deepEqual(res.value, ['EvalError', 'EvalError'])
   })
 
-  it('Date.now(), Math.random(), new Date(), Date() hodí DeterminismError (česká zpráva, kód)', async () => {
+  it('Date.now(), Math.random(), new Date(), Date() throw DeterminismError (English message, code)', async () => {
     const res = (await run(
       `const out = {}
 for (const [k, f] of Object.entries({
   now: () => Date.now(), random: () => Math.random(), ctor: () => new Date(), call: () => Date(),
   sub: () => { class D extends Date {}; return new D() },
 })) {
-  try { f(); out[k] = 'nehodilo' } catch (e) { out[k] = { name: e.name, code: e.code, msg: e.message, isError: e instanceof Error } }
+  try { f(); out[k] = 'did not throw' } catch (e) { out[k] = { name: e.name, code: e.code, msg: e.message, isError: e instanceof Error } }
 }
 return out\n`,
     )).value as Record<string, { name: string; code: string; msg: string; isError: boolean }>
@@ -156,14 +156,14 @@ return out\n`,
       assert.equal(res[k]!.name, 'DeterminismError', k)
       assert.equal(res[k]!.code, 'NON_DETERMINISTIC', k)
       assert.equal(res[k]!.isError, true, k)
-      assert.match(res[k]!.msg, /není ve skriptu workflow povoleno/, k)
+      assert.match(res[k]!.msg, /is not allowed in a workflow script/, k)
     }
     assert.match(res.now!.msg, /^Date\.now\(\)/)
     assert.match(res.random!.msg, /^Math\.random\(\)/)
     assert.match(res.ctor!.msg, /^new Date\(\)/)
   })
 
-  it('Date s argumentem, Date.UTC, Date.parse, instanceof a podtřída fungují normálně', async () => {
+  it('Date with arguments, Date.UTC, Date.parse, instanceof and subclass work normally', async () => {
     const res = await run(
       `const d = new Date('2024-03-05T10:00:00Z')
 class D2 extends Date {}
@@ -189,31 +189,31 @@ return {
     })
   })
 
-  it('guardy v jednom běhu nezasáhnou následující běh (každý skript má vlastní kontext)', async () => {
+  it('guards in one run do not affect the next run (each script has its own context)', async () => {
     await run('try { Date.now() } catch {}\nreturn 1\n')
     const res = await run('return typeof Date.now\n')
     assert.equal(res.value, 'function')
   })
 
-  it('console.* jde do hook log; log() převádí hodnoty na text', async () => {
+  it('console.* goes to hook log; log() converts values to text', async () => {
     const m = makeHooks()
     await run(
       `console.log('a', 1, { x: [1] }, null)
 console.info('info')
-console.warn('pozor')
-console.error('chyba')
-log('prostý')
+console.warn('careful')
+console.error('oops')
+log('plain')
 log({ k: 1 })
 log(new Error('E!'))
 log(undefined)\n`,
       { hooks: m.hooks },
     )
-    assert.deepEqual(m.logs(), ['a 1 {"x":[1]} null', 'info', '[warn] pozor', '[error] chyba', 'prostý', '{"k":1}', 'Error: E!', 'undefined'])
+    assert.deepEqual(m.logs(), ['a 1 {"x":[1]} null', 'info', '[warn] careful', '[error] oops', 'plain', '{"k":1}', 'Error: E!', 'undefined'])
   })
 })
 
-describe('phase / log / agent: pořadí a kontext', () => {
-  it('phase, log a agent přicházejí na hooky ve stejném pořadí, v jakém je skript volal', async () => {
+describe('phase / log / agent: order and context', () => {
+  it('phase, log and agent reach the hooks in the same order the script called them', async () => {
     const m = makeHooks()
     await run(
       `phase('A')
@@ -222,12 +222,12 @@ const r = await agent('p1', { label: 'L1', phase: 'A' })
 phase('B')
 log('l2:' + r)
 await agent('p2')
-log('konec')\n`,
+log('end')\n`,
       { hooks: m.hooks },
     )
     assert.deepEqual(
       m.events.map((e) => e.t + ':' + ('title' in e ? e.title : 'message' in e ? e.message : 'prompt' in e ? e.prompt : '')),
-      ['phase:A', 'log:l1', 'agent:p1', 'phase:B', 'log:l2:echo:p1', 'agent:p2', 'log:konec'],
+      ['phase:A', 'log:l1', 'agent:p1', 'phase:B', 'log:l2:echo:p1', 'agent:p2', 'log:end'],
     )
     const first = m.events.find((e) => e.t === 'agent')
     assert.ok(first && first.t === 'agent')
@@ -235,17 +235,17 @@ log('konec')\n`,
     assert.deepEqual(first.call, { workflowPath: ['t'] })
   })
 
-  it('log() bez čekání před throw se stejně doručí (fire-and-forget zachová pořadí s chybou)', async () => {
+  it('log() without await before throw is still delivered (fire-and-forget keeps order with the error)', async () => {
     const m = makeHooks()
-    await assert.rejects(run("log('před'); throw new Error('konec')\n", { hooks: m.hooks }), /konec/)
-    assert.deepEqual(m.logs(), ['před'])
+    await assert.rejects(run("log('before'); throw new Error('end')\n", { hooks: m.hooks }), /end/)
+    assert.deepEqual(m.logs(), ['before'])
   })
 
-  it('výsledek agenta: string, objekt (schema), null; null se předá skriptu', async () => {
+  it('agent result: string, object (schema), null; null is passed to the script', async () => {
     const m = makeHooks({
       agent: (prompt) => {
         if (prompt === 'obj') return { ok: true, items: [1, 2] }
-        if (prompt === 'nic') return null
+        if (prompt === 'none') return null
         if (prompt === 'undef') return undefined
         return 'text'
       },
@@ -253,14 +253,14 @@ log('konec')\n`,
     const res = await run(
       `return [
   await agent('s'), await agent('obj', { schema: { type: 'object', properties: { ok: { type: 'boolean' } } } }),
-  await agent('nic'), await agent('undef'),
+  await agent('none'), await agent('undef'),
 ]\n`,
       { hooks: m.hooks },
     )
     assert.deepEqual(res.value, ['text', { ok: true, items: [1, 2] }, null, null])
   })
 
-  it('výsledek agenta je z realmu skriptu (instanceof Array/Object, Array.isArray)', async () => {
+  it('agent result is from the script realm (instanceof Array/Object, Array.isArray)', async () => {
     const m = makeHooks({ agent: () => ({ list: [1, 2], nested: { a: 1 } }) })
     const res = await run(
       `const r = await agent('x')
@@ -270,25 +270,25 @@ return [r instanceof Object, r.list instanceof Array, Array.isArray(r.list), r.l
     assert.deepEqual(res.value, [true, true, true, [2, 4], ['a']])
   })
 
-  it('chyba z hooku (BudgetExceededError) se ve skriptu objeví jako Error se stejnou zprávou a code', async () => {
+  it('hook error (BudgetExceededError) appears in the script as an Error with the same message and code', async () => {
     const m = makeHooks({
       agent: () => {
-        throw new BudgetExceededError('Rozpočet vyčerpán: 100/100 tokenů')
+        throw new BudgetExceededError('Budget exhausted: 100/100 tokens')
       },
     })
     const res = await run(
-      `try { await agent('x'); return 'nehodilo' } catch (e) { return { msg: e.message, code: e.code, name: e.name, isError: e instanceof Error } }\n`,
+      `try { await agent('x'); return 'did not throw' } catch (e) { return { msg: e.message, code: e.code, name: e.name, isError: e instanceof Error } }\n`,
       { hooks: m.hooks },
     )
     assert.deepEqual(res.value, {
-      msg: 'Rozpočet vyčerpán: 100/100 tokenů',
+      msg: 'Budget exhausted: 100/100 tokens',
       code: 'BUDGET_EXCEEDED',
       name: 'BudgetExceededError',
       isError: true,
     })
   })
 
-  it('nezachycená chyba z hooku shodí skript jako BudgetExceededError (instanceof a code)', async () => {
+  it('uncaught hook error fails the script as BudgetExceededError (instanceof and code)', async () => {
     const m = makeHooks({
       agent: async () => {
         throw new BudgetExceededError('limit')
@@ -302,15 +302,15 @@ return [r instanceof Object, r.list instanceof Array, Array.isArray(r.list), r.l
     })
   })
 
-  it('výsledek hooku, který nejde přenést (funkce), dá skriptu srozumitelnou chybu', async () => {
+  it('hook result that cannot be transferred (a function) gives the script a clear error', async () => {
     const m = makeHooks({ agent: () => ({ fn: () => 1 }) })
     const res = await run("try { await agent('x') } catch (e) { return e.message }\n", { hooks: m.hooks })
-    assert.match(String(res.value), /nelze předat skriptu/)
+    assert.match(String(res.value), /cannot be passed to the script/)
   })
 })
 
 describe('parallel', () => {
-  it('zachová pořadí výsledků i při opačném dokončení; thunk co hodí → null, nehází', async () => {
+  it('keeps result order even when completed in reverse; a thunk that throws → null, does not throw', async () => {
     const gates = [deferred<string>(), deferred<string>(), deferred<string>()]
     const m = makeHooks({ agent: (prompt) => gates[Number(prompt)]!.promise })
     const p = run(
@@ -319,7 +319,7 @@ describe('parallel', () => {
   () => agent('1'),
   () => { throw new Error('sync boom') },
   async () => { await agent('2'); throw new Error('async boom') },
-  () => 'hodnota',
+  () => 'value',
 ])\n`,
       { hooks: m.hooks },
     )
@@ -327,15 +327,15 @@ describe('parallel', () => {
     gates[2]!.resolve('c')
     gates[1]!.resolve('b')
     gates[0]!.resolve('a')
-    assert.deepEqual((await p).value, ['a', 'b', null, null, 'hodnota'])
-    // selhání se nehlásí tiše: dostaneme log s příčinou
-    assert.ok(m.logs().some((l) => /parallel\(\): položka 2 selhala.*sync boom/.test(l)), m.logs().join('\n'))
-    assert.ok(m.logs().some((l) => /parallel\(\): položka 3 selhala.*async boom/.test(l)))
+    assert.deepEqual((await p).value, ['a', 'b', null, null, 'value'])
+    // failures are not silent: we get a log with the cause
+    assert.ok(m.logs().some((l) => /parallel\(\): item 2 failed.*sync boom/.test(l)), m.logs().join('\n'))
+    assert.ok(m.logs().some((l) => /parallel\(\): item 3 failed.*async boom/.test(l)))
   })
 
-  it('je bariéra: následující krok se spustí až po dokončení VŠECH thunků', async () => {
+  it('is a barrier: the next step runs only after ALL thunks finish', async () => {
     const gates = [deferred<string>(), deferred<string>()]
-    const m = makeHooks({ agent: (prompt) => (prompt.startsWith('t') ? gates[Number(prompt[1])]!.promise : 'po-bariére') })
+    const m = makeHooks({ agent: (prompt) => (prompt.startsWith('t') ? gates[Number(prompt[1])]!.promise : 'after-barrier') })
     const p = run(
       `const r = await parallel([() => agent('t0'), () => agent('t1')])
 const after = await agent('after:' + r.join(','))
@@ -345,13 +345,13 @@ return after\n`,
     await waitFor(() => m.prompts().length === 2)
     gates[0]!.resolve('x')
     await new Promise((r) => setTimeout(r, 100))
-    assert.deepEqual(m.prompts(), ['t0', 't1'], 'after se nesmí spustit, dokud t1 neskončil')
+    assert.deepEqual(m.prompts(), ['t0', 't1'], 'after must not run until t1 finishes')
     gates[1]!.resolve('y')
-    assert.equal((await p).value, 'po-bariére')
+    assert.equal((await p).value, 'after-barrier')
     assert.deepEqual(m.prompts(), ['t0', 't1', 'after:x,y'])
   })
 
-  it('všechny thunky se spustí ihned (souběžně), ne po jednom', async () => {
+  it('all thunks start immediately (concurrently), not one by one', async () => {
     const m = makeHooks({ agent: () => new Promise(() => {}) })
     const ac = new AbortController()
     const p = run("await parallel([1, 2, 3, 4, 5].map((i) => () => agent('a' + i)))\n", { hooks: m.hooks, signal: ac.signal })
@@ -361,16 +361,16 @@ return after\n`,
     await assert.rejects(p, { code: 'ABORTED' })
   })
 
-  it('tolerantně přijme i hotové Promise místo funkce; prázdné pole → []', async () => {
+  it('tolerantly accepts resolved Promises instead of functions; empty array → []', async () => {
     const res = await run("return [await parallel([]), await parallel([Promise.resolve(1), () => 2, Promise.reject(new Error('x'))])]\n")
     assert.deepEqual(res.value, [[], [1, 2, null]])
   })
 
-  it('maxItems: nad limit je chyba a žádný thunk se nespustí; default 4096', async () => {
+  it('maxItems: above the limit is an error and no thunk runs; default 4096', async () => {
     const m = makeHooks()
     await assert.rejects(
       run("await parallel([1, 2, 3, 4].map((i) => () => agent('a' + i)))\n", { hooks: m.hooks, maxItems: 3 }),
-      /parallel\(\): příliš mnoho položek \(4\), maximum je 3/,
+      /parallel\(\): too many items \(4\), maximum is 3/,
     )
     assert.equal(m.prompts().length, 0)
 
@@ -386,21 +386,21 @@ return after\n`,
     assert.equal(m2.prompts().length, 0)
   })
 
-  it('špatný argument (ne pole) je chyba skriptu', async () => {
-    await assert.rejects(run("await parallel(() => 1)\n"), /parallel\(\): očekává pole/)
+  it('wrong argument (not an array) is a script error', async () => {
+    await assert.rejects(run("await parallel(() => 1)\n"), /parallel\(\): expects an array/)
   })
 
-  it('víc než 10 selhání: log je omezen a zbytek shrnut', async () => {
+  it('more than 10 failures: log is limited and the rest summarized', async () => {
     const m = makeHooks()
     await run("await parallel(Array.from({ length: 25 }, () => () => { throw new Error('e') }))\n", { hooks: m.hooks })
     const logs = m.logs()
-    assert.equal(logs.filter((l) => /položka \d+ selhala/.test(l)).length, 10)
-    assert.ok(logs.some((l) => /dalších 15 chyb nezobrazeno \(celkem 25\)/.test(l)))
+    assert.equal(logs.filter((l) => /item \d+ failed/.test(l)).length, 10)
+    assert.ok(logs.some((l) => /15 more errors not shown \(total 25\)/.test(l)))
   })
 })
 
 describe('pipeline', () => {
-  it('BEZ bariéry: rychlá položka postoupí do stage 2, zatímco pomalá je ještě ve stage 1', async () => {
+  it('NO barrier: a fast item moves to stage 2 while a slow one is still in stage 1', async () => {
     const gates = new Map<string, ReturnType<typeof deferred<string>>>()
     const gate = (k: string) => {
       if (!gates.has(k)) gates.set(k, deferred<string>())
@@ -416,18 +416,18 @@ describe('pipeline', () => {
     )
     await waitFor(() => m.prompts().length === 3)
     assert.deepEqual(m.prompts(), ['s1:A', 's1:B', 's1:C'])
-    // B a C dokončí stage 1, A (pomalá) stále visí
+    // B and C finish stage 1, A (slow) still hangs
     gate('s1:B').resolve('rb')
     gate('s1:C').resolve('rc')
-    await waitFor(() => m.prompts().includes('s2:B:rb') && m.prompts().includes('s2:C:rc'), 3000, 'stage 2 pro B a C')
+    await waitFor(() => m.prompts().includes('s2:B:rb') && m.prompts().includes('s2:C:rc'), 3000, 'stage 2 for B and C')
     assert.ok(!m.prompts().includes('s2:A:ra'))
     assert.equal(
       m.prompts().filter((x) => x.startsWith('s2:')).length,
       2,
-      'stage 2 pro A se nesmí spustit před dokončením jeho stage 1',
+      'stage 2 for A must not run before its stage 1 finishes',
     )
     gate('s2:B:rb').resolve('fb')
-    // dokonce B je hotové dřív, než A vůbec dokončí stage 1
+    // B is even done before A finishes stage 1 at all
     gate('s1:A').resolve('ra')
     await waitFor(() => m.prompts().includes('s2:A:ra'))
     gate('s2:A:ra').resolve('fa')
@@ -435,7 +435,7 @@ describe('pipeline', () => {
     assert.deepEqual((await p).value, ['fa', 'fb', 'fc'])
   })
 
-  it('stage dostane (prev, original, index); výsledky v pořadí položek', async () => {
+  it('stage receives (prev, original, index); results in item order', async () => {
     const res = await run(
       `return await pipeline(
   [{ n: 'a' }, { n: 'b' }, { n: 'c' }],
@@ -450,11 +450,11 @@ describe('pipeline', () => {
     ])
   })
 
-  it('throw ve stage → null a zbylé stage se pro položku přeskočí; ostatní položky nejsou dotčeny', async () => {
+  it('throw in a stage → null and the remaining stages are skipped for that item; other items unaffected', async () => {
     const m = makeHooks()
     const res = await run(
       `return await pipeline([1, 2, 3],
-  async (x) => { if (x === 2) throw new Error('stage1 selhala'); return x * 10 },
+  async (x) => { if (x === 2) throw new Error('stage1 failed'); return x * 10 },
   async (x) => { await agent('s2:' + x); return x + 1 },
   (x) => 'final:' + x,
 )\n`,
@@ -462,10 +462,10 @@ describe('pipeline', () => {
     )
     assert.deepEqual(res.value, ['final:11', null, 'final:31'])
     assert.deepEqual(m.prompts().sort(), ['s2:10', 's2:30'])
-    assert.ok(m.logs().some((l) => /pipeline\(\): položka 1, stage 1 selhala.*stage1 selhala/.test(l)))
+    assert.ok(m.logs().some((l) => /pipeline\(\): item 1, stage 1 failed.*stage1 failed/.test(l)))
   })
 
-  it('null VRÁCENÝ stagí se předává dál (nepřeskakuje se)', async () => {
+  it('null RETURNED by a stage is passed on (not skipped)', async () => {
     const res = await run(
       `return await pipeline(['a', 'b'],
   (x) => (x === 'a' ? null : 'ok'),
@@ -475,7 +475,7 @@ describe('pipeline', () => {
     assert.deepEqual(res.value, ['FAILED:a', 'ok:b'])
   })
 
-  it('bez stage vrátí položky; jedna stage; prázdné pole', async () => {
+  it('without stages returns items; one stage; empty array', async () => {
     assert.deepEqual((await run('return [await pipeline([1, 2]), await pipeline([], (x) => x), await pipeline([3], (x) => x * 2)]\n')).value, [
       [1, 2],
       [],
@@ -483,16 +483,16 @@ describe('pipeline', () => {
     ])
   })
 
-  it('maxItems a špatné argumenty', async () => {
-    await assert.rejects(run('await pipeline([1, 2, 3], (x) => x)\n', { maxItems: 2 }), /pipeline\(\): příliš mnoho položek \(3\), maximum je 2/)
-    await assert.rejects(run("await pipeline('abc', (x) => x)\n"), /první argument musí být pole/)
-    await assert.rejects(run("await pipeline([1], 'ne-funkce')\n"), /stage 1 musí být funkce/)
+  it('maxItems and wrong arguments', async () => {
+    await assert.rejects(run('await pipeline([1, 2, 3], (x) => x)\n', { maxItems: 2 }), /pipeline\(\): too many items \(3\), maximum is 2/)
+    await assert.rejects(run("await pipeline('abc', (x) => x)\n"), /first argument must be an array/)
+    await assert.rejects(run("await pipeline([1], 'not-a-function')\n"), /stage 1 must be a function/)
   })
 
-  it('agent() uvnitř pipeline: chyba rozpočtu → null položky, běh doběhne', async () => {
+  it('agent() inside pipeline: budget error → null for the item, the run completes', async () => {
     const m = makeHooks({
       agent: (prompt) => {
-        if (prompt.endsWith('2')) throw new BudgetExceededError('strop')
+        if (prompt.endsWith('2')) throw new BudgetExceededError('cap')
         return 'ok:' + prompt
       },
     })
@@ -502,7 +502,7 @@ describe('pipeline', () => {
 })
 
 describe('budget', () => {
-  it('bez limitu: total null, remaining Infinity', async () => {
+  it('no limit: total null, remaining Infinity', async () => {
     const res = await run(
       'return { total: budget.total, totalUsd: budget.totalUsd, spent: budget.spent(), rem: String(budget.remaining()), remUsd: String(budget.remainingUsd()), spentUsd: budget.spentUsd() }\n',
       { budget: budgetBuffer({ spent: 1234, spentUsd: 0.5 }) },
@@ -510,7 +510,7 @@ describe('budget', () => {
     assert.deepEqual(res.value, { total: null, totalUsd: null, spent: 1234, rem: 'Infinity', remUsd: 'Infinity', spentUsd: 0.5 })
   })
 
-  it('s limitem: total, remaining, remainingUsd (a nikdy záporné)', async () => {
+  it('with limit: total, remaining, remainingUsd (and never negative)', async () => {
     const res = await run(
       'return { total: budget.total, totalUsd: budget.totalUsd, rem: budget.remaining(), remUsd: budget.remainingUsd() }\n',
       { budget: budgetBuffer({ spent: 300, total: 1000, spentUsd: 1.5, totalUsd: 1 }) },
@@ -518,7 +518,7 @@ describe('budget', () => {
     assert.deepEqual(res.value, { total: 1000, totalUsd: 1, rem: 700, remUsd: 0 })
   })
 
-  it('čte ŽIVĚ ze SharedArrayBuffer: hodnoty se mění, jak engine zapisuje', async () => {
+  it('reads LIVE from SharedArrayBuffer: values change as the engine writes them', async () => {
     const buf = budgetBuffer({ total: 1000 })
     const view = new Float64Array(buf, 0, BUDGET_SLOTS)
     const m = makeHooks({
@@ -538,7 +538,7 @@ return [a, ra, b, rb, budget.spent(), budget.remaining()]\n`,
     assert.deepEqual(res.value, [0, 1000, 400, 600, 800, 200])
   })
 
-  it('loop-until-budget vzor funguje', async () => {
+  it('loop-until-budget pattern works', async () => {
     const buf = budgetBuffer({ total: 1000 })
     const view = new Float64Array(buf, 0, BUDGET_SLOTS)
     const m = makeHooks({
@@ -551,16 +551,16 @@ return [a, ra, b, rb, budget.spent(), budget.remaining()]\n`,
       "let n = 0\nwhile (budget.total && budget.remaining() > 100) { await agent('r' + n); n++ }\nreturn n\n",
       { hooks: m.hooks, budget: buf },
     )
-    assert.equal(res.value, 3) // zbývá 1000 → 700 → 400 → 100; při 100 už podmínka `> 100` neplatí
+    assert.equal(res.value, 3) // 1000 left → 700 → 400 → 100; at 100 the condition `> 100` no longer holds
   })
 
-  it('příliš malý budgetBuffer je chyba použití', async () => {
+  it('too-small budgetBuffer is a usage error', async () => {
     await assert.rejects(run('return 1\n', { budget: new SharedArrayBuffer(8) }), /budgetBuffer/)
   })
 })
 
-describe('meta + běh dohromady', () => {
-  it('skript s META konstantou a více fázemi', async () => {
+describe('meta + run together', () => {
+  it('script with META constant and multiple phases', async () => {
     const m = makeHooks()
     const res = await runWithMeta(
       `export const meta = { name: 'multi', description: 'd', phases: [{ title: 'One' }, { title: 'Two' }] }
@@ -578,7 +578,7 @@ return [a, b]
     assert.deepEqual((m.events[0] as { call: { workflowPath: string[] } }).call.workflowPath, ['multi'])
   })
 
-  it('META helper je platný (sanity)', () => {
+  it('META helper is valid (sanity)', () => {
     assert.match(META, /export const meta/)
   })
 })

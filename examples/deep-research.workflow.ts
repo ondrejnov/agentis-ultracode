@@ -1,20 +1,20 @@
 /// <reference path="../types/workflow.d.ts" />
 
-// Hluboká rešerše: multi-modal sweep (různé způsoby hledání) → dedup → křížová verifikace claimů
-// (zdroj opravdu říká, co se tvrdí; nezávislé potvrzení) → completeness critic → další kolo → syntéza s citacemi.
+// Deep research: multi-modal sweep (different search methods) → dedup → cross-verification of claims
+// (the source really says what is claimed; independent confirmation) → completeness critic → another round → synthesis with citations.
 //
-// Spuštění:
-//   ultracode run deep-research --args '{"question":"Jaké jsou nevýhody Postgres LISTEN/NOTIFY pro fronty úloh?","rounds":2}'
+// Run:
+//   ultracode run deep-research --args '{"question":"What are the drawbacks of Postgres LISTEN/NOTIFY for job queues?","rounds":2}'
 //
 // args:
-//   question    (povinné) otázka
-//   rounds      max. počet kol sweep → verify → critic (default 2)
-//   modalities  podmnožina z: overview, primary, academic, news, community, critique (default všechny)
-//   maxClaims   max. počet nových claimů k verifikaci za kolo (default 60; zahozené se logují)
-//   language    jazyk odpovědi (default: jazyk otázky)
+//   question    (required) the question
+//   rounds      max. number of sweep → verify → critic rounds (default 2)
+//   modalities  subset of: overview, primary, academic, news, community, critique (default all)
+//   maxClaims   max. number of new claims to verify per round (default 60; dropped ones are logged)
+//   language    answer language (default: the language of the question)
 //
-// Citace nevytváří syntetizující agent, ale kód: agent smí odkazovat jen na ID ověřených claimů ([C3]),
-// URL a pořadová čísla zdrojů se doplní z dat. Nevymyšlená citace tak projde jen těžko.
+// Citations are not created by the synthesizing agent but by code: the agent may reference only the IDs of verified claims ([C3]),
+// URLs and source sequence numbers are filled in from data. An invented citation is thus hard to get through.
 
 export const meta = {
   name: 'deep-research',
@@ -76,7 +76,7 @@ interface Missing {
 
 const present = <T>(xs: Array<T | null>): T[] => xs.filter((x): x is T => x !== null && x !== undefined)
 
-// ───────── vstup ─────────
+// ───────── input ─────────
 
 const input = (args ?? {}) as {
   question?: string
@@ -87,7 +87,7 @@ const input = (args ?? {}) as {
 }
 
 if (typeof input.question !== 'string' || !input.question.trim()) {
-  throw new Error('Chybí args.question (otázka rešerše).')
+  throw new Error('Missing args.question (the research question).')
 }
 
 const QUESTION = input.question.trim()
@@ -107,10 +107,10 @@ const ALL_MODALITIES = [
 const wanted = input.modalities && input.modalities.length ? new Set(input.modalities) : null
 const MODALITIES = ALL_MODALITIES.filter((m) => !wanted || wanted.has(m.id))
 if (MODALITIES.length === 0) {
-  throw new Error('args.modalities neobsahuje žádnou známou modalitu (' + ALL_MODALITIES.map((m) => m.id).join(', ') + ').')
+  throw new Error('args.modalities does not contain any known modality (' + ALL_MODALITIES.map((m) => m.id).join(', ') + ').')
 }
 
-// ───────── schémata ─────────
+// ───────── schemas ─────────
 
 const SWEEP_SCHEMA = {
   type: 'object',
@@ -186,19 +186,19 @@ const SYNTH_SCHEMA = {
   required: ['answer', 'caveats', 'openQuestions'],
 }
 
-// ───────── pomocné funkce ─────────
+// ───────── helpers ─────────
 
 const normalizeKey = (s: string): string =>
   s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim().replace(/\s+/g, ' ').slice(0, 160)
 
-// Rozpočet (tokeny i USD): parallel/pipeline chybu rozpočtu mění na null, takže vyčerpání je vidět jen tady.
+// Budget (tokens and USD): parallel/pipeline turn the budget error into null, so exhaustion is visible only here.
 const budgetGone = (): boolean => (budget.total !== null && budget.remaining() <= 0) || (budget.totalUsd !== null && budget.remainingUsd() <= 0)
 const budgetLow = (): boolean => (budget.total !== null && budget.remaining() < 150_000) || (budget.totalUsd !== null && budget.remainingUsd() < 1)
 const isBudgetError = (e: unknown): boolean => e !== null && typeof e === 'object' && (e as { code?: unknown }).code === 'BUDGET_EXCEEDED'
 
 const isHttpUrl = (u: unknown): u is string => typeof u === 'string' && /^https?:\/\/\S+$/i.test(u)
 
-// `seen` obsahuje VŠECHNY viděné claimy (i zamítnuté), jinak by se zamítnuté vracely každé kolo.
+// `seen` contains ALL seen claims (including rejected ones), otherwise rejected ones would come back every round.
 const seen = new Map<string, Candidate>()
 
 function admit(modality: string, claims: RawClaim[]): Candidate[] {
@@ -208,7 +208,7 @@ function admit(modality: string, claims: RawClaim[]): Candidate[] {
     const key = normalizeKey(c.claim)
     const known = seen.get(key)
     if (known) {
-      // stejný claim z jiného zdroje je zadarmo vodítko pro korroboraci
+      // the same claim from another source is a free hint for corroboration
       if (c.sourceUrl !== known.sourceUrl && !known.alsoFrom.includes(c.sourceUrl)) known.alsoFrom.push(c.sourceUrl)
       continue
     }
@@ -260,7 +260,7 @@ async function sweep(tasks: Array<{ modality: string; how: string; focus?: strin
   return { fresh, gaps, failed: tasks.length - ok.length }
 }
 
-// ───────── hlavní běh ─────────
+// ───────── main run ─────────
 
 const verified: Checked[] = []
 const dropped: Array<{ claim: string; url: string; reason: string }> = []
@@ -274,11 +274,11 @@ for (let round = 1; round <= ROUNDS; round++) {
   roundsDone = round
   if (budgetLow()) {
     stoppedBecause = 'budget'
-    log('Zbývá příliš málo rozpočtu (tokeny nebo USD); další kolo se nespouští.')
+    log('Remaining budget is too low (tokens or USD); the next round is not started.')
     break
   }
 
-  // 1) sweep: každý agent hledá jinak; bariéra je tu oprávněná, protože dedup potřebuje všechny najednou
+  // 1) sweep: each agent searches differently; the barrier is justified here because dedup needs all of them at once
   phase('Sweep')
   const tasks =
     round === 1
@@ -292,24 +292,24 @@ for (let round = 1; round <= ROUNDS; round++) {
   sweepFailures += swept.failed
   allGaps.push(...swept.gaps)
 
-  // žádné tiché ořezy: co se nevejde do limitu, se zaloguje
+  // no silent cuts: what does not fit the limit is logged
   const ranked = [...swept.fresh].sort((a, b) => b.alsoFrom.length - a.alsoFrom.length)
   const toVerify = ranked.slice(0, MAX_CLAIMS)
   if (ranked.length > toVerify.length) {
-    log(`Kolo ${round}: ${ranked.length} nových claimů, ověřuje se ${toVerify.length}; neověřeno: ${ranked.slice(MAX_CLAIMS).map((c) => c.claim.slice(0, 60)).join(' | ')}`)
+    log(`Round ${round}: ${ranked.length} new claims, verifying ${toVerify.length}; not verified: ${ranked.slice(MAX_CLAIMS).map((c) => c.claim.slice(0, 60)).join(' | ')}`)
   }
-  log(`Kolo ${round}: ${swept.fresh.length} nových claimů z ${tasks.length - swept.failed}/${tasks.length} průzkumů.`)
+  log(`Round ${round}: ${swept.fresh.length} new claims from ${tasks.length - swept.failed}/${tasks.length} sweeps.`)
 
   if (toVerify.length === 0) {
     stoppedBecause = budgetGone() ? 'budget' : 'dry'
     break
   }
 
-  // 2) verifikace: pipeline — druhý (dražší) stupeň běží jen pro claimy, které prošly kontrolou zdroje
+  // 2) verification: pipeline — the second (more expensive) stage runs only for claims that passed the source check
   const checked = await pipeline(
     toVerify,
 
-    // stage 1: říká zdroj opravdu to, co se tvrdí?
+    // stage 1: does the source really say what is claimed?
     (c: Candidate) =>
       agent<SourceCheck>(
         `You are a fact-checker. Open this page yourself: ${c.sourceUrl}
@@ -322,11 +322,11 @@ If the page cannot be opened or the quote is absent, supported=false. Do not use
         { label: `verify:src:${c.key.slice(0, 40)}`, phase: 'Verify', schema: SOURCE_CHECK_SCHEMA, effort: 'low', disallowedTools: READONLY },
       ),
 
-    // stage 2: nezávislé potvrzení (nebo vyvrácení) jiným zdrojem
+    // stage 2: independent confirmation (or refutation) from another source
     async (check: SourceCheck | null, c: Candidate): Promise<Checked | null> => {
       if (!check) return null
       if (!check.supported) {
-        dropped.push({ claim: c.claim, url: c.sourceUrl, reason: 'zdroj tvrzení nepodporuje: ' + check.note })
+        dropped.push({ claim: c.claim, url: c.sourceUrl, reason: 'source does not support the claim: ' + check.note })
         return null
       }
       const wording = check.correctedClaim && check.correctedClaim.trim() ? check.correctedClaim.trim() : c.claim
@@ -340,8 +340,8 @@ List the URLs you relied on in "otherUrls". Open the pages you cite. Do not modi
         { label: `verify:corr:${c.key.slice(0, 40)}`, phase: 'Verify', schema: CORROBORATION_SCHEMA, disallowedTools: READONLY },
       )
       if (!corr) {
-        // verifikace selhala: nechceme tvrdit víc, než víme → single-source
-        return { candidate: { ...c, claim: wording }, status: 'single-source', note: 'nezávislé ověření selhalo', otherUrls: [] }
+        // verification failed: we do not want to claim more than we know → single-source
+        return { candidate: { ...c, claim: wording }, status: 'single-source', note: 'independent verification failed', otherUrls: [] }
       }
       const status = corr.status === 'corroborated' ? 'verified' : corr.status === 'contradicted' ? 'disputed' : 'single-source'
       return { candidate: { ...c, claim: wording }, status, note: corr.note, otherUrls: corr.otherUrls.filter(isHttpUrl) }
@@ -350,16 +350,16 @@ List the URLs you relied on in "otherUrls". Open the pages you cite. Do not modi
 
   const good = present(checked)
   verified.push(...good)
-  log(`Kolo ${round}: ověřeno ${good.filter((g) => g.status === 'verified').length}, jeden zdroj ${good.filter((g) => g.status === 'single-source').length}, sporné ${good.filter((g) => g.status === 'disputed').length}, zamítnuto ${toVerify.length - good.length}.`)
+  log(`Round ${round}: verified ${good.filter((g) => g.status === 'verified').length}, single source ${good.filter((g) => g.status === 'single-source').length}, disputed ${good.filter((g) => g.status === 'disputed').length}, rejected ${toVerify.length - good.length}.`)
 
   if (budgetGone()) {
     stoppedBecause = 'budget'
-    log('Rozpočet vyčerpán; další kolo se nespouští.')
+    log('Budget exhausted; the next round is not started.')
     break
   }
   if (round === ROUNDS) break
 
-  // 3) completeness critic: co chybí? Z toho vznikne práce pro další kolo.
+  // 3) completeness critic: what is missing? This becomes the work for the next round.
   phase('Critic')
   const summary = verified.slice(0, 80).map((v) => `- (${v.status}) ${v.candidate.claim}`).join('\n')
   let critic: { complete: boolean; missing: Missing[] } | null = null
@@ -378,11 +378,11 @@ Do not modify any files.`,
   } catch (e) {
     if (!isBudgetError(e)) throw e
     stoppedBecause = 'budget'
-    log('Rozpočet vyčerpán při hodnocení úplnosti; pokračuji syntézou z ověřených claimů.')
+    log('Budget exhausted during completeness assessment; continuing with synthesis from verified claims.')
     break
   }
   if (!critic) {
-    log('Critic selhal; pokračuji bez dalšího kola.')
+    log('Critic failed; continuing without another round.')
     stoppedBecause = 'critic-failed'
     break
   }
@@ -393,22 +393,22 @@ Do not modify any files.`,
   }
 }
 
-// ───────── syntéza ─────────
+// ───────── synthesis ─────────
 
-// sporné claimy se do syntézy dostanou záměrně (jako sporné), zamítnuté už v `verified` nejsou
+// disputed claims go into synthesis on purpose (as disputed); rejected ones are no longer in `verified`
 const usable = verified
 if (usable.length === 0) {
   const outOfBudget = stoppedBecause === 'budget' || budgetGone()
   return {
     question: QUESTION,
     answer: null,
-    note: outOfBudget ? 'Rozpočet vyčerpán dřív, než se podařilo ověřit nějaký claim.' : 'Nepodařilo se ověřit žádný claim.',
+    note: outOfBudget ? 'Budget exhausted before any claim could be verified.' : 'No claim could be verified.',
     stats: { rounds: roundsDone, stoppedBecause: outOfBudget ? 'budget' : stoppedBecause, sweepFailures, dropped: dropped.length },
     dropped,
   }
 }
 
-// ID claimů přidělujeme v kódu; syntetizující agent smí používat jen tato ID
+// Claim IDs are assigned in code; the synthesizing agent may use only these IDs
 const claims = usable.map((v, i) => ({ id: 'C' + (i + 1), ...v }))
 const byId = new Map(claims.map((c) => [c.id, c]))
 
@@ -436,20 +436,20 @@ Do not modify any files.`,
   if (!isBudgetError(e)) throw e
   synthBudgetHit = true
   stoppedBecause = 'budget'
-  log('Rozpočet vyčerpán před syntézou; vracím ověřené claimy.')
+  log('Budget exhausted before synthesis; returning verified claims.')
 }
 
 if (!synth) {
   return {
     question: QUESTION,
     answer: null,
-    note: synthBudgetHit ? 'Rozpočet vyčerpán před syntézou; vracím ověřené claimy.' : 'Syntéza selhala; vracím ověřené claimy.',
+    note: synthBudgetHit ? 'Budget exhausted before synthesis; returning verified claims.' : 'Synthesis failed; returning verified claims.',
     claims: claims.map((c) => ({ id: c.id, status: c.status, claim: c.candidate.claim, source: c.candidate.sourceUrl })),
     stats: { rounds: roundsDone, stoppedBecause, sweepFailures, dropped: dropped.length },
   }
 }
 
-// citace [C3, C7] → [1, 2]; číslujeme podle URL v pořadí prvního výskytu, neznámá ID zahodíme
+// citations [C3, C7] → [1, 2]; we number by URL in order of first appearance, unknown IDs are dropped
 const urlNo = new Map<string, number>()
 const rendered = synth.answer.replace(/\[\s*(C\d+(?:\s*,\s*C\d+)*)\s*\]/g, (_m: string, ids: string) => {
   const nums: number[] = []

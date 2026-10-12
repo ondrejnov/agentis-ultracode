@@ -10,7 +10,7 @@ import { assertSafeRunId, errorLine, nowMs, resolveCwd, styleFor, writeLines, js
 export async function statusCommand(ctx: CommandContext, argv: string[]): Promise<number> {
   const { io } = ctx
   const parsed = parseCommandLine('status', argv)
-  if (parsed.positionals.length > 1) throw new UsageError('Příkaz status bere nejvýše jedno runId.')
+  if (parsed.positionals.length > 1) throw new UsageError('The status command takes at most one runId.')
   const cwd = resolveCwd(ctx, parsed.values)
   const store = await resolveStore(ctx.deps)
 
@@ -18,7 +18,7 @@ export async function statusCommand(ctx: CommandContext, argv: string[]): Promis
   if (runId === undefined) {
     const runs = await store.listRuns(cwd)
     if (runs.length === 0) {
-      errorLine(ctx, `Žádné běhy v ${store.runsRoot(cwd)}.`)
+      errorLine(ctx, `No runs in ${store.runsRoot(cwd)}.`)
       return 2
     }
     runId = runs[0].runId
@@ -27,7 +27,7 @@ export async function statusCommand(ctx: CommandContext, argv: string[]): Promis
   assertSafeRunId(runId)
   const summary = await store.readRunSummary(cwd, runId)
   if (!summary) {
-    errorLine(ctx, `Běh „${runId}“ nenalezen v ${store.runsRoot(cwd)}. Seznam: ultracode list`)
+    errorLine(ctx, `Run "${runId}" not found in ${store.runsRoot(cwd)}. List: ultracode list`)
     return 2
   }
   const events = await store.readEvents(cwd, runId)

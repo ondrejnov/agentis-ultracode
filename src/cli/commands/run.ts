@@ -25,19 +25,19 @@ import {
   styleFor,
   writeLines, jsonIndent } from './shared.ts'
 
-/** Zpracuje `--args` / `--args-file`; `undefined` = args nezadány. */
+/** Handles `--args` / `--args-file`; `undefined` = args not given. */
 function readArgs(ctx: CommandContext, values: Record<string, string | boolean | undefined>): { value: unknown; given: boolean } {
   const inline = str(values.args)
   const file = str(values['args-file'])
   if (inline !== undefined && file !== undefined) {
-    throw new UsageError('Volby --args a --args-file nelze použít současně.')
+    throw new UsageError('The --args and --args-file options cannot be used together.')
   }
   if (inline !== undefined) {
     try {
       return { value: JSON.parse(inline), given: true }
     } catch (e) {
       throw new UsageError(
-        `Hodnota --args není platný JSON: ${errorMessage(e)}\n  Zadáno: ${inline.length > 200 ? `${inline.slice(0, 200)}…` : inline}\n  Tip: řetězce musí být v uvozovkách, např. --args '{"cesta":"src"}'.`,
+        `Value of --args is not valid JSON: ${errorMessage(e)}\n  Given: ${inline.length > 200 ? `${inline.slice(0, 200)}…` : inline}\n  Tip: strings must be in quotes, e.g. --args '{"path":"src"}'.`,
       )
     }
   }
@@ -47,12 +47,12 @@ function readArgs(ctx: CommandContext, values: Record<string, string | boolean |
     try {
       text = readFileSync(abs, 'utf8')
     } catch (e) {
-      throw new UsageError(`Soubor --args-file „${file}“ nelze přečíst: ${errorMessage(e)}`)
+      throw new UsageError(`File --args-file "${file}" cannot be read: ${errorMessage(e)}`)
     }
     try {
       return { value: JSON.parse(text), given: true }
     } catch (e) {
-      throw new UsageError(`Soubor --args-file „${file}“ neobsahuje platný JSON: ${errorMessage(e)}`)
+      throw new UsageError(`File --args-file "${file}" does not contain valid JSON: ${errorMessage(e)}`)
     }
   }
   return { value: undefined, given: false }
@@ -69,16 +69,16 @@ export async function runCommand(ctx: CommandContext, argv: string[], mode: 'run
   let workflowRef = ''
   let resumeRunId: string | undefined = str(v.resume)
   if (mode === 'resume') {
-    if (pos.length !== 1) throw new UsageError('Příkaz resume vyžaduje právě jedno runId: ultracode resume <runId>')
+    if (pos.length !== 1) throw new UsageError('The resume command requires exactly one runId: ultracode resume <runId>')
     if (resumeRunId !== undefined && resumeRunId !== pos[0]) {
-      throw new UsageError(`runId „${pos[0]}“ a --resume „${resumeRunId}“ se liší.`)
+      throw new UsageError(`runId "${pos[0]}" and --resume "${resumeRunId}" differ.`)
     }
     resumeRunId = pos[0]
   } else {
-    if (pos.length > 1) throw new UsageError(`Příkaz run bere jediný argument (workflow), dostal jsem ${pos.length}.`)
+    if (pos.length > 1) throw new UsageError(`The run command takes a single argument (workflow), got ${pos.length}.`)
     if (pos.length === 1) workflowRef = pos[0]
     if (workflowRef === '' && resumeRunId === undefined) {
-      throw new UsageError('Chybí workflow. Použití: ultracode run <workflow|cesta> [volby]')
+      throw new UsageError('Missing workflow. Usage: ultracode run <workflow|path> [options]')
     }
   }
 
@@ -92,27 +92,27 @@ export async function runCommand(ctx: CommandContext, argv: string[], mode: 'run
   const effort = parseEffort(str(v.effort))
   const model = str(v.model)
   const runId = str(v['run-id'])
-  if (model !== undefined && model.trim() === '') throw new UsageError('Volba --model nesmí být prázdná.')
+  if (model !== undefined && model.trim() === '') throw new UsageError('The --model option must not be empty.')
   if (runId !== undefined) assertSafeRunId(runId, '--run-id')
   if (resumeRunId !== undefined) assertSafeRunId(resumeRunId)
 
   if (workflowRef !== '' && looksLikePath(workflowRef)) {
     const abs = resolve(io.cwd, workflowRef)
-    if (!existsSync(abs)) throw new UsageError(`Soubor workflow „${workflowRef}“ neexistuje (${abs}).`)
+    if (!existsSync(abs)) throw new UsageError(`Workflow file "${workflowRef}" does not exist (${abs}).`)
     workflowRef = abs
   }
 
-  // ── kontrola, že obnovovaný běh existuje ──
+  // ── check that the run being resumed exists ──
   if (resumeRunId !== undefined) {
     const store = await resolveStore(deps)
     const prev = await store.readRunSummary(cwd, resumeRunId)
     if (!prev) {
-      throw new UsageError(`Běh „${resumeRunId}“ nenalezen v ${store.runsRoot(cwd)}. Seznam: ultracode list`)
+      throw new UsageError(`Run "${resumeRunId}" not found in ${store.runsRoot(cwd)}. List: ultracode list`)
     }
     if (prev.status === 'running') {
       io.stderr.write(
         style.yellow(
-          `Pozor: běh ${resumeRunId} je podle run.json stále ve stavu running (možná ještě běží jiný proces).\n`,
+          `Warning: run ${resumeRunId} is still in state running according to run.json (another process may still be running).\n`,
         ),
       )
     }
@@ -126,11 +126,11 @@ export async function runCommand(ctx: CommandContext, argv: string[], mode: 'run
   const renderOpts = { style, verbose: bool(v.verbose) }
   const onEvent = (e: RunEvent) => {
     if (quiet) return
-    if (e.t === 'run_end') return // závěr vypíše souhrn
+    if (e.t === 'run_end') return // the summary prints the conclusion
     try {
       writeLines(io.stderr, renderEvent(e, renderState, renderOpts))
     } catch {
-      // výpis průběhu nesmí shodit běh
+      // printing progress must not crash the run
     }
   }
 
@@ -153,14 +153,14 @@ export async function runCommand(ctx: CommandContext, argv: string[], mode: 'run
     return handleThrown(ctx, e)
   }
 
-  // ── výstup ──
+  // ── output ──
   if (!quiet) {
     writeLines(io.stderr, ['', ...renderSummary(summary, style)])
   } else if (summary.status !== 'completed' && summary.error) {
     errorLine(ctx, summary.error)
   }
   if (summary.budgetExceeded && quiet) {
-    errorLine(ctx, 'Rozpočet byl překročen, výsledek je částečný.')
+    errorLine(ctx, 'Budget was exceeded, the result is partial.')
   }
 
   if (asJson) {
@@ -179,14 +179,14 @@ export async function runCommand(ctx: CommandContext, argv: string[], mode: 'run
   }
 }
 
-/** Kódy chyb enginu, které znamenají chybné použití (neexistující/zamčený běh, kolize `--run-id`, …) → exit 2. */
+/** Engine error codes that mean incorrect usage (non-existent/locked run, `--run-id` collision, …) → exit 2. */
 const USAGE_CODES = new Set(['RUN_NOT_FOUND', 'RUN_EXISTS', 'RUN_LOCKED', 'INVALID_RUN_ID', 'USAGE', 'SCRIPT_MISSING'])
 
-/** Engine hází jen pro chybné použití; vše ostatní je neočekávaná chyba. */
+/** The engine throws only for incorrect usage; everything else is an unexpected error. */
 function handleThrown(ctx: CommandContext, e: unknown): number {
   const code = errorCode(e)
   if (code === 'SCRIPT_INVALID') {
-    errorLine(ctx, `Neplatný skript: ${errorMessage(e)}`)
+    errorLine(ctx, `Invalid script: ${errorMessage(e)}`)
     const diags = (e as { diagnostics?: unknown }).diagnostics
     if (Array.isArray(diags)) {
       for (const d of diags) ctx.io.stderr.write(`  - ${String(d)}\n`)
@@ -201,6 +201,6 @@ function handleThrown(ctx: CommandContext, e: unknown): number {
     errorLine(ctx, errorMessage(e))
     return 130
   }
-  errorLine(ctx, `Běh skončil neočekávanou chybou: ${errorMessage(e)}`)
+  errorLine(ctx, `Run ended with an unexpected error: ${errorMessage(e)}`)
   return 1
 }

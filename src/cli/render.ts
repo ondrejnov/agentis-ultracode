@@ -1,6 +1,6 @@
 /**
- * Čisté renderery: RunEvent → řádky textu, souhrn běhu, digest událostí pro `status`.
- * Žádné I/O ani hodiny; všechno deterministické, aby šlo testovat snapshoty.
+ * Pure renderers: RunEvent → lines of text, run summary, event digest for `status`.
+ * No I/O or clocks; everything is deterministic so snapshots can be tested.
  */
 import type { RunEvent, RunSummary, RunTotals, TokenUsage } from '../types.ts'
 import {
@@ -16,13 +16,13 @@ import {
 } from './format.ts'
 import type { Style } from './format.ts'
 
-// ───────────────────────── render jednotlivých událostí ─────────────────────────
+// ───────────────────────── rendering individual events ─────────────────────────
 
 export interface RenderOptions {
   style: Style
-  /** Předřadit `[HH:MM:SS]` (z `ts` události). */
+  /** Prepend `[HH:MM:SS]` (from the event's `ts`). */
   timestamps?: boolean
-  /** Zobrazit i agent_tool a náhled promptu. */
+  /** Also show agent_tool and the prompt preview. */
   verbose?: boolean
 }
 
@@ -32,7 +32,7 @@ export interface AgentInfo {
   workflowPath: string[]
 }
 
-/** Stav potřebný k vykreslení (agent_done nenese label → pamatujeme si ho ze startu). */
+/** State needed for rendering (agent_done carries no label → we remember it from the start). */
 export interface RenderState {
   agents: Map<number, AgentInfo>
 }
@@ -50,15 +50,15 @@ function usageText(u: TokenUsage): string {
 }
 
 function toolsText(n: number): string {
-  return `${n} ${plural(n, 'nástroj', 'nástroje', 'nástrojů')}`
+  return `${n} ${plural(n, 'tool', 'tools', 'tools')}`
 }
 
 function agentsText(n: number): string {
-  return `${n} ${plural(n, 'agent', 'agenti', 'agentů')}`
+  return `${n} ${plural(n, 'agent', 'agents', 'agents')}`
 }
 
 /**
- * Vykreslí jednu událost do 0..N řádků (bez koncového \n). Mění pouze předaný `state`.
+ * Renders one event into 0..N lines (without a trailing \n). Only mutates the passed `state`.
  */
 export function renderEvent(e: RunEvent, state: RenderState, opts: RenderOptions): string[] {
   const s = opts.style
@@ -71,18 +71,18 @@ export function renderEvent(e: RunEvent, state: RenderState, opts: RenderOptions
   switch (e.t) {
     case 'run_start': {
       push(
-        `${s.bold('ultracode')} ${e.runId}  ${s.bold(e.name)}${e.resumed ? s.yellow('  (pokračování)') : ''}`,
+        `${s.bold('ultracode')} ${e.runId}  ${s.bold(e.name)}${e.resumed ? s.yellow('  (resumed)') : ''}`,
       )
       if (e.description) push(s.dim(`  ${e.description}`))
       if (opts.verbose) {
-        push(s.dim(`  skript: ${e.scriptPath}`))
+        push(s.dim(`  script: ${e.scriptPath}`))
         push(s.dim(`  cwd:    ${e.cwd}`))
         if (e.args !== undefined) push(s.dim(`  args:   ${truncate(safeJson(e.args), 200)}`))
       }
       break
     }
     case 'phase': {
-      push(`${indentFor(e.workflowPath)}${s.cyan(s.bold(`== Fáze: ${e.title}`))}`)
+      push(`${indentFor(e.workflowPath)}${s.cyan(s.bold(`== Phase: ${e.title}`))}`)
       break
     }
     case 'log': {
@@ -93,11 +93,11 @@ export function renderEvent(e: RunEvent, state: RenderState, opts: RenderOptions
       break
     }
     case 'workflow_enter': {
-      push(`${indentFor(e.workflowPath)}${s.cyan(`>> vnořené workflow: ${e.name}`)}`)
+      push(`${indentFor(e.workflowPath)}${s.cyan(`>> nested workflow: ${e.name}`)}`)
       break
     }
     case 'workflow_exit': {
-      push(`${indentFor(e.workflowPath)}${s.cyan(`<< konec vnořeného workflow: ${e.name}`)}`)
+      push(`${indentFor(e.workflowPath)}${s.cyan(`<< end of nested workflow: ${e.name}`)}`)
       break
     }
     case 'agent_start': {
@@ -111,13 +111,13 @@ export function renderEvent(e: RunEvent, state: RenderState, opts: RenderOptions
     case 'agent_tool': {
       if (!opts.verbose) break
       const info = state.agents.get(e.id)
-      push(s.dim(`${indentFor(info?.workflowPath ?? [])}  #${e.id} nástroj  ${e.tool}`))
+      push(s.dim(`${indentFor(info?.workflowPath ?? [])}  #${e.id} tool  ${e.tool}`))
       break
     }
     case 'agent_retry': {
       const info = state.agents.get(e.id)
       push(
-        `${indentFor(info?.workflowPath ?? [])}  #${e.id} ${s.yellow('retry  ')} pokus ${e.attempt}: ${e.reason}`,
+        `${indentFor(info?.workflowPath ?? [])}  #${e.id} ${s.yellow('retry  ')} attempt ${e.attempt}: ${e.reason}`,
       )
       break
     }
@@ -130,10 +130,10 @@ export function renderEvent(e: RunEvent, state: RenderState, opts: RenderOptions
       } else if (e.ok) {
         const parts = [formatDuration(e.durationMs), usageText(e.usage), formatUsd(e.costUsd)]
         if (e.toolCalls > 0) parts.push(toolsText(e.toolCalls))
-        push(`${ind}  #${e.id} ${s.green('hotovo ')} ${label}  ${s.dim(parts.join('  '))}`)
+        push(`${ind}  #${e.id} ${s.green('done   ')} ${label}  ${s.dim(parts.join('  '))}`)
       } else {
         const parts = [formatDuration(e.durationMs), formatUsd(e.costUsd)]
-        push(`${ind}  #${e.id} ${s.red('SELHAL ')} ${label}  ${s.dim(parts.join('  '))}`)
+        push(`${ind}  #${e.id} ${s.red('FAILED ')} ${label}  ${s.dim(parts.join('  '))}`)
         if (e.error) push(`${ind}         ${s.red(truncate(e.error, 300))}`)
       }
       break
@@ -142,18 +142,18 @@ export function renderEvent(e: RunEvent, state: RenderState, opts: RenderOptions
       const parts: string[] = []
       if (e.limitOutputTokens !== null) {
         const pct = e.limitOutputTokens > 0 ? Math.round((e.spentOutputTokens / e.limitOutputTokens) * 100) : 0
-        parts.push(`${formatCount(e.spentOutputTokens)} / ${formatCount(e.limitOutputTokens)} výstupních tokenů (${pct} %)`)
+        parts.push(`${formatCount(e.spentOutputTokens)} / ${formatCount(e.limitOutputTokens)} output tokens (${pct} %)`)
       }
       if (e.limitUsd !== null) {
         parts.push(`${formatUsd(e.spentUsd)} / ${formatUsd(e.limitUsd)}`)
       }
-      if (parts.length > 0) push(s.dim(`  rozpočet: ${parts.join('  |  ')}`))
+      if (parts.length > 0) push(s.dim(`  budget: ${parts.join('  |  ')}`))
       break
     }
     case 'run_end': {
       const color = e.status === 'completed' ? s.green : e.status === 'aborted' ? s.yellow : s.red
       push(
-        `${s.bold('== Konec:')} ${color(e.status)}  ${formatDuration(e.durationMs)}  ${agentsText(e.totals.agents)}  ${formatUsd(e.totals.costUsd)}`,
+        `${s.bold('== End:')} ${color(e.status)}  ${formatDuration(e.durationMs)}  ${agentsText(e.totals.agents)}  ${formatUsd(e.totals.costUsd)}`,
       )
       if (e.error) push(s.red(`   ${e.error}`))
       break
@@ -162,9 +162,9 @@ export function renderEvent(e: RunEvent, state: RenderState, opts: RenderOptions
   return lines
 }
 
-// ───────────────────────── souhrn běhu ─────────────────────────
+// ───────────────────────── run summary ─────────────────────────
 
-/** Řádek „Popisek:  hodnota“ se sloupcem hodnot zarovnaným na 10 znaků. */
+/** A "Label:  value" line with the value column aligned to 10 characters. */
 function kv(label: string, value: string): string {
   return `${label}:`.padEnd(10) + value
 }
@@ -172,34 +172,34 @@ function kv(label: string, value: string): string {
 function totalsLines(t: RunTotals, s: Style): string[] {
   const agents = [agentsText(t.agents)]
   const extra: string[] = []
-  if (t.cachedAgents > 0) extra.push(`z cache ${t.cachedAgents}`)
-  if (t.failedAgents > 0) extra.push(s.red(`selhalo ${t.failedAgents}`))
+  if (t.cachedAgents > 0) extra.push(`from cache ${t.cachedAgents}`)
+  if (t.failedAgents > 0) extra.push(s.red(`failed ${t.failedAgents}`))
   const agentLine = extra.length > 0 ? `${agents[0]} (${extra.join(', ')})` : agents[0]
   const u = t.usage
   return [
-    kv('Agenti', agentLine),
-    kv('Nástroje', String(t.toolCalls)),
-    kv('Tokeny', `in ${formatCount(u.inputTokens)}, out ${formatCount(u.outputTokens)}, cache čtení ${formatCount(u.cacheReadTokens)}, cache zápis ${formatCount(u.cacheCreationTokens)}`),
-    kv('Cena', formatUsd(t.costUsd)),
+    kv('Agents', agentLine),
+    kv('Tools', String(t.toolCalls)),
+    kv('Tokens', `in ${formatCount(u.inputTokens)}, out ${formatCount(u.outputTokens)}, cache read ${formatCount(u.cacheReadTokens)}, cache write ${formatCount(u.cacheCreationTokens)}`),
+    kv('Cost', formatUsd(t.costUsd)),
   ]
 }
 
-/** Závěrečný souhrn běhu (stderr po `run`). */
+/** Final run summary (stderr after `run`). */
 export function renderSummary(summary: RunSummary, style: Style): string[] {
   const s = style
   const statusColor = summary.status === 'completed' ? s.green : summary.status === 'aborted' ? s.yellow : s.red
   const lines: string[] = []
-  lines.push(s.bold('-- Souhrn --'))
-  lines.push(kv('Běh', `${summary.runId}  ${summary.name}`))
-  lines.push(kv('Stav', `${statusColor(summary.status)}${summary.budgetExceeded ? s.yellow('  (rozpočet překročen)') : ''}`))
-  lines.push(kv('Doba', formatDuration(summary.durationMs)))
+  lines.push(s.bold('-- Summary --'))
+  lines.push(kv('Run', `${summary.runId}  ${summary.name}`))
+  lines.push(kv('Status', `${statusColor(summary.status)}${summary.budgetExceeded ? s.yellow('  (budget exceeded)') : ''}`))
+  lines.push(kv('Duration', formatDuration(summary.durationMs)))
   lines.push(...totalsLines(summary.totals, s))
-  if (summary.error) lines.push(s.red(kv('Chyba', summary.error)))
-  lines.push(kv('Adresář', summary.runDir))
+  if (summary.error) lines.push(s.red(kv('Error', summary.error)))
+  lines.push(kv('Folder', summary.runDir))
   return lines
 }
 
-// ───────────────────────── digest událostí (status) ─────────────────────────
+// ───────────────────────── event digest (status) ─────────────────────────
 
 export type AgentState = 'running' | 'done' | 'cached' | 'failed'
 
@@ -230,7 +230,7 @@ export interface EventDigest {
   ended: boolean
 }
 
-/** Z events.jsonl poskládá stav agentů a fází. Odolné vůči neúplným (rozpracovaným) logům. */
+/** Builds the agent and phase state from events.jsonl. Robust against incomplete (in-progress) logs. */
 export function digestEvents(events: RunEvent[]): EventDigest {
   const agents = new Map<number, AgentRow>()
   const phases: PhaseRow[] = []
@@ -252,7 +252,7 @@ export function digestEvents(events: RunEvent[]): EventDigest {
   for (const e of events) {
     switch (e.t) {
       case 'run_start':
-        // resume dopisuje do téhož events.jsonl: starý run_end přestává platit
+        // resume appends to the same events.jsonl: the old run_end stops applying
         ended = false
         for (const p of e.phases ?? []) ensurePhase(p.title)
         break
@@ -316,23 +316,23 @@ export function digestEvents(events: RunEvent[]): EventDigest {
 }
 
 const STATE_LABEL: Record<AgentState, string> = {
-  running: 'běží',
-  done: 'hotovo',
+  running: 'running',
+  done: 'done',
   cached: 'cache',
-  failed: 'SELHAL',
+  failed: 'FAILED',
 }
 
 export interface StatusRenderInput {
   summary: RunSummary
   digest: EventDigest
-  /** Aktuální čas v ms (kvůli stáří a době probíhajícího běhu). */
+  /** Current time in ms (for the age and the duration of a running run). */
   nowMs: number
   style: Style
-  /** Max. počet řádků agentů (nejnovější); default 40. */
+  /** Max. number of agent rows (newest); default 40. */
   maxAgents?: number
 }
 
-/** Text příkazu `status`. */
+/** Text of the `status` command. */
 export function renderStatus(input: StatusRenderInput): string[] {
   const { summary, digest, style: s } = input
   const lines: string[] = []
@@ -343,15 +343,15 @@ export function renderStatus(input: StatusRenderInput): string[] {
       ? Math.max(0, input.nowMs - startedMs)
       : summary.durationMs
 
-  lines.push(`${s.bold('Běh')} ${summary.runId}  ${s.bold(summary.name)}`)
-  lines.push(kv('Stav', `${statusColor(summary.status)}${summary.budgetExceeded ? s.yellow('  (rozpočet překročen)') : ''}`))
-  lines.push(kv('Doba', `${formatDuration(duration)}${summary.status === 'running' ? s.dim(' (běží)') : ''}`))
-  lines.push(kv('Skript', summary.scriptPath))
-  lines.push(kv('Adresář', summary.runDir))
+  lines.push(`${s.bold('Run')} ${summary.runId}  ${s.bold(summary.name)}`)
+  lines.push(kv('Status', `${statusColor(summary.status)}${summary.budgetExceeded ? s.yellow('  (budget exceeded)') : ''}`))
+  lines.push(kv('Duration', `${formatDuration(duration)}${summary.status === 'running' ? s.dim(' (running)') : ''}`))
+  lines.push(kv('Script', summary.scriptPath))
+  lines.push(kv('Folder', summary.runDir))
 
   if (digest.phases.length > 0) {
     lines.push('')
-    lines.push(s.bold('Fáze:'))
+    lines.push(s.bold('Phases:'))
     for (const p of digest.phases) {
       const active = !digest.ended && p.title === digest.currentPhase
       const mark = active ? s.cyan('>') : ' '
@@ -363,7 +363,7 @@ export function renderStatus(input: StatusRenderInput): string[] {
     const max = input.maxAgents ?? 40
     const shown = digest.agents.slice(-max)
     lines.push('')
-    lines.push(s.bold(`Agenti${digest.agents.length > shown.length ? ` (posledních ${shown.length} z ${digest.agents.length})` : ''}:`))
+    lines.push(s.bold(`Agents${digest.agents.length > shown.length ? ` (last ${shown.length} of ${digest.agents.length})` : ''}:`))
     const rows = shown.map((a) => {
       const color = a.state === 'done' || a.state === 'cached' ? s.green : a.state === 'failed' ? s.red : s.cyan
       const detail: string[] = []
@@ -377,26 +377,26 @@ export function renderStatus(input: StatusRenderInput): string[] {
   }
 
   lines.push('')
-  lines.push(s.bold('Součty:'))
+  lines.push(s.bold('Totals:'))
   for (const l of totalsLines(summary.totals, s)) lines.push(`  ${l}`)
 
   if (summary.error) {
     lines.push('')
-    lines.push(s.red(kv('Chyba', summary.error)))
+    lines.push(s.red(kv('Error', summary.error)))
   }
   if (summary.status === 'completed' && summary.result !== undefined) {
     lines.push('')
-    lines.push(kv('Výsledek', truncate(safeJson(summary.result), 300)))
+    lines.push(kv('Result', truncate(safeJson(summary.result), 300)))
   }
   return lines
 }
 
-// ───────────────────────── seznam běhů ─────────────────────────
+// ───────────────────────── run list ─────────────────────────
 
-/** Tabulka běhů pro `list`. */
+/** Table of runs for `list`. */
 export function renderRunList(runs: RunSummary[], nowMs: number, s: Style): string[] {
   if (runs.length === 0) return []
-  const header = ['ID', 'WORKFLOW', 'STAV', 'STÁŘÍ', 'AGENTI', 'CENA'].map((h) => s.dim(h))
+  const header = ['ID', 'WORKFLOW', 'STATUS', 'AGE', 'AGENTS', 'COST'].map((h) => s.dim(h))
   const rows = runs.map((r) => {
     const color = r.status === 'completed' ? s.green : r.status === 'running' ? s.cyan : r.status === 'aborted' ? s.yellow : s.red
     const started = Date.parse(r.startedAt)

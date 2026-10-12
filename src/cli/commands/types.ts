@@ -1,4 +1,4 @@
-/** `ultracode types [--out dir]` + sdílená funkce `writeTypes` (používá i `init`). */
+/** `ultracode types [--out dir]` + shared function `writeTypes` (also used by `init`). */
 import { copyFileSync, existsSync, mkdirSync } from 'node:fs'
 import { join, relative, resolve, sep } from 'node:path'
 import { parseCommandLine, str } from '../options.ts'
@@ -10,15 +10,15 @@ export const TYPES_FILE_NAME = 'workflow.d.ts'
 
 export interface WriteTypesResult {
   file: string
-  /** Řádek `/// <reference path="…" />` pro skripty v `<cwd>/.ultracode/workflows/`. */
+  /** The `/// <reference path="…" />` line for scripts in `<cwd>/.ultracode/workflows/`. */
   referenceLine: string
 }
 
-/** Zkopíruje `<packageRoot>/types/workflow.d.ts` do `outDir`. Hází Error s českou zprávou. */
+/** Copies `<packageRoot>/types/workflow.d.ts` to `outDir`. Throws an Error with a human-readable message. */
 export function writeTypes(packageRoot: string, cwd: string, outDir: string): WriteTypesResult {
   const source = join(packageRoot, 'types', TYPES_FILE_NAME)
   if (!existsSync(source)) {
-    throw new Error(`V balíčku chybí ${source}.`)
+    throw new Error(`Package is missing ${source}.`)
   }
   mkdirSync(outDir, { recursive: true })
   const file = join(outDir, TYPES_FILE_NAME)
@@ -30,18 +30,18 @@ export function writeTypes(packageRoot: string, cwd: string, outDir: string): Wr
 
 export async function typesCommand(ctx: CommandContext, argv: string[]): Promise<number> {
   const parsed = parseCommandLine('types', argv)
-  if (parsed.positionals.length > 0) throw new UsageError('Příkaz types nebere žádné argumenty (použij --out <dir>).')
+  if (parsed.positionals.length > 0) throw new UsageError('The types command takes no arguments (use --out <dir>).')
   const cwd = resolveCwd(ctx, parsed.values)
   const out = str(parsed.values.out)
-  if (out !== undefined && out.trim() === '') throw new UsageError('Volba --out nesmí být prázdná.')
+  if (out !== undefined && out.trim() === '') throw new UsageError('The --out option must not be empty.')
   const outDir = out !== undefined ? resolve(ctx.io.cwd, out) : join(cwd, '.ultracode')
   try {
     const res = writeTypes(ctx.packageRoot, cwd, outDir)
-    ctx.io.stderr.write(`Typy zapsány: ${res.file}\n`)
+    ctx.io.stderr.write(`Types written: ${res.file}\n`)
     ctx.io.stdout.write(`${res.referenceLine}\n`)
     return 0
   } catch (e) {
-    errorLine(ctx, `Zápis typů selhal: ${errorMessage(e)}`)
+    errorLine(ctx, `Writing types failed: ${errorMessage(e)}`)
     return 1
   }
 }

@@ -1,6 +1,6 @@
 /**
- * Čtení stavu běhů z disku: `<cwd>/.ultracode/runs/<runId>/{run.json,events.jsonl,...}`.
- * Všechny funkce jsou synchronní a odolné vůči poškozeným/neúplným souborům (nikdy nehází).
+ * Reads run state from disk: `<cwd>/.ultracode/runs/<runId>/{run.json,events.jsonl,...}`.
+ * All functions are synchronous and robust against corrupt/incomplete files (they never throw).
  */
 import { readdirSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
@@ -13,7 +13,7 @@ export function runsRoot(cwd: string): string {
   return join(resolve(cwd), '.ultracode', 'runs')
 }
 
-/** runId smí obsahovat jen bezpečné znaky (žádné `/`, `..`) — ochrana proti průchodu mimo runs/. */
+/** runId may contain only safe characters (no `/`, `..`) — protection against path traversal outside runs/. */
 export function isSafeRunId(runId: string): boolean {
   return typeof runId === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(runId)
 }
@@ -68,7 +68,7 @@ function normalizeTotals(raw: unknown): RunTotals {
   }
 }
 
-/** Doplní chybějící pole ze zápisu v run.json; vrací null, pokud chybí i základ (status/startedAt). */
+/** Fills in missing fields from the run.json record; returns null if the base (status/startedAt) is missing too. */
 function normalizeSummary(raw: unknown, dirName: string, runDir: string): RunSummary | null {
   if (!isRecord(raw)) return null
   if (typeof raw.status !== 'string' || !STATUSES.has(raw.status)) return null
@@ -90,7 +90,7 @@ function normalizeSummary(raw: unknown, dirName: string, runDir: string): RunSum
   return summary
 }
 
-/** Poškozený/chybějící run.json: pokus o rekonstrukci z events.jsonl (run_start/run_end). */
+/** Corrupt/missing run.json: attempts to reconstruct it from events.jsonl (run_start/run_end). */
 function reconstructFromEvents(cwd: string, runId: string, runDir: string): RunSummary | null {
   const events = readEvents(cwd, runId)
   const start = events.find((e) => e.t === 'run_start')
@@ -112,7 +112,7 @@ function reconstructFromEvents(cwd: string, runId: string, runDir: string): RunS
   return summary
 }
 
-/** Drží zámek běhu (`.lock`) ještě živý proces? */
+/** Is a live process still holding the run lock (`.lock`)? */
 function isLockHeld(runDir: string): boolean {
   const lock = readJson(join(runDir, '.lock'))
   if (!isRecord(lock)) return false
@@ -121,7 +121,7 @@ function isLockHeld(runDir: string): boolean {
   return lockHolderAlive({ pid, ...(typeof lock.start === 'string' ? { start: lock.start } : {}) })
 }
 
-/** Drží právě teď nějaký proces zámek běhu (běh běží, nebo se obnovuje)? */
+/** Is some process holding the run lock right now (the run is running or being resumed)? */
 export function runLockHeld(cwd: string, runId: string): boolean {
   if (!isSafeRunId(runId)) return false
   return isLockHeld(runDirOf(cwd, runId))
@@ -132,16 +132,16 @@ export function readRunSummary(cwd: string, runId: string): RunSummary | null {
   const runDir = runDirOf(cwd, runId)
   const summary =
     normalizeSummary(readJson(join(runDir, 'run.json')), runId, runDir) ?? reconstructFromEvents(cwd, runId, runDir)
-  // Proces zabitý násilně (SIGKILL, OOM, výpadek stroje) nestihl stav uzavřít: run.json zůstal `running`.
-  // Bez živého držitele zámku to není běh, ale přerušený běh — `resume` ho dodělá z journalu.
+  // A process killed forcibly (SIGKILL, OOM, machine failure) did not manage to close the state: run.json stayed `running`.
+  // Without a live lock holder this is not a running run but an interrupted one — `resume` finishes it from the journal.
   if (summary && summary.status === 'running' && !isLockHeld(runDir)) {
     summary.status = 'aborted'
-    summary.error = summary.error ?? 'Proces běhu už neběží (byl ukončen násilně); lze pokračovat příkazem resume.'
+    summary.error = summary.error ?? 'The run process is no longer running (it was terminated forcibly); it can be continued with the resume command.'
   }
   return summary
 }
 
-/** Všechny běhy, nejnovější první (podle startedAt, při shodě podle runId). */
+/** All runs, newest first (by startedAt, ties broken by runId). */
 export function listRuns(cwd: string): RunSummary[] {
   let names: string[]
   try {
@@ -165,7 +165,7 @@ export function listRuns(cwd: string): RunSummary[] {
   return out
 }
 
-/** Události běhu v pořadí zápisu; nečitelné řádky se přeskočí, chybějící soubor dává `[]`. */
+/** Run events in write order; unreadable lines are skipped, a missing file yields `[]`. */
 export function readEvents(cwd: string, runId: string): RunEvent[] {
   if (!isSafeRunId(runId)) return []
   let text: string
@@ -182,7 +182,7 @@ export function readEvents(cwd: string, runId: string): RunEvent[] {
       const e = JSON.parse(line)
       if (isRecord(e) && typeof e.t === 'string') out.push(e as unknown as RunEvent)
     } catch {
-      // useknutý řádek ignorujeme
+      // ignore a truncated line
     }
   }
   return out

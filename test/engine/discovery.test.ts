@@ -39,7 +39,7 @@ afterEach(() => {
 })
 
 describe('discovery', () => {
-  test('workflowSearchDirs: projekt, rodiče až ke kořeni, ~/.ultracode, $ULTRACODE_WORKFLOWS_DIR (v tomto pořadí)', () => {
+  test('workflowSearchDirs: project, parents up to root, ~/.ultracode, $ULTRACODE_WORKFLOWS_DIR (in this order)', () => {
     process.env.ULTRACODE_WORKFLOWS_DIR = [join(root, 'shared1'), join(root, 'shared2')].join(delimiter)
     const dirs = workflowSearchDirs(project)
     assert.equal(dirs[0], join(project, '.ultracode', 'workflows'))
@@ -52,7 +52,7 @@ describe('discovery', () => {
     assert.equal(new Set(dirs).size, dirs.length)
   })
 
-  test('findWorkflow: projektový adresář, přípony a priorita .workflow.ts > .workflow.js > .ts > .js', () => {
+  test('findWorkflow: project directory, extensions and priority .workflow.ts > .workflow.js > .ts > .js', () => {
     const wf = join(project, '.ultracode', 'workflows')
     put(wf, 'alpha.js')
     assert.equal(findWorkflow('alpha', project), join(wf, 'alpha.js'))
@@ -64,7 +64,7 @@ describe('discovery', () => {
     assert.equal(findWorkflow('alpha', project), join(wf, 'alpha.workflow.ts'))
   })
 
-  test('findWorkflow: nalezne v rodičovském adresáři, projekt přebíjí rodiče', () => {
+  test('findWorkflow: finds it in a parent directory, project overrides parent', () => {
     const parent = join(root, 'work', 'proj', '.ultracode', 'workflows')
     put(parent, 'deploy.workflow.ts')
     assert.equal(findWorkflow('deploy', project), join(parent, 'deploy.workflow.ts'))
@@ -72,28 +72,28 @@ describe('discovery', () => {
     assert.equal(findWorkflow('deploy', project), own)
   })
 
-  test('findWorkflow: uživatelský adresář ~/.ultracode/workflows', () => {
+  test('findWorkflow: user directory ~/.ultracode/workflows', () => {
     const f = put(join(home, '.ultracode', 'workflows'), 'global-audit.workflow.ts')
     assert.equal(findWorkflow('global-audit', project), f)
   })
 
-  test('findWorkflow: $ULTRACODE_WORKFLOWS_DIR (i relativní cesta k cwd) jako poslední zdroj', () => {
+  test('findWorkflow: $ULTRACODE_WORKFLOWS_DIR (including a relative path to cwd) as the last source', () => {
     const f = put(join(root, 'shared'), 'team-flow.ts')
     process.env.ULTRACODE_WORKFLOWS_DIR = join(root, 'shared')
     assert.equal(findWorkflow('team-flow', project), f)
     process.env.ULTRACODE_WORKFLOWS_DIR = '../../../shared'
     assert.equal(findWorkflow('team-flow', project), f)
-    // uživatelský adresář má přednost před env
+    // user directory takes precedence over env
     const u = put(join(home, '.ultracode', 'workflows'), 'team-flow.ts')
     assert.equal(findWorkflow('team-flow', project), u)
   })
 
-  test('findWorkflow: nenalezeno → WorkflowNotFoundError se seznamem prohledaných adresářů', () => {
+  test('findWorkflow: not found → WorkflowNotFoundError with the list of searched directories', () => {
     assert.throws(
-      () => findWorkflow('nic', project),
+      () => findWorkflow('nothing', project),
       (e: unknown) => {
         assert.ok(e instanceof WorkflowNotFoundError)
-        assert.match(e.message, /nic/)
+        assert.match(e.message, /nothing/)
         assert.ok(e.message.includes(join(project, '.ultracode', 'workflows')))
         return true
       },
@@ -101,37 +101,37 @@ describe('discovery', () => {
     assert.throws(() => findWorkflow('', project), WorkflowNotFoundError)
   })
 
-  test('findWorkflow: cesta k existujícímu souboru se vrátí absolutně; adresář se jménem se nebere', () => {
+  test('findWorkflow: a path to an existing file is returned as absolute; a directory with that name is not taken', () => {
     const f = put(project, 'local.workflow.ts')
     assert.equal(findWorkflow('./local.workflow.ts', project), f)
     assert.equal(findWorkflow(f, project), f)
-    mkdirSync(join(project, '.ultracode', 'workflows', 'adresar.ts'), { recursive: true })
-    assert.throws(() => findWorkflow('adresar', project), WorkflowNotFoundError)
+    mkdirSync(join(project, '.ultracode', 'workflows', 'directory.ts'), { recursive: true })
+    assert.throws(() => findWorkflow('directory', project), WorkflowNotFoundError)
   })
 
-  test('listWorkflows: jména bez přípon, scope, popis z meta, stínování a ignorování .d.ts', () => {
+  test('listWorkflows: names without extensions, scope, description from meta, shadowing and ignoring .d.ts', () => {
     const wf = join(project, '.ultracode', 'workflows')
-    put(wf, 'b-flow.workflow.ts', "export const meta = {\n  name: 'b-flow',\n  description: 'Najde \\'flaky\\' testy',\n}\n")
-    put(wf, 'a-flow.ts', 'export const meta = { name: "a-flow", description: "Popis A" }\n')
+    put(wf, 'b-flow.workflow.ts', "export const meta = {\n  name: 'b-flow',\n  description: 'Finds \\'flaky\\' tests',\n}\n")
+    put(wf, 'a-flow.ts', 'export const meta = { name: "a-flow", description: "Description A" }\n')
     put(wf, 'types.d.ts', 'declare const x: 1\n')
-    put(wf, 'readme.md', '# ne')
+    put(wf, 'readme.md', '# no')
     put(wf, 'no-meta.js', 'return 1\n')
-    put(join(home, '.ultracode', 'workflows'), 'a-flow.ts', "export const meta = { name: 'a', description: 'z home' }\n")
-    put(join(home, '.ultracode', 'workflows'), 'home-only.workflow.js', "export const meta = { name: 'h', description: `Šablonový popis` }\n")
+    put(join(home, '.ultracode', 'workflows'), 'a-flow.ts', "export const meta = { name: 'a', description: 'from home' }\n")
+    put(join(home, '.ultracode', 'workflows'), 'home-only.workflow.js', "export const meta = { name: 'h', description: `Template description` }\n")
     const list = listWorkflows(project)
     assert.deepEqual(
       list.map((w) => [w.name, w.scope, w.description]),
       [
-        ['a-flow', 'project', 'Popis A'],
-        ['b-flow', 'project', "Najde 'flaky' testy"],
+        ['a-flow', 'project', 'Description A'],
+        ['b-flow', 'project', "Finds 'flaky' tests"],
         ['no-meta', 'project', undefined],
-        ['home-only', 'user', 'Šablonový popis'],
+        ['home-only', 'user', 'Template description'],
       ],
     )
     assert.equal(list[0].path, join(wf, 'a-flow.ts'))
   })
 
-  test('listWorkflows: prázdný výsledek, když nic neexistuje', () => {
+  test('listWorkflows: empty result when nothing exists', () => {
     assert.deepEqual(listWorkflows(project), [])
   })
 })

@@ -1,4 +1,4 @@
-/** Pomocné funkce pro testy runneru (sdílí claude.test.ts a real-format.test.ts). */
+/** Helper functions for runner tests (shared by claude.test.ts and real-format.test.ts). */
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -17,7 +17,7 @@ export interface Sandbox {
   cleanup(): void
 }
 
-/** Založí izolovaný adresář a nastaví env, který fake-claude i runner čtou. */
+/** Creates an isolated directory and sets the env that fake-claude and the runner read. */
 export function makeSandbox(bin: string = FAKE_CLAUDE): Sandbox {
   const root = mkdtempSync(join(tmpdir(), 'ultracode-runner-'))
   const cwd = join(root, 'work')
@@ -41,7 +41,7 @@ export function makeSandbox(bin: string = FAKE_CLAUDE): Sandbox {
       try {
         rmSync(root, { recursive: true, force: true })
       } catch {
-        // ignoruj
+        // ignore
       }
     },
   }
@@ -67,13 +67,13 @@ export function readLog(sb: Sandbox): FakeLogEntry[] {
     .map((l) => JSON.parse(l) as FakeLogEntry)
 }
 
-/** Najde hodnotu volby v argv (`--model` → další prvek). */
+/** Finds the value of an option in argv (`--model` → next element). */
 export function argOf(args: string[], flag: string): string | undefined {
   const i = args.indexOf(flag)
   return i >= 0 ? args[i + 1] : undefined
 }
 
-/** Žije proces? Zombie (stav Z) se počítá jako mrtvý. */
+/** Is the process alive? A zombie (state Z) counts as dead. */
 export function isAlive(pid: number): boolean {
   try {
     process.kill(pid, 0)
@@ -85,12 +85,12 @@ export function isAlive(pid: number): boolean {
     const state = stat.slice(stat.lastIndexOf(')') + 2, stat.lastIndexOf(')') + 3)
     if (state === 'Z' || state === 'X') return false
   } catch {
-    // bez /proc: spolehni se na kill(0)
+    // without /proc: rely on kill(0)
   }
   return true
 }
 
-/** Počká, až proces zemře (max `timeoutMs`). Vrací true, pokud je mrtvý. */
+/** Waits until the process dies (max `timeoutMs`). Returns true if it is dead. */
 export async function waitDead(pid: number, timeoutMs = 3000): Promise<boolean> {
   const end = Date.now() + timeoutMs
   while (Date.now() < end) {
@@ -105,7 +105,7 @@ export function collectProgress(): { events: ClaudeProgress[]; push: (e: ClaudeP
   return { events, push: (e) => events.push(e) }
 }
 
-/** pid potomka z fake_child eventu ve stream.jsonl. */
+/** child pid from the fake_child event in stream.jsonl. */
 export function childPidFromStream(outDir: string): number | null {
   const file = join(outDir, 'stream.jsonl')
   if (!existsSync(file)) return null
@@ -115,7 +115,7 @@ export function childPidFromStream(outDir: string): number | null {
       const o = JSON.parse(line) as { subtype?: string; pid?: number }
       if (o.subtype === 'fake_child' && typeof o.pid === 'number') return o.pid
     } catch {
-      // ignoruj
+      // ignore
     }
   }
   return null

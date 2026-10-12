@@ -30,18 +30,18 @@ function req(prompt: string, extra: Partial<ClaudeRunRequest> = {}): ClaudeRunRe
 }
 
 afterEach(() => {
-  // vrať prostředí do původního stavu a uklid
+  // restore the environment to its original state and clean up
   for (const k of Object.keys(process.env)) if (!(k in savedEnv)) delete process.env[k]
   Object.assign(process.env, savedEnv)
   sb?.cleanup()
 })
 
-describe('runClaude – základní průchod', () => {
-  it('textový výsledek + artefakty v outDir', async () => {
+describe('runClaude – basic run', () => {
+  it('text result + artifacts in outDir', async () => {
     setup()
-    const r = await runClaude(req('Řekni ahoj [[fake:tokens 42]] [[fake:cost 0.02]]'))
+    const r = await runClaude(req('Say hello [[fake:tokens 42]] [[fake:cost 0.02]]'))
     assert.equal(r.ok, true)
-    assert.equal(r.text, 'echo: Řekni ahoj')
+    assert.equal(r.text, 'echo: Say hello')
     assert.equal(r.structured, null)
     assert.equal(r.attempts, 1)
     assert.equal(r.error, undefined)
@@ -52,7 +52,7 @@ describe('runClaude – základní průchod', () => {
     assert.ok(r.durationMs >= 0)
 
     // artefakty
-    assert.equal(readFileSync(join(sb.outDir, 'prompt.txt'), 'utf8'), 'Řekni ahoj [[fake:tokens 42]] [[fake:cost 0.02]]')
+    assert.equal(readFileSync(join(sb.outDir, 'prompt.txt'), 'utf8'), 'Say hello [[fake:tokens 42]] [[fake:cost 0.02]]')
     const stream = readFileSync(join(sb.outDir, 'stream.jsonl'), 'utf8').trim().split('\n')
     assert.ok(stream.length >= 3)
     assert.equal(JSON.parse(stream[0]!).subtype, 'init')
@@ -62,17 +62,17 @@ describe('runClaude – základní průchod', () => {
     assert.deepEqual(saved, JSON.parse(JSON.stringify(r)))
   })
 
-  it('schema: structured z direktivy json; text je jeho JSON', async () => {
+  it('schema: structured from the json directive; text is its JSON', async () => {
     setup()
     const schema = { type: 'object', properties: { n: { type: 'number' }, tags: { type: 'array' } }, required: ['n'] }
-    const r = await runClaude(req('vrať data [[fake:json {"n":7,"tags":[["a"]]}]]', { schema }))
+    const r = await runClaude(req('return data [[fake:json {"n":7,"tags":[["a"]]}]]', { schema }))
     assert.equal(r.ok, true)
     assert.deepEqual(r.structured, { n: 7, tags: [['a']] })
     assert.equal(r.text, '{"n":7,"tags":[["a"]]}')
     assert.equal(argOf(readLog(sb)[0]!.args, '--json-schema'), JSON.stringify(schema))
   })
 
-  it('schema bez direktivy: minimální objekt podle schema', async () => {
+  it('schema without directive: minimal object according to the schema', async () => {
     setup()
     const schema = {
       type: 'object',
@@ -83,37 +83,37 @@ describe('runClaude – základní průchod', () => {
     assert.deepEqual(r.structured, { s: 'x', n: 1, b: true, a: [], o: {} })
   })
 
-  it('velký výstup s vícebajtovými znaky přes hranice chunků', async () => {
+  it('large output with multibyte characters across chunk boundaries', async () => {
     setup()
-    const big = 'řa'.repeat(150_000) // ~450 kB, hranice chunků padnou doprostřed znaku
+    const big = 'řa'.repeat(150_000) // ~450 kB, chunk boundaries fall in the middle of a character
     const r = await runClaude(req(`[[fake:text ${big}]]`))
     assert.equal(r.ok, true)
     assert.equal(r.text, big)
   })
 
-  it('stderr procesu se zapisuje do stderr.txt', async () => {
+  it('process stderr is written to stderr.txt', async () => {
     setup()
-    const r = await runClaude(req('x [[fake:stderr varování z claude]]'))
+    const r = await runClaude(req('x [[fake:stderr warning from claude]]'))
     assert.equal(r.ok, true)
-    assert.match(readFileSync(join(sb.outDir, 'stderr.txt'), 'utf8'), /varování z claude/)
+    assert.match(readFileSync(join(sb.outDir, 'stderr.txt'), 'utf8'), /warning from claude/)
   })
 
-  it('souběžná volání neblokují jedno druhé', async () => {
+  it('concurrent calls do not block each other', async () => {
     setup()
     const runs = await Promise.all(
-      [1, 2, 3, 4].map((i) => runClaude({ ...req(`paralelní ${i} [[fake:sleep 400]]`), outDir: join(sb.root, `out${i}`) })),
+      [1, 2, 3, 4].map((i) => runClaude({ ...req(`parallel ${i} [[fake:sleep 400]]`), outDir: join(sb.root, `out${i}`) })),
     )
     assert.ok(runs.every((r) => r.ok))
     const log = readLog(sb)
     assert.equal(log.length, 4)
     const maxStart = Math.max(...log.map((e) => Date.parse(e.startedAt)))
     const minEnd = Math.min(...log.map((e) => Date.parse(e.endedAt)))
-    assert.ok(maxStart < minEnd, 'všechny běhy se musely překrývat')
+    assert.ok(maxStart < minEnd, 'all runs had to overlap')
   })
 })
 
-describe('runClaude – argumenty a prostředí', () => {
-  it('argv: Workflow zakázán, bypassPermissions, model, effort, schema, system prompt, rozpočet', async () => {
+describe('runClaude – arguments and environment', () => {
+  it('argv: Workflow disabled, bypassPermissions, model, effort, schema, system prompt, budget', async () => {
     setup()
     const schema = { type: 'object', properties: { a: { type: 'string' } } }
     const r = await runClaude(
@@ -121,7 +121,7 @@ describe('runClaude – argumenty a prostředí', () => {
         model: 'haiku',
         effort: 'low',
         schema,
-        appendSystemPrompt: 'Mluv jen česky.',
+        appendSystemPrompt: 'Speak English only.',
         disallowedTools: ['WebFetch', 'Workflow'],
         allowedTools: ['Read', 'Bash(git diff:*)'],
         maxBudgetUsd: 0.5,
@@ -143,13 +143,13 @@ describe('runClaude – argumenty a prostředí', () => {
     assert.equal(argOf(args, '--add-dir'), '/tmp')
     const sys = argOf(args, '--append-system-prompt')!
     assert.ok(sys.startsWith(DEFAULT_SUBAGENT_SYSTEM_PROMPT))
-    assert.ok(sys.endsWith('Mluv jen česky.'))
+    assert.ok(sys.endsWith('Speak English only.'))
     assert.equal(cwd, sb.cwd.replace(/^\/private/, ''))
-    // prompt nikdy v argv, jde přes stdin
+    // prompt never in argv, goes via stdin
     assert.ok(!args.includes('x'))
   })
 
-  it('výchozí system prompt je i bez appendSystemPrompt; custom permissionMode', async () => {
+  it('default system prompt is present even without appendSystemPrompt; custom permissionMode', async () => {
     setup()
     await runClaude(req('x', { permissionMode: 'dontAsk' }))
     const { args } = readLog(sb)[0]!
@@ -161,33 +161,33 @@ describe('runClaude – argumenty a prostředí', () => {
     assert.ok(!args.includes('--model'))
   })
 
-  it('env: CLAUDE_CODE_DISABLE_WORKFLOWS=1 vždy (i proti req.env), vlastní env projde', async () => {
+  it('env: CLAUDE_CODE_DISABLE_WORKFLOWS=1 always (even against req.env), custom env passes through', async () => {
     setup()
-    await runClaude(req('x', { env: { CLAUDE_CODE_DISABLE_WORKFLOWS: '0', ULTRACODE_TEST_ENV: 'hodnota' } }))
+    await runClaude(req('x', { env: { CLAUDE_CODE_DISABLE_WORKFLOWS: '0', ULTRACODE_TEST_ENV: 'value' } }))
     const { env } = readLog(sb)[0]!
     assert.equal(env.CLAUDE_CODE_DISABLE_WORKFLOWS, '1')
-    assert.equal(env.ULTRACODE_TEST_ENV, 'hodnota')
+    assert.equal(env.ULTRACODE_TEST_ENV, 'value')
   })
 
-  it('req.bin má přednost před env ULTRACODE_CLAUDE_BIN (a nic nemění v process.env)', async () => {
+  it('req.bin takes precedence over env ULTRACODE_CLAUDE_BIN (and changes nothing in process.env)', async () => {
     setup()
     const real = process.env['ULTRACODE_CLAUDE_BIN']
-    process.env['ULTRACODE_CLAUDE_BIN'] = '/neexistuje/claude'
+    process.env['ULTRACODE_CLAUDE_BIN'] = '/nonexistent/claude'
     const r = await runClaude(req('x', { bin: real }))
     assert.equal(r.ok, true, r.error?.message)
-    assert.equal(process.env['ULTRACODE_CLAUDE_BIN'], '/neexistuje/claude')
+    assert.equal(process.env['ULTRACODE_CLAUDE_BIN'], '/nonexistent/claude')
     assert.equal(readLog(sb).length, 1)
   })
 
-  it('cwd agenta = req.cwd', async () => {
+  it('agent cwd = req.cwd', async () => {
     setup()
     await runClaude(req('x'))
     assert.equal(readLog(sb)[0]!.cwd, sb.cwd)
   })
 })
 
-describe('runClaude – progress a agregace', () => {
-  it('tool progress, start s pid, text a usage', async () => {
+describe('runClaude – progress and aggregation', () => {
+  it('tool progress, start with pid, text and usage', async () => {
     setup()
     const p = collectProgress()
     const r = await runClaude(req('x [[fake:tools 3]]', { onProgress: p.push }))
@@ -206,7 +206,7 @@ describe('runClaude – progress a agregace', () => {
     assert.equal(lastUsage.kind === 'usage' && lastUsage.usage.outputTokens, 10)
   })
 
-  it('StructuredOutput se nepočítá jako tool call', async () => {
+  it('StructuredOutput is not counted as a tool call', async () => {
     setup()
     const p = collectProgress()
     const r = await runClaude(
@@ -217,7 +217,7 @@ describe('runClaude – progress a agregace', () => {
     assert.deepEqual(p.events.filter((e) => e.kind === 'tool').map((e) => (e as { name: string }).name), ['Read'])
   })
 
-  it('selhaný pokus (přechodná API chyba) se počítá do usage/cost; agregace přes pokusy', async () => {
+  it('failed attempt (transient API error) is counted in usage/cost; aggregation across attempts', async () => {
     setup()
     const p = collectProgress()
     const r = await runClaude(
@@ -229,20 +229,20 @@ describe('runClaude – progress a agregace', () => {
     assert.equal(r.attempts, 2)
     assert.deepEqual(r.usage, { inputTokens: 10, outputTokens: 200, cacheReadTokens: 14, cacheCreationTokens: 6 })
     assert.equal(r.costUsd, 1.0)
-    // chybový pokus emituje tool_use PŘED chybou (1) + úspěšný pokus (1)
+    // the failed attempt emits tool_use BEFORE the error (1) + the successful attempt (1)
     assert.equal(r.toolCalls, 2)
     assert.equal(r.numTurns, 4)
     const retry = p.events.find((e) => e.kind === 'retry')
     assert.ok(retry && retry.kind === 'retry' && retry.attempt === 2 && /529|overloaded/i.test(retry.reason))
     const starts = p.events.filter((e) => e.kind === 'start')
     assert.deepEqual(starts.map((s) => (s as { attempt: number }).attempt), [1, 2])
-    // průběžné usage je kumulativní přes pokusy (druhý pokus začíná nad 100)
+    // running usage is cumulative across attempts (the second attempt starts above 100)
     const outs = p.events.filter((e) => e.kind === 'usage').map((e) => (e as { usage: { outputTokens: number } }).usage.outputTokens)
     assert.ok(Math.max(...outs) === 200)
-    assert.deepEqual(outs, [...outs].sort((a, b) => a - b), 'kumulativní usage nesmí klesat')
+    assert.deepEqual(outs, [...outs].sort((a, b) => a - b), 'cumulative usage must not decrease')
   })
 
-  it('výjimka v onProgress neshodí runner', async () => {
+  it('exception in onProgress does not crash the runner', async () => {
     setup()
     const r = await runClaude(
       req('x [[fake:tools 1]]', {
@@ -256,7 +256,7 @@ describe('runClaude – progress a agregace', () => {
 })
 
 describe('runClaude – retry', () => {
-  it('fail-times 1 → druhý pokus uspěje', async () => {
+  it('fail-times 1 → second attempt succeeds', async () => {
     setup()
     const p = collectProgress()
     const r = await runClaude(req('retry [[fake:fail-times 1]]', { onProgress: p.push }))
@@ -265,27 +265,27 @@ describe('runClaude – retry', () => {
     assert.equal(readLog(sb).length, 2)
     assert.deepEqual(readLog(sb).map((e) => e.attempt), [1, 2])
     assert.ok(p.events.some((e) => e.kind === 'retry'))
-    // záznam prvního pokusu je odsunut, stream.jsonl je z posledního
+    // the first attempt's record is moved aside, stream.jsonl is from the last one
     assert.ok(existsSync(join(sb.outDir, 'stderr.attempt-1.txt')))
-    assert.match(readFileSync(join(sb.outDir, 'stderr.attempt-1.txt'), 'utf8'), /simulované selhání/)
+    assert.match(readFileSync(join(sb.outDir, 'stderr.attempt-1.txt'), 'utf8'), /simulated failure/)
     assert.equal(readFileSync(join(sb.outDir, 'stderr.txt'), 'utf8'), '')
     assert.ok(readFileSync(join(sb.outDir, 'stream.jsonl'), 'utf8').includes('"type":"result"'))
   })
 
-  it('fail → ok:false po maxAttempts (default 3), kind exit, bez usage', async () => {
+  it('fail → ok:false after maxAttempts (default 3), kind exit, no usage', async () => {
     setup()
-    const r = await runClaude(req('vždy padá [[fake:fail]]'))
+    const r = await runClaude(req('always fails [[fake:fail]]'))
     assert.equal(r.ok, false)
     assert.equal(r.attempts, 3)
     assert.equal(readLog(sb).length, 3)
     assert.equal(r.error?.kind, 'exit')
-    assert.match(r.error!.message, /kódem 1/)
-    assert.match(r.error!.message, /simulované selhání/)
+    assert.match(r.error!.message, /code 1/)
+    assert.match(r.error!.message, /simulated failure/)
     assert.equal(r.text, null)
     assert.equal(r.costUsd, 0)
   })
 
-  it('maxAttempts se respektuje a je zastropováno na 6', async () => {
+  it('maxAttempts is respected and capped at 6', async () => {
     setup()
     const r2 = await runClaude(req('a [[fake:fail]]', { maxAttempts: 2 }))
     assert.equal(r2.attempts, 2)
@@ -296,7 +296,7 @@ describe('runClaude – retry', () => {
     assert.equal(readLog(sb).length, 2 + 1 + 6)
   })
 
-  it('exit 0 bez result eventu je chyba a opakuje se', async () => {
+  it('exit 0 without a result event is an error and is retried', async () => {
     setup()
     const r = await runClaude(req('x [[fake:no-result]]', { maxAttempts: 2 }))
     assert.equal(r.ok, false)
@@ -305,17 +305,17 @@ describe('runClaude – retry', () => {
     assert.match(r.error!.message, /result/)
   })
 
-  it('trvalá API chyba (bez přechodného kódu) se neopakuje', async () => {
+  it('permanent API error (without transient code) is not retried', async () => {
     setup()
     const r = await runClaude(req('x [[fake:apierror]] [[fake:tokens 33]]'))
     assert.equal(r.ok, false)
     assert.equal(r.attempts, 1)
     assert.equal(r.error?.kind, 'api')
-    assert.equal(r.usage.outputTokens, 33) // utracené tokeny se započítají i při selhání
+    assert.equal(r.usage.outputTokens, 33) // spent tokens are counted even on failure
     assert.equal(readLog(sb).length, 1)
   })
 
-  it('přechodná API chyba 529 se opakuje do maxAttempts', async () => {
+  it('transient API error 529 is retried up to maxAttempts', async () => {
     setup()
     const r = await runClaude(req('x [[fake:apierror 529]]'))
     assert.equal(r.ok, false)
@@ -325,14 +325,14 @@ describe('runClaude – retry', () => {
     assert.equal(r.usage.outputTokens, 30)
   })
 
-  it('HTTP 401 se neopakuje', async () => {
+  it('HTTP 401 is not retried', async () => {
     setup()
     const r = await runClaude(req('x [[fake:apierror 401]]'))
     assert.equal(r.attempts, 1)
     assert.equal(r.error?.kind, 'api')
   })
 
-  it('schema: chybí structured_output → kind schema, max 1 další pokus', async () => {
+  it('schema: structured_output missing → kind schema, max 1 more attempt', async () => {
     setup()
     const r = await runClaude(
       req('x [[fake:missing-structured]]', {
@@ -345,7 +345,7 @@ describe('runClaude – retry', () => {
     assert.equal(r.attempts, 2)
   })
 
-  it('backoff roste s pokusem a je přerušitelný abortem', async () => {
+  it('backoff grows with the attempt and is interruptible by abort', async () => {
     setup()
     process.env['ULTRACODE_RETRY_BACKOFF_MS'] = '60000'
     const ac = new AbortController()
@@ -356,27 +356,27 @@ describe('runClaude – retry', () => {
     assert.equal(r.ok, false)
     assert.equal(r.error?.kind, 'aborted')
     assert.equal(r.attempts, 1)
-    assert.ok(Date.now() - t0 < 5000, 'abort musí přerušit čekání na backoff')
+    assert.ok(Date.now() - t0 < 5000, 'abort must interrupt the backoff wait')
   })
 })
 
-describe('runClaude – stall, timeout, abort, úklid procesů', () => {
-  it('stall → zabití a retry; po vyčerpání pokusů kind stall; proces je mrtvý', async () => {
+describe('runClaude – stall, timeout, abort, process cleanup', () => {
+  it('stall → kill and retry; after the attempts are exhausted kind stall; the process is dead', async () => {
     setup()
     const p = collectProgress()
     const t0 = Date.now()
-    const r = await runClaude(req('visí [[fake:stall]]', { stallMs: 150, maxAttempts: 2, onProgress: p.push }))
+    const r = await runClaude(req('hangs [[fake:stall]]', { stallMs: 150, maxAttempts: 2, onProgress: p.push }))
     assert.equal(r.ok, false)
     assert.equal(r.error?.kind, 'stall')
     assert.equal(r.attempts, 2)
     assert.ok(Date.now() - t0 < 6000)
     const pids = p.events.filter((e) => e.kind === 'start').map((e) => (e as { pid?: number }).pid!)
     assert.equal(pids.length, 2)
-    for (const pid of pids) assert.equal(await waitDead(pid), true, `proces ${pid} musí být mrtvý`)
-    assert.equal(readLog(sb).length, 2) // SIGTERM handler zapsal oba běhy
+    for (const pid of pids) assert.equal(await waitDead(pid), true, `process ${pid} must be dead`)
+    assert.equal(readLog(sb).length, 2) // SIGTERM handler wrote both runs
   })
 
-  it('stall-times 1 → druhý pokus uspěje', async () => {
+  it('stall-times 1 → second attempt succeeds', async () => {
     setup()
     const r = await runClaude(req('x [[fake:stall-times 1]]', { stallMs: 200 }))
     assert.equal(r.ok, true)
@@ -384,22 +384,22 @@ describe('runClaude – stall, timeout, abort, úklid procesů', () => {
     assert.equal(r.text, 'echo: x')
   })
 
-  it('ticho delší než stallMs = stall; průběžný výstup (i jen stderr) watchdog resetuje', async () => {
+  it('silence longer than stallMs = stall; running output (even just stderr) resets the watchdog', async () => {
     setup()
-    // 900 ms ticha při prahu 300 ms → stall
+    // 900 ms of silence with a 300 ms threshold → stall
     const quiet = await runClaude(req('x [[fake:sleep 900]]', { stallMs: 300, maxAttempts: 1 }))
     assert.equal(quiet.ok, false)
     assert.equal(quiet.error?.kind, 'stall')
-    // celkem ~1000 ms, ale každých 100 ms něco na stderr → práh 300 ms se nesmí překročit
+    // ~1000 ms in total, but something on stderr every 100 ms → the 300 ms threshold must not be exceeded
     const alive = await runClaude(req('y [[fake:heartbeat 100 10]]', { stallMs: 300, maxAttempts: 1 }))
     assert.equal(alive.ok, true)
     assert.ok(alive.durationMs >= 900)
   })
 
-  it('timeout je tvrdý limit pokusu a neretryuje se', async () => {
+  it('timeout is a hard limit of the attempt and is not retried', async () => {
     setup()
     const t0 = Date.now()
-    const r = await runClaude(req('pomalý [[fake:sleep 20000]]', { timeoutMs: 300, maxAttempts: 3 }))
+    const r = await runClaude(req('slow [[fake:sleep 20000]]', { timeoutMs: 300, maxAttempts: 3 }))
     assert.equal(r.ok, false)
     assert.equal(r.error?.kind, 'timeout')
     assert.equal(r.attempts, 1)
@@ -407,7 +407,7 @@ describe('runClaude – stall, timeout, abort, úklid procesů', () => {
     assert.equal(readLog(sb).length, 1)
   })
 
-  it('abort uprostřed: potomek je opravdu mrtvý, bez retry', async () => {
+  it('abort mid-run: the child is really dead, no retry', async () => {
     setup()
     const ac = new AbortController()
     let pid: number | undefined
@@ -434,7 +434,7 @@ describe('runClaude – stall, timeout, abort, úklid procesů', () => {
     assert.equal(readLog(sb).length, 1)
   })
 
-  it('už přerušený signal: agent se vůbec nespustí', async () => {
+  it('already aborted signal: agent is not started at all', async () => {
     setup()
     const ac = new AbortController()
     ac.abort()
@@ -445,28 +445,28 @@ describe('runClaude – stall, timeout, abort, úklid procesů', () => {
     assert.equal(readLog(sb).length, 0)
   })
 
-  it('vedlejší procesy ve skupině jsou zabity při stallu', async () => {
+  it('side processes in the group are killed on stall', async () => {
     setup()
     const r = await runClaude(req('x [[fake:child]] [[fake:stall]]', { stallMs: 200, maxAttempts: 1 }))
     assert.equal(r.error?.kind, 'stall')
     const childPid = childPidFromStream(sb.outDir)
     assert.ok(typeof childPid === 'number')
-    assert.equal(await waitDead(childPid!), true, 'potomek (sleep) musí být zabit společně s vedoucím')
+    assert.equal(await waitDead(childPid!), true, 'child (sleep) must be killed together with the leader')
   })
 
-  it('vedlejší procesy držící roury po normálním konci nezablokují runner a jsou zabity', async () => {
+  it('side processes holding pipes after a normal end do not block the runner and are killed', async () => {
     setup()
     const t0 = Date.now()
-    const r = await runClaude(req('x [[fake:child]] [[fake:text hotovo]]'))
+    const r = await runClaude(req('x [[fake:child]] [[fake:text done]]'))
     assert.equal(r.ok, true)
-    assert.equal(r.text, 'hotovo')
-    assert.ok(Date.now() - t0 < 8000, 'nesmí čekat na sleep 600')
+    assert.equal(r.text, 'done')
+    assert.ok(Date.now() - t0 < 8000, 'must not wait for sleep 600')
     const childPid = childPidFromStream(sb.outDir)
     assert.ok(typeof childPid === 'number')
     assert.equal(await waitDead(childPid!), true)
   })
 
-  it('proces ignorující SIGTERM je po grace periodě zabit SIGKILLem', async () => {
+  it('process ignoring SIGTERM is killed with SIGKILL after the grace period', async () => {
     setup()
     const p = collectProgress()
     const t0 = Date.now()
@@ -479,7 +479,7 @@ describe('runClaude – stall, timeout, abort, úklid procesů', () => {
     assert.equal(await waitDead(childPid!), true)
   })
 
-  it('proces visící po result eventu je po grace periodě ukončen a výsledek platí', async () => {
+  it('process hanging after the result event is terminated after the grace period and the result stands', async () => {
     setup()
     process.env['ULTRACODE_RESULT_GRACE_MS'] = '200'
     const p = collectProgress()
@@ -490,7 +490,7 @@ describe('runClaude – stall, timeout, abort, úklid procesů', () => {
     assert.equal(await waitDead(pid), true)
   })
 
-  it('po úspěšném běhu nezůstane žádný proces', async () => {
+  it('no process remains after a successful run', async () => {
     setup()
     const p = collectProgress()
     const r = await runClaude(req('x', { onProgress: p.push }))
@@ -500,8 +500,8 @@ describe('runClaude – stall, timeout, abort, úklid procesů', () => {
   })
 })
 
-describe('runClaude – úklid při ukončení rodiče', () => {
-  it('když host skončí bez abortu, agent i jeho potomek jsou zabiti v exit hooku', async () => {
+describe('runClaude – cleanup when the parent exits', () => {
+  it('when the host exits without abort, the agent and its child are killed in the exit hook', async () => {
     setup()
     const host = join(FIXTURES, 'orphan-host.ts')
     const res = spawnSync(process.execPath, [host], {
@@ -511,55 +511,55 @@ describe('runClaude – úklid při ukončení rodiče', () => {
     })
     assert.equal(res.status, 0, res.stderr)
     const m = /PID (\d+)/.exec(res.stdout)
-    assert.ok(m, 'host musí vypsat pid agenta')
+    assert.ok(m, 'host must print the agent pid')
     const pid = Number(m![1])
-    assert.equal(await waitDead(pid), true, 'agent musí být zabit')
+    assert.equal(await waitDead(pid), true, 'agent must be killed')
     const childPid = childPidFromStream(sb.outDir)
     assert.ok(typeof childPid === 'number')
-    assert.equal(await waitDead(childPid!), true, 'potomek agenta musí být zabit')
+    assert.equal(await waitDead(childPid!), true, 'agent child must be killed')
   })
 })
 
-describe('runClaude – odolnost proti špatnému výstupu', () => {
-  it('poslední řádek bez \\n je dočten a zpracován', async () => {
+describe('runClaude – resilience to bad output', () => {
+  it('last line without \\n is read and processed', async () => {
     setup()
-    const r = await runClaude(req('x [[fake:no-newline]] [[fake:text bez nového řádku]]'))
+    const r = await runClaude(req('x [[fake:no-newline]] [[fake:text without newline]]'))
     assert.equal(r.ok, true)
-    assert.equal(r.text, 'bez nového řádku')
+    assert.equal(r.text, 'without newline')
     const raw = readFileSync(join(sb.outDir, 'stream.jsonl'), 'utf8')
-    assert.ok(raw.includes('bez nového řádku'))
+    assert.ok(raw.includes('without newline'))
   })
 
-  it('nevalidní JSON řádky se ignorují, zůstanou v surovém stream.jsonl', async () => {
+  it('invalid JSON lines are ignored, but stay in the raw stream.jsonl', async () => {
     setup()
     const r = await runClaude(req('x [[fake:garbage]] [[fake:tools 1]]'))
     assert.equal(r.ok, true)
     assert.equal(r.toolCalls, 1)
     const raw = readFileSync(join(sb.outDir, 'stream.jsonl'), 'utf8')
-    assert.ok(raw.includes('tohle neni json {'))
+    assert.ok(raw.includes('this is not json {'))
   })
 })
 
-describe('runClaude – spuštění', () => {
-  it('neexistující binárka → kind spawn, bez retry', async () => {
+describe('runClaude – start', () => {
+  it('nonexistent binary → kind spawn, no retry', async () => {
     setup()
-    process.env['ULTRACODE_CLAUDE_BIN'] = join(sb.root, 'neexistuje-claude')
+    process.env['ULTRACODE_CLAUDE_BIN'] = join(sb.root, 'nonexistent-claude')
     const r = await runClaude(req('x'))
     assert.equal(r.ok, false)
     assert.equal(r.error?.kind, 'spawn')
     assert.equal(r.attempts, 1)
-    assert.match(r.error!.message, /neexistuje|Nelze spustit/)
+    assert.match(r.error!.message, /does not exist|Cannot start/)
   })
 
-  it('neexistující cwd → kind spawn', async () => {
+  it('nonexistent cwd → kind spawn', async () => {
     setup()
-    const r = await runClaude(req('x', { cwd: join(sb.root, 'nikde') }))
+    const r = await runClaude(req('x', { cwd: join(sb.root, 'nowhere') }))
     assert.equal(r.ok, false)
     assert.equal(r.error?.kind, 'spawn')
-    assert.match(r.error!.message, /nikde/)
+    assert.match(r.error!.message, /nowhere/)
   })
 
-  it('prázdný prompt → kind spawn, claude se nespustí', async () => {
+  it('empty prompt → kind spawn, claude is not started', async () => {
     setup()
     const r = await runClaude(req('   '))
     assert.equal(r.ok, false)

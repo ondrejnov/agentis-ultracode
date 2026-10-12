@@ -1,7 +1,7 @@
 /**
- * `runScript()` – spustí skript workflow ve worker threadu a obsluhuje jeho RPC (agent, phase, log, …)
- * proti `ScriptHooks` enginu. Hlavní vlákno nikdy nevykonává kód skriptu, takže abort funguje vždy:
- * `worker.terminate()` utne i nekonečnou smyčku.
+ * `runScript()` – runs a workflow script in a worker thread and serves its RPC (agent, phase, log, …)
+ * against the `ScriptHooks` of the engine. The main thread never executes script code, so abort always works:
+ * `worker.terminate()` stops even an infinite loop.
  */
 
 import { Worker } from 'node:worker_threads'
@@ -14,7 +14,7 @@ import type { MainToWorker, WorkerInit, WorkerToMain } from './protocol.ts'
 
 export const DEFAULT_MAX_ITEMS = 4096
 
-/** worker.ts / worker.js podle toho, z čeho běžíme (type-stripping vs. zkompilovaný dist). */
+/** worker.ts / worker.js depending on what we run from (type-stripping vs. compiled dist). */
 function workerUrl(): URL {
   const ext = import.meta.url.endsWith('.ts') ? '.ts' : '.js'
   return new URL(`./worker${ext}`, import.meta.url)
@@ -28,23 +28,23 @@ export async function runScript(req: RunScriptRequest): Promise<RunScriptResult>
     const lines = parsed.diagnostics.map((d) => formatDiagnostic(d, req.filename))
     const first = parsed.diagnostics.find((d) => d.level === 'error')
     throw new ScriptValidationError(
-      `Skript „${req.filename}“ je neplatný: ${first ? `${first.line ? `řádek ${first.line}: ` : ''}${first.message}` : 'neznámá chyba'}`,
+      `Script “${req.filename}” is invalid: ${first ? `${first.line ? `line ${first.line}: ` : ''}${first.message}` : 'unknown error'}`,
       lines,
     )
   }
   const meta = parsed.meta
 
   if (!(req.budgetBuffer instanceof SharedArrayBuffer) || req.budgetBuffer.byteLength < BUDGET_SLOTS * 8) {
-    throw new TypeError(`budgetBuffer musí být SharedArrayBuffer o velikosti alespoň ${BUDGET_SLOTS * 8} bajtů.`)
+    throw new TypeError(`budgetBuffer must be a SharedArrayBuffer of at least ${BUDGET_SLOTS * 8} bytes.`)
   }
   const maxItems = req.maxItems ?? DEFAULT_MAX_ITEMS
-  if (!Number.isInteger(maxItems) || maxItems < 1) throw new RangeError('maxItems musí být kladné celé číslo.')
+  if (!Number.isInteger(maxItems) || maxItems < 1) throw new RangeError('maxItems must be a positive integer.')
 
   let argsJson: string | undefined
   try {
     argsJson = req.args === undefined ? undefined : JSON.stringify(req.args)
   } catch (e) {
-    throw new TypeError(`Hodnota args nejde serializovat do JSON: ${(e as Error).message}`)
+    throw new TypeError(`The args value cannot be serialized to JSON: ${(e as Error).message}`)
   }
 
   const init: WorkerInit = {
@@ -64,7 +64,7 @@ export async function runScript(req: RunScriptRequest): Promise<RunScriptResult>
       if (settled) return
       settled = true
       req.signal?.removeEventListener('abort', onAbort)
-      // Počkáme na doběhnutí terminate(), aby po návratu runScript nezůstal žádný živý worker.
+      // Wait for terminate() to finish so that no live worker remains after runScript returns.
       worker.terminate().then(
         () => done(outcome),
         () => done(outcome),
@@ -83,13 +83,13 @@ export async function runScript(req: RunScriptRequest): Promise<RunScriptResult>
       try {
         worker.postMessage(m)
       } catch (e) {
-        // Výsledek hooku nejde naklonovat (funkce, symboly…) – skript dostane srozumitelnou chybu.
+        // The hook result cannot be cloned (functions, symbols…) – the script gets a clear error.
         if (m.t === 'rpcResult' && m.ok) {
           worker.postMessage({
             t: 'rpcResult',
             id: m.id,
             ok: false,
-            error: serializeError(new TypeError(`Výsledek hooku nelze předat skriptu: ${(e as Error).message}`)),
+            error: serializeError(new TypeError(`Hook result cannot be passed to the script: ${(e as Error).message}`)),
           } satisfies MainToWorker)
         }
       }
@@ -106,7 +106,7 @@ export async function runScript(req: RunScriptRequest): Promise<RunScriptResult>
             promise = Promise.resolve(req.hooks.loadWorkflow(...msg.params))
             break
           default:
-            promise = Promise.reject(new Error(`Neznámá RPC metoda: ${(msg as { method: string }).method}`))
+            promise = Promise.reject(new Error(`Unknown RPC method: ${(msg as { method: string }).method}`))
         }
       } catch (e) {
         promise = Promise.reject(e)
@@ -135,7 +135,7 @@ export async function runScript(req: RunScriptRequest): Promise<RunScriptResult>
             break
         }
       } catch {
-        // fire-and-forget: chyba v hooku pozorování nesmí shodit běh skriptu
+        // fire-and-forget: an error in an observation hook must not crash the script run
       }
     }
 
@@ -167,8 +167,8 @@ export async function runScript(req: RunScriptRequest): Promise<RunScriptResult>
       finish({
         error: new Error(
           code === 0
-            ? 'Worker skriptu skončil bez výsledku.'
-            : `Worker skriptu skončil s kódem ${code} (pravděpodobně došla paměť nebo proces spadl).`,
+            ? 'Script worker exited without a result.'
+            : `Script worker exited with code ${code} (probably out of memory or the process crashed).`,
         ),
       })
     })

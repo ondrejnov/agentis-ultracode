@@ -7,8 +7,8 @@ import { readEvents, readRunSummary } from '../../src/engine/store.ts'
 import type { RunEvent } from '../../src/types.ts'
 import { eventsOf, journalOf, makeProject, makeRunner, readJsonFile, scriptDeps, waitFor } from './helpers.ts'
 
-describe('runWorkflow: základní běh', () => {
-  test('založí adresář běhu se všemi soubory a vrátí konzistentní summary', async () => {
+describe('runWorkflow: basic run', () => {
+  test('creates the run directory with all files and returns a consistent summary', async () => {
     const p = makeProject()
     try {
       const file = p.script('wf.workflow.ts', '// name: demo\n// phases: Scan,Fix\n')
@@ -19,7 +19,7 @@ describe('runWorkflow: základní běh', () => {
         scriptDeps(async (api) => {
           api.phase('Scan')
           const a = await api.agent('first prompt', { label: 'first' })
-          api.log('mezivýsledek')
+          api.log('intermediate result')
           const b = await api.agent('second', { schema: { type: 'object', properties: { value: { type: 'string' } } } })
           return { a, b, args: api.args }
         }),
@@ -41,21 +41,21 @@ describe('runWorkflow: základní běh', () => {
       assert.ok(Date.parse(summary.endedAt) >= Date.parse(summary.startedAt))
 
       for (const f of ['run.json', 'script.ts', 'args.json', 'events.jsonl', 'journal.jsonl', 'result.json']) {
-        assert.ok(existsSync(join(summary.runDir, f)), `chybí ${f}`)
+        assert.ok(existsSync(join(summary.runDir, f)), `missing ${f}`)
       }
       assert.deepEqual(readJsonFile(join(summary.runDir, 'args.json')), { topic: 'x' })
       assert.deepEqual(readJsonFile(join(summary.runDir, 'result.json')), summary.result)
       assert.deepEqual(readJsonFile(join(summary.runDir, 'run.json')), JSON.parse(JSON.stringify(summary)))
       assert.deepEqual(readRunSummary(p.cwd, summary.runId), summary)
 
-      // runner dostal správný požadavek
+      // runner received the correct request
       assert.equal(stub.calls.length, 2)
       assert.equal(stub.calls[0].cwd, p.cwd)
       assert.equal(stub.calls[0].outDir, join(summary.runDir, 'agents', '1'))
       assert.equal(stub.calls[1].outDir, join(summary.runDir, 'agents', '2'))
       assert.deepEqual(stub.calls[1].schema, { type: 'object', properties: { value: { type: 'string' } } })
 
-      // onEvent dostane přesně to, co je v events.jsonl
+      // onEvent receives exactly what is in events.jsonl
       assert.deepEqual(seen, JSON.parse(JSON.stringify(eventsOf(summary))))
       assert.deepEqual(readEvents(p.cwd, summary.runId), seen)
     } finally {
@@ -63,7 +63,7 @@ describe('runWorkflow: základní běh', () => {
     }
   })
 
-  test('events: logický sled, párování start/done, ISO ts a totals odpovídají součtu událostí', async () => {
+  test('events: logical sequence, start/done pairing, ISO ts and totals match the sum of events', async () => {
     const p = makeProject()
     try {
       const file = p.script()
@@ -71,10 +71,10 @@ describe('runWorkflow: základní běh', () => {
       const summary = await runWorkflow(
         { workflow: file, cwd: p.cwd, runner: stub.runner, concurrency: 2 },
         scriptDeps(async (api) => {
-          api.phase('Prvni')
+          api.phase('First')
           await api.parallel([1, 2, 3].map((i) => () => api.agent(`worker ${i}`)))
-          api.phase('Druha')
-          await api.agent('final', { phase: 'Explicitni' })
+          api.phase('Second')
+          await api.agent('final', { phase: 'Explicit' })
           return 'ok'
         }),
       )
@@ -88,7 +88,7 @@ describe('runWorkflow: základní běh', () => {
       for (const e of events) {
         assert.match(e.ts, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/)
         const t = Date.parse(e.ts)
-        assert.ok(t >= prev, 'ts nesmí klesat')
+        assert.ok(t >= prev, 'ts must not decrease')
         prev = t
       }
 
@@ -101,25 +101,25 @@ describe('runWorkflow: základní běh', () => {
         if (s.t !== 'agent_start') continue
         const si = events.indexOf(s)
         const d = events.find((e) => e.t === 'agent_done' && e.id === s.id)
-        assert.ok(d && events.indexOf(d) > si, `agent ${s.id}: done musí následovat po start`)
+        assert.ok(d && events.indexOf(d) > si, `agent ${s.id}: done must follow start`)
         const tools = events.filter((e) => e.t === 'agent_tool' && e.id === s.id)
         assert.equal(tools.length, 1)
         assert.ok(events.indexOf(tools[0]) > si && events.indexOf(tools[0]) < events.indexOf(d))
       }
-      // fáze
+      // phases
       const phaseOf = (prompt: string) => {
         const s = starts.find((e) => e.t === 'agent_start' && e.promptPreview === prompt)
         return s && s.t === 'agent_start' ? s.phase : undefined
       }
-      assert.equal(phaseOf('worker 1'), 'Prvni')
-      assert.equal(phaseOf('worker 3'), 'Prvni')
-      assert.equal(phaseOf('final'), 'Explicitni')
+      assert.equal(phaseOf('worker 1'), 'First')
+      assert.equal(phaseOf('worker 3'), 'First')
+      assert.equal(phaseOf('final'), 'Explicit')
       assert.deepEqual(
         events.filter((e) => e.t === 'phase').map((e) => (e.t === 'phase' ? e.title : '')),
-        ['Prvni', 'Druha'],
+        ['First', 'Second'],
       )
 
-      // totals = součet agent_done
+      // totals = sum of agent_done
       let out = 0
       let cost = 0
       let tools = 0
@@ -137,7 +137,7 @@ describe('runWorkflow: základní běh', () => {
       assert.deepEqual(end.totals, summary.totals)
       assert.equal(end.status, 'completed')
 
-      // budget události jsou monotónní
+      // budget events are monotonic
       const budgets = events.filter((e) => e.t === 'budget')
       assert.equal(budgets.length, 4)
       let last = -1
@@ -154,7 +154,7 @@ describe('runWorkflow: základní běh', () => {
     }
   })
 
-  test('run.json se během běhu průběžně aktualizuje (status running + totals)', async () => {
+  test('run.json is updated continuously during the run (status running + totals)', async () => {
     const p = makeProject()
     try {
       const file = p.script()
@@ -188,7 +188,7 @@ describe('runWorkflow: základní běh', () => {
     }
   })
 
-  test('jméno workflow se najde přes discovery (.ultracode/workflows)', async () => {
+  test('workflow name is found via discovery (.ultracode/workflows)', async () => {
     const p = makeProject()
     try {
       p.script('.ultracode/workflows/find-flaky.workflow.ts', '// name: find-flaky\n')
@@ -203,7 +203,7 @@ describe('runWorkflow: základní běh', () => {
     }
   })
 
-  test('výchozí model/effort z RunOptions, volba agenta má přednost; cwd agenta se resolvuje', async () => {
+  test('default model/effort from RunOptions, the agent option takes precedence; agent cwd is resolved', async () => {
     const p = makeProject()
     try {
       const file = p.script()
@@ -233,7 +233,7 @@ describe('runWorkflow: základní běh', () => {
     }
   })
 
-  test('tools = skutečný whitelist: agent běží v dontAsk, ledaže volající zvolil režim; bez tools se režim nenastavuje', async () => {
+  test('tools = real whitelist: the agent runs in dontAsk unless the caller chose a mode; without tools the mode is not set', async () => {
     const p = makeProject()
     try {
       const file = p.script()
@@ -241,23 +241,23 @@ describe('runWorkflow: základní běh', () => {
       await runWorkflow(
         { workflow: file, cwd: p.cwd, runner: stub.runner },
         scriptDeps(async (api) => {
-          await api.agent('bez nástrojů')
-          await api.agent('s nástroji', { tools: ['Read', 'Grep'] })
-          await api.agent('prázdný seznam', { tools: [] })
+          await api.agent('without tools')
+          await api.agent('with tools', { tools: ['Read', 'Grep'] })
+          await api.agent('empty list', { tools: [] })
           return null
         }),
       )
       assert.equal(stub.calls[0].permissionMode, undefined)
       assert.equal(stub.calls[1].permissionMode, 'dontAsk')
       assert.deepEqual(stub.calls[1].allowedTools, ['Read', 'Grep'])
-      // prázdný whitelist je explicitní zákaz všeho → také dontAsk (jinak by agent dostal všechny nástroje)
+      // an empty whitelist is an explicit ban on everything → also dontAsk (otherwise the agent would get all tools)
       assert.equal(stub.calls[2].permissionMode, 'dontAsk')
 
       const explicit = makeRunner()
       await runWorkflow(
         { workflow: file, cwd: p.cwd, runner: explicit.runner, permissionMode: 'acceptEdits', claudeBin: '/opt/claude-x' },
         scriptDeps(async (api) => {
-          await api.agent('s nástroji', { tools: ['Read'] })
+          await api.agent('with tools', { tools: ['Read'] })
           return null
         }),
       )
@@ -268,7 +268,7 @@ describe('runWorkflow: základní běh', () => {
     }
   })
 
-  test('vnořené workflow: loadWorkflow + workflow_enter/exit a fáze potomka nepřebíjí rodiče', async () => {
+  test('nested workflow: loadWorkflow + workflow_enter/exit, and the child phase does not override the parent phase', async () => {
     const p = makeProject()
     try {
       const file = p.script()
@@ -309,8 +309,8 @@ describe('runWorkflow: základní běh', () => {
   })
 })
 
-describe('runWorkflow: cache a resume', () => {
-  test('resume zdědí model/effort z původního běhu (jsou v klíči cache); explicitní volba je přepíše', async () => {
+describe('runWorkflow: cache and resume', () => {
+  test('resume inherits model/effort from the original run (they are part of the cache key); an explicit option overrides them', async () => {
     const p = makeProject()
     try {
       const file = p.script()
@@ -321,13 +321,13 @@ describe('runWorkflow: cache a resume', () => {
       const s1 = await runWorkflow({ workflow: file, cwd: p.cwd, runner: makeRunner().runner, model: 'haiku', effort: 'low', maxUsd: 5 }, body)
       assert.equal(s1.status, 'completed')
 
-      // bez --model/--effort: cache hit, runner se nevolá
+      // without --model/--effort: cache hit, the runner is not called
       const stub2 = makeRunner()
       const s2 = await runWorkflow({ workflow: '', cwd: p.cwd, runner: stub2.runner, resumeRunId: s1.runId }, body)
       assert.equal(stub2.calls.length, 0)
       assert.equal(s2.totals.cachedAgents, 1)
 
-      // explicitní jiný model: jiný klíč → agent poběží znovu, s novým modelem
+      // explicit different model: different key → the agent runs again with the new model
       const stub3 = makeRunner()
       const s3 = await runWorkflow({ workflow: '', cwd: p.cwd, runner: stub3.runner, resumeRunId: s1.runId, model: 'sonnet' }, body)
       assert.equal(stub3.calls.length, 1)
@@ -335,7 +335,7 @@ describe('runWorkflow: cache a resume', () => {
       assert.equal(stub3.calls[0].effort, 'low')
       assert.equal(s3.totals.cachedAgents, 0)
 
-      // a nová hodnota se uloží pro další resume
+      // and the new value is saved for the next resume
       const stub4 = makeRunner()
       await runWorkflow({ workflow: '', cwd: p.cwd, runner: stub4.runner, resumeRunId: s1.runId }, body)
       assert.equal(stub4.calls.length, 0)
@@ -344,7 +344,7 @@ describe('runWorkflow: cache a resume', () => {
     }
   })
 
-  test('resume po dokončeném běhu: 100 % cache hit, žádný runner, nulová spotřeba', async () => {
+  test('resume after a completed run: 100% cache hit, no runner, zero usage', async () => {
     const p = makeProject()
     try {
       const file = p.script()
@@ -365,7 +365,7 @@ describe('runWorkflow: cache a resume', () => {
       assert.deepEqual(s2.result, s1.result)
       assert.equal(s2.totals.agents, 2)
       assert.equal(s2.totals.cachedAgents, 2)
-      // přehrané výsledky z cache se počítají do totals (run má kompletní součty), nová útrata je nulová
+      // replayed results from cache are counted in totals (the run has complete sums), new spending is zero
       assert.equal(s2.totals.costUsd, s1.totals.costUsd)
       assert.equal(s2.totals.usage.outputTokens, s1.totals.usage.outputTokens)
       assert.equal(stub2.calls.length, 0)
@@ -377,16 +377,16 @@ describe('runWorkflow: cache a resume', () => {
       assert.ok(starts[1].t === 'run_start' && starts[1].resumed === true)
       const cachedDones = events.filter((e) => e.t === 'agent_done' && e.cached)
       assert.equal(cachedDones.length, 2)
-      // cache hit nezapisuje do journalu znovu
+      // a cache hit does not write to the journal again
       assert.equal(journalOf(s1).length, 2)
-      // run.json odpovídá poslednímu běhu
+      // run.json matches the last run
       assert.equal(readRunSummary(p.cwd, s1.runId)?.status, 'completed')
     } finally {
       p.cleanup()
     }
   })
 
-  test('resume po zabitém běhu (abort uprostřed): hotové agenty vrátí z cache, zbytek doběhne', async () => {
+  test('resume after a killed run (abort in the middle): finished agents are returned from cache, the rest finishes', async () => {
     const p = makeProject()
     try {
       const file = p.script()
@@ -399,7 +399,7 @@ describe('runWorkflow: cache a resume', () => {
           await api.agent('step 2')
           ac.abort()
           await api.agent('step 3')
-          return 'dokončeno'
+          return 'finished'
         }),
       )
       assert.equal(s1.status, 'aborted')
@@ -421,20 +421,20 @@ describe('runWorkflow: cache a resume', () => {
       assert.deepEqual(s2.result, ['out:step 1', 'out:step 2', 'out:step 3'])
       assert.equal(s2.totals.cachedAgents, 2)
       assert.equal(s2.totals.agents, 3)
-      // nový agent dostal id navazující na předchozí a nepřepsal adresáře agents/1,2
-      // cache hity také spotřebují id (1,2 z původního běhu, 3,4 cached), nový agent má 5
+      // the new agent got an id following the previous ones and did not overwrite the agents/1,2 directories
+      // cache hits also consume ids (1,2 from the original run, 3,4 cached), the new agent gets 5
       assert.equal(stub2.calls[0].outDir, join(s1.runDir, 'agents', '5'))
     } finally {
       p.cleanup()
     }
   })
 
-  test('resume bez workflow použije uloženou kopii skriptu a args.json', async () => {
+  test('resume without a workflow uses the stored script copy and args.json', async () => {
     const p = makeProject()
     try {
       const file = p.script('orig.workflow.ts', '// name: stored\n')
       const body = scriptDeps(async (api) => ({ got: api.args, a: await api.agent(`topic ${api.args.t}`) }))
-      const s1 = await runWorkflow({ workflow: file, cwd: p.cwd, args: { t: 'kočky' }, runner: makeRunner().runner }, body)
+      const s1 = await runWorkflow({ workflow: file, cwd: p.cwd, args: { t: 'cats' }, runner: makeRunner().runner }, body)
       const stub2 = makeRunner()
       let seenSource = ''
       const s2 = await runWorkflow(
@@ -454,7 +454,7 @@ describe('runWorkflow: cache a resume', () => {
     }
   })
 
-  test('duplicitní stejné prompty: n-té volání dostane n-tý uložený výsledek', async () => {
+  test('duplicate identical prompts: the n-th call gets the n-th stored result', async () => {
     const p = makeProject()
     try {
       const file = p.script()
@@ -469,12 +469,12 @@ describe('runWorkflow: cache a resume', () => {
       assert.deepEqual(j.map((e) => e.seq), [0, 1, 2])
       assert.equal(new Set(j.map((e) => e.key)).size, 1)
 
-      const stub2 = makeRunner({ respond: () => 'nové' })
+      const stub2 = makeRunner({ respond: () => 'new' })
       const s2 = await runWorkflow(
         { workflow: file, cwd: p.cwd, runner: stub2.runner, resumeRunId: s1.runId },
         scriptDeps(async (api) => [await api.agent('same'), await api.agent('same'), await api.agent('same'), await api.agent('same')]),
       )
-      assert.deepEqual(s2.result, ['r1', 'r2', 'r3', 'nové'])
+      assert.deepEqual(s2.result, ['r1', 'r2', 'r3', 'new'])
       assert.equal(stub2.calls.length, 1)
       assert.equal(s2.totals.cachedAgents, 3)
     } finally {
@@ -482,12 +482,12 @@ describe('runWorkflow: cache a resume', () => {
     }
   })
 
-  test('duplicitní prompty v parallel(): výsledky se přiřadí podle pořadí volání, ne podle doběhnutí', async () => {
+  test('duplicate prompts in parallel(): results are assigned by call order, not by completion order', async () => {
     const p = makeProject()
     try {
       const file = p.script()
       let counter = 0
-      // pozdější volání skončí dřív
+      // a later call finishes earlier
       const stub1 = makeRunner({ respond: () => `r${++counter}`, delayMs: (r) => (counter === 0 && r.prompt === 'dup' ? 5 : 1) })
       const body = scriptDeps(async (api) => api.parallel([0, 1, 2].map(() => () => api.agent('dup'))))
       const s1 = await runWorkflow({ workflow: file, cwd: p.cwd, runner: stub1.runner }, body)
@@ -502,40 +502,40 @@ describe('runWorkflow: cache a resume', () => {
     }
   })
 
-  test('noCache přeskočí cache pro konkrétní volání', async () => {
+  test('noCache skips the cache for a specific call', async () => {
     const p = makeProject()
     try {
       const file = p.script()
       const s1 = await runWorkflow({ workflow: file, cwd: p.cwd, runner: makeRunner().runner }, scriptDeps(async (api) => [await api.agent('x'), await api.agent('y')]))
-      const stub2 = makeRunner({ respond: () => 'čerstvé' })
+      const stub2 = makeRunner({ respond: () => 'fresh' })
       const s2 = await runWorkflow(
         { workflow: file, cwd: p.cwd, runner: stub2.runner, resumeRunId: s1.runId },
         scriptDeps(async (api) => [await api.agent('x', { noCache: true }), await api.agent('y')]),
       )
       assert.deepEqual(stub2.prompts(), ['x'])
-      assert.deepEqual(s2.result, ['čerstvé', 'out:y'])
+      assert.deepEqual(s2.result, ['fresh', 'out:y'])
       assert.equal(s2.totals.cachedAgents, 1)
-      // nový výsledek se zapsal; další resume už vrací jeho
+      // the new result was written; the next resume already returns it
       const stub3 = makeRunner()
       const s3 = await runWorkflow(
         { workflow: file, cwd: p.cwd, runner: stub3.runner, resumeRunId: s1.runId },
         scriptDeps(async (api) => [await api.agent('x'), await api.agent('y')]),
       )
-      assert.deepEqual(s3.result, ['čerstvé', 'out:y'])
+      assert.deepEqual(s3.result, ['fresh', 'out:y'])
       assert.equal(stub3.calls.length, 0)
     } finally {
       p.cleanup()
     }
   })
 
-  test('změna upstream vstupu změní prompty downstream agentů → ti běží znovu, nezávislý agent zůstane v cache', async () => {
+  test('changing an upstream input changes the prompts of downstream agents → they run again, an independent agent stays in cache', async () => {
     const p = makeProject()
     try {
       const file = p.script()
       const body = scriptDeps(async (api) => {
         const research = await api.agent(`research ${api.args.topic}`)
         const article = await api.agent(`write using: ${research}`)
-        const fixed = await api.agent('nezávislý krok')
+        const fixed = await api.agent('independent step')
         return { research, article, fixed }
       })
       const s1 = await runWorkflow({ workflow: file, cwd: p.cwd, args: { topic: 'A' }, runner: makeRunner().runner }, body)
@@ -545,12 +545,12 @@ describe('runWorkflow: cache a resume', () => {
       const s2 = await runWorkflow({ workflow: file, cwd: p.cwd, args: { topic: 'B' }, resumeRunId: s1.runId, runner: stub2.runner }, body)
       assert.deepEqual(stub2.prompts(), ['research B', 'write using: out:research B'])
       assert.equal(s2.totals.cachedAgents, 1)
-      assert.equal((s2.result as any).fixed, 'out:nezávislý krok')
+      assert.equal((s2.result as any).fixed, 'out:independent step')
 
-      // beze změny args se použijí uložené args z původního běhu
+      // without changing args, the stored args from the original run are used
       const stub3 = makeRunner()
       const s3 = await runWorkflow({ workflow: file, cwd: p.cwd, resumeRunId: s1.runId, runner: stub3.runner }, body)
-      // args.json se po resume s novými args přepsal → poslední resume je celý z cache
+      // args.json was overwritten on resume with new args → the last resume is fully from cache
       assert.equal(stub3.calls.length, 0)
       assert.deepEqual(s3.result, s2.result)
     } finally {
@@ -558,7 +558,7 @@ describe('runWorkflow: cache a resume', () => {
     }
   })
 
-  test('změna volby (model/schema/cwd/tools/systemPrompt) je cache miss', async () => {
+  test('changing an option (model/schema/cwd/tools/systemPrompt) is a cache miss', async () => {
     const p = makeProject()
     try {
       const file = p.script()
@@ -567,17 +567,17 @@ describe('runWorkflow: cache a resume', () => {
         { model: 'sonnet' },
         { model: 'haiku', effort: 'high' },
         { model: 'haiku', tools: ['Read'] },
-        { model: 'haiku', systemPrompt: 'jinak' },
-        { model: 'haiku', cwd: 'jinde' },
+        { model: 'haiku', systemPrompt: 'other' },
+        { model: 'haiku', cwd: 'elsewhere' },
         { model: 'haiku', disallowedTools: ['Bash'] },
         { model: 'haiku', schema: { type: 'object', properties: { value: { type: 'string' } } } },
       ]
       for (const v of variants) {
         const stub = makeRunner()
         await runWorkflow({ workflow: file, cwd: p.cwd, runner: stub.runner, resumeRunId: s1.runId }, scriptDeps(async (api) => api.agent('p', v as any)))
-        assert.equal(stub.calls.length, 1, `varianta ${JSON.stringify(v)} měla běžet znovu`)
+        assert.equal(stub.calls.length, 1, `variant ${JSON.stringify(v)} should have run again`)
       }
-      // shodná volba (jiné pořadí klíčů) → hit
+      // identical option (different key order) → hit
       const stub = makeRunner()
       await runWorkflow({ workflow: file, cwd: p.cwd, runner: stub.runner, resumeRunId: s1.runId }, scriptDeps(async (api) => api.agent('p', { model: 'haiku' })))
       assert.equal(stub.calls.length, 0)
@@ -586,7 +586,7 @@ describe('runWorkflow: cache a resume', () => {
     }
   })
 
-  test('výchozí model z RunOptions je součástí klíče (změna --model = cache miss)', async () => {
+  test('default model from RunOptions is part of the key (changing --model = cache miss)', async () => {
     const p = makeProject()
     try {
       const file = p.script()
@@ -603,7 +603,7 @@ describe('runWorkflow: cache a resume', () => {
     }
   })
 
-  test('poškozený/useknutý poslední řádek journalu (zabitý proces) resume nerozbije', async () => {
+  test('a corrupt/truncated last journal line (killed process) does not break resume', async () => {
     const p = makeProject()
     try {
       const file = p.script()
@@ -611,13 +611,13 @@ describe('runWorkflow: cache a resume', () => {
       const s1 = await runWorkflow({ workflow: file, cwd: p.cwd, runner: makeRunner().runner }, body)
       const jp = join(s1.runDir, 'journal.jsonl')
       const lines = readFileSync(jp, 'utf8').trim().split('\n')
-      writeFileSync(jp, lines[0] + '\n' + lines[1].slice(0, 40)) // druhý záznam useknutý
+      writeFileSync(jp, lines[0] + '\n' + lines[1].slice(0, 40)) // second entry truncated
       appendFileSync(jp, '')
       const stub2 = makeRunner()
       const s2 = await runWorkflow({ workflow: file, cwd: p.cwd, runner: stub2.runner, resumeRunId: s1.runId }, body)
       assert.deepEqual(stub2.prompts(), ['b'])
       assert.equal(s2.status, 'completed')
-      // journal je po resume zase použitelný (poslední záznam je kompletní)
+      // the journal is usable again after resume (the last entry is complete)
       const stub3 = makeRunner()
       await runWorkflow({ workflow: file, cwd: p.cwd, runner: stub3.runner, resumeRunId: s1.runId }, body)
       assert.equal(stub3.calls.length, 0)
@@ -626,7 +626,7 @@ describe('runWorkflow: cache a resume', () => {
     }
   })
 
-  test('neexistující resumeRunId je chyba použití; bez resume vzniká nový běh s novým ID', async () => {
+  test('nonexistent resumeRunId is a usage error; without resume a new run with a new ID is created', async () => {
     const p = makeProject()
     try {
       const file = p.script()
@@ -641,10 +641,10 @@ describe('runWorkflow: cache a resume', () => {
       const a = await runWorkflow({ workflow: file, cwd: p.cwd, runner: makeRunner().runner }, scriptDeps(async () => 1))
       const b = await runWorkflow({ workflow: file, cwd: p.cwd, runner: makeRunner().runner }, scriptDeps(async () => 1))
       assert.notEqual(a.runId, b.runId)
-      const c = await runWorkflow({ workflow: file, cwd: p.cwd, runId: 'muj-beh', runner: makeRunner().runner }, scriptDeps(async () => 1))
-      assert.equal(c.runId, 'muj-beh')
+      const c = await runWorkflow({ workflow: file, cwd: p.cwd, runId: 'my-run', runner: makeRunner().runner }, scriptDeps(async () => 1))
+      assert.equal(c.runId, 'my-run')
       await assert.rejects(
-        runWorkflow({ workflow: file, cwd: p.cwd, runId: 'muj-beh', runner: makeRunner().runner }, scriptDeps(async () => 1)),
+        runWorkflow({ workflow: file, cwd: p.cwd, runId: 'my-run', runner: makeRunner().runner }, scriptDeps(async () => 1)),
         (e: any) => e.code === 'RUN_EXISTS',
       )
     } finally {
@@ -653,8 +653,8 @@ describe('runWorkflow: cache a resume', () => {
   })
 })
 
-describe('runWorkflow: zámek běhu', () => {
-  test('.lock zmizí po dokončení i po selhání skriptu; resume běhu se stejným pid zámku je odmítnut', async () => {
+describe('runWorkflow: run lock', () => {
+  test('.lock disappears after completion and after a script failure; resume of a run with the same lock pid is rejected', async () => {
     const p = makeProject()
     try {
       const file = p.script()
@@ -669,18 +669,18 @@ describe('runWorkflow: zámek běhu', () => {
       assert.equal(bad.status, 'failed')
       assert.equal(existsSync(join(bad.runDir, '.lock')), false)
 
-      // souběžný resume téhož běhu (zámek drží živý proces) → RUN_LOCKED a cizí zámek zůstane
+      // concurrent resume of the same run (a live process holds the lock) → RUN_LOCKED and the foreign lock stays
       const slow = makeRunner({ delayMs: 200 })
       const first = runWorkflow(
         { workflow: file, cwd: p.cwd, runner: slow.runner, resumeRunId: ok.runId },
-        scriptDeps(async (api) => api.agent('pomalý')),
+        scriptDeps(async (api) => api.agent('slow')),
       )
       await waitFor(() => existsSync(join(ok.runDir, '.lock')))
       await assert.rejects(
         runWorkflow({ workflow: file, cwd: p.cwd, runner: makeRunner().runner, resumeRunId: ok.runId }, scriptDeps(async () => 1)),
         (e: any) => e.code === 'RUN_LOCKED' && /pid/.test(e.message),
       )
-      assert.equal(existsSync(join(ok.runDir, '.lock')), true, 'odmítnutý pokus nesmí smazat cizí zámek')
+      assert.equal(existsSync(join(ok.runDir, '.lock')), true, 'a rejected attempt must not delete the foreign lock')
       const done = await first
       assert.equal(done.status, 'completed')
       assert.equal(existsSync(join(ok.runDir, '.lock')), false)
@@ -689,7 +689,7 @@ describe('runWorkflow: zámek běhu', () => {
     }
   })
 
-  test('zámek mrtvého procesu (zabitý běh) nebrání resume', async () => {
+  test('lock of a dead process (killed run) does not block resume', async () => {
     const p = makeProject()
     try {
       const file = p.script()
@@ -700,8 +700,8 @@ describe('runWorkflow: zámek běhu', () => {
       assert.equal(second.status, 'completed')
       assert.equal(second.totals.cachedAgents, 1)
       assert.equal(existsSync(join(first.runDir, '.lock')), false)
-      // poškozený zámek se bere jako opuštěný
-      writeFileSync(join(first.runDir, '.lock'), '{nesmysl')
+      // a corrupt lock is treated as abandoned
+      writeFileSync(join(first.runDir, '.lock'), '{nonsense')
       const third = await runWorkflow({ workflow: '', cwd: p.cwd, runner: stub.runner, resumeRunId: first.runId }, scriptDeps(async (api) => api.agent('a')))
       assert.equal(third.status, 'completed')
     } finally {

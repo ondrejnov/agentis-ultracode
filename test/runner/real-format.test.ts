@@ -1,6 +1,6 @@
 /**
- * Ověření, že runner rozumí REÁLNÉMU formátu `claude -p --output-format stream-json`.
- * Místo claude se přehrávají uložené streamy (test/fixtures/sample-stream-*.jsonl) přes replay-claude.mjs.
+ * Verifies that the runner understands the REAL format of `claude -p --output-format stream-json`.
+ * Instead of claude, the saved streams are replayed (test/fixtures/sample-stream-*.jsonl) via replay-claude.mjs.
  */
 import { afterEach, describe, it } from 'node:test'
 import assert from 'node:assert/strict'
@@ -26,12 +26,12 @@ afterEach(() => {
   sb?.cleanup()
 })
 
-describe('reálný stream: nástroje', () => {
-  it('Read tool, usage z result eventu, cena, text', async () => {
+describe('real stream: tools', () => {
+  it('Read tool, usage from the result event, cost, text', async () => {
     const p = collectProgress()
     const r = await replay('sample-stream-tools.jsonl', 0, { onProgress: p.push })
     assert.equal(r.ok, true)
-    assert.equal(r.text, 'Soubor má 5 řádků.')
+    assert.equal(r.text, 'The file has 5 lines.')
     assert.equal(r.toolCalls, 1)
     assert.equal(r.numTurns, 2)
     assert.deepEqual(r.usage, { inputTokens: 4, outputTokens: 244, cacheReadTokens: 32195, cacheCreationTokens: 15258 })
@@ -39,23 +39,23 @@ describe('reálný stream: nástroje', () => {
     assert.equal(r.sessionId, '5c89970f-b8fd-450e-bd0e-2d990fa7e21a')
     const tools = p.events.filter((e): e is Extract<ClaudeProgress, { kind: 'tool' }> => e.kind === 'tool')
     assert.deepEqual(tools.map((t) => t.name), ['Read'])
-    assert.ok(p.events.some((e) => e.kind === 'text' && e.chars === 'Soubor má 5 řádků.'.length))
+    assert.ok(p.events.some((e) => e.kind === 'text' && e.chars === 'The file has 5 lines.'.length))
   })
 })
 
-describe('reálný stream: schema', () => {
-  it('structured_output z result eventu; StructuredOutput se nepočítá jako tool', async () => {
+describe('real stream: schema', () => {
+  it('structured_output from the result event; StructuredOutput is not counted as a tool', async () => {
     const r = await replay('sample-stream-schema.jsonl', 0, {
       schema: { type: 'object', properties: { lines: { type: 'number' }, first: { type: 'string' } }, required: ['lines', 'first'] },
     })
     assert.equal(r.ok, true)
     assert.deepEqual(r.structured, { lines: 4, first: 'a' })
     assert.equal(r.text, '{"lines":4,"first":"a"}')
-    assert.equal(r.toolCalls, 1) // jen Read
+    assert.equal(r.toolCalls, 1) // only Read
     assert.equal(r.usage.outputTokens, 465)
   })
 
-  it('claude nezavolalo StructuredOutput (protimluvné schema) → kind schema, 1 retry', async () => {
+  it('claude did not call StructuredOutput (contradictory schema) → kind schema, 1 retry', async () => {
     const r = await replay('sample-stream-schema-missing.jsonl', 0, {
       schema: { type: 'object', properties: { x: { type: 'integer' } }, required: ['x'] },
       maxAttempts: 4,
@@ -63,13 +63,13 @@ describe('reálný stream: schema', () => {
     assert.equal(r.ok, false)
     assert.equal(r.error?.kind, 'schema')
     assert.equal(r.attempts, 2)
-    // tokeny z obou pokusů jsou započítány
+    // tokens from both attempts are counted
     assert.equal(r.usage.outputTokens, 742 * 2)
   })
 })
 
-describe('reálný stream: chyby', () => {
-  it('neexistující model (HTTP 404, subtype success + is_error) → api, bez retry', async () => {
+describe('real stream: errors', () => {
+  it('nonexistent model (HTTP 404, subtype success + is_error) → api, no retry', async () => {
     const r = await replay('sample-stream-apierror.jsonl', 1)
     assert.equal(r.ok, false)
     assert.equal(r.error?.kind, 'api')
@@ -78,16 +78,16 @@ describe('reálný stream: chyby', () => {
     assert.match(r.error!.message, /nonexistent-model-xyz/)
   })
 
-  it('překročený rozpočet agenta → api, bez retry, cena započítána', async () => {
+  it('agent budget exceeded → api, no retry, cost counted', async () => {
     const r = await replay('sample-stream-budget.jsonl', 1)
     assert.equal(r.ok, false)
     assert.equal(r.error?.kind, 'api')
     assert.equal(r.attempts, 1)
-    assert.match(r.error!.message, /rozpočet/)
+    assert.match(r.error!.message, /budget/)
     assert.ok(r.costUsd > 0)
   })
 
-  it('síťová chyba bez HTTP kódu (ECONNREFUSED) je přechodná → opakuje se', async () => {
+  it('network error without HTTP code (ECONNREFUSED) is transient → retried', async () => {
     const r = await replay('sample-stream-api-retry.jsonl', 1, { maxAttempts: 2 })
     assert.equal(r.ok, false)
     assert.equal(r.error?.kind, 'api')
@@ -95,9 +95,9 @@ describe('reálný stream: chyby', () => {
     assert.match(r.error!.message, /ECONNREFUSED/)
   })
 
-  it('stderr „not a valid JSON Schema“ bez stdout JSON → schema, bez retry', async () => {
+  it('stderr "not a valid JSON Schema" without stdout JSON → schema, no retry', async () => {
     sb = makeSandbox(REPLAY_CLAUDE)
-    // prázdný stream + chyba na stderr, jak se chová reálné CLI při neplatném schématu
+    // empty stream + error on stderr, as the real CLI behaves with an invalid schema
     process.env['REPLAY_FILE'] = join(FIXTURES, 'empty.jsonl')
     process.env['REPLAY_EXIT'] = '1'
     process.env['REPLAY_STDERR'] = 'Error: --json-schema is not a valid JSON Schema: data/properties/x/type must be equal to one of the allowed values'

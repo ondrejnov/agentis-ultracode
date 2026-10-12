@@ -1,4 +1,4 @@
-/** Čisté formátovací pomůcky pro výstup CLI (bez I/O, deterministické). */
+/** Pure formatting helpers for CLI output (no I/O, deterministic). */
 
 export interface Style {
   enabled: boolean
@@ -14,7 +14,7 @@ function wrap(enabled: boolean, open: number, close: number): (s: string) => str
   return (s) => (enabled && s.length > 0 ? `\u001b[${open}m${s}\u001b[${close}m` : s)
 }
 
-/** Vytvoří stylovač; při `enabled=false` vrací řetězce beze změny. */
+/** Creates a styler; with `enabled=false` it returns strings unchanged. */
 export function makeStyle(enabled: boolean): Style {
   return {
     enabled,
@@ -49,7 +49,7 @@ export function formatDuration(ms: number): string {
   return `${h}h${String(m).padStart(2, '0')}m`
 }
 
-/** Kompaktní počet tokenů: 950 | 1.2k | 3.4M */
+/** Compact token count: 950 | 1.2k | 3.4M */
 export function formatCount(n: number): string {
   if (!Number.isFinite(n)) return '0'
   const v = Math.round(n)
@@ -65,20 +65,20 @@ export function formatUsd(n: number): string {
   return `$${n.toFixed(2)}`
 }
 
-/** Relativní stáří: „před 5 s“, „před 3 min“, „před 2 h“, „před 4 dny“. */
+/** Relative age: "5 s ago", "3 min ago", "2 h ago", "4 days ago". */
 export function formatAge(ms: number): string {
-  if (!Number.isFinite(ms) || ms < 0) return 'právě teď'
+  if (!Number.isFinite(ms) || ms < 0) return 'just now'
   const s = Math.floor(ms / 1000)
-  if (s < 60) return `před ${s} s`
+  if (s < 60) return `${s} s ago`
   const m = Math.floor(s / 60)
-  if (m < 60) return `před ${m} min`
+  if (m < 60) return `${m} min ago`
   const h = Math.floor(m / 60)
-  if (h < 48) return `před ${h} h`
+  if (h < 48) return `${h} h ago`
   const d = Math.floor(h / 24)
-  return `před ${d} ${plural(d, 'dnem', 'dny', 'dny')}`
+  return `${d} ${plural(d, 'day', 'days', 'days')} ago`
 }
 
-/** České skloňování: 1 agent, 2–4 agenti, 5+ agentů. */
+/** Picks the form for n: 1 → one, 2–4 → few, otherwise many (e.g. 1 agent, 2–4 agents, 5+ agents). */
 export function plural(n: number, one: string, few: string, many: string): string {
   if (n === 1) return one
   if (n >= 2 && n <= 4) return few
@@ -91,7 +91,7 @@ export function truncate(s: string, max: number): string {
   return `${flat.slice(0, Math.max(0, max - 1))}…`
 }
 
-/** Zarovná řádky do sloupců (šířku počítá bez ANSI). Poslední sloupec se nedoplňuje. */
+/** Aligns rows into columns (width is computed without ANSI). The last column is not padded. */
 export function formatTable(rows: string[][], indent = ''): string[] {
   if (rows.length === 0) return []
   const cols = Math.max(...rows.map((r) => r.length))
@@ -108,13 +108,13 @@ export function formatTable(rows: string[][], indent = ''): string[] {
   })
 }
 
-/** Čas HH:MM:SS (UTC) z ISO řetězce; neplatný vstup → ''. */
+/** Time HH:MM:SS (UTC) from an ISO string; invalid input → ''. */
 export function formatClock(iso: string): string {
   const m = /T(\d{2}:\d{2}:\d{2})/.exec(iso)
   return m ? m[1] : ''
 }
 
-/** Bezpečné JSON.stringify (cyklické/nestringifikovatelné hodnoty nehodí). */
+/** Safe JSON.stringify (cyclic/non-stringifiable values don't throw). */
 export function safeJson(value: unknown, indent?: number): string {
   try {
     const s = JSON.stringify(value, null, indent)

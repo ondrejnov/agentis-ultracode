@@ -9,39 +9,39 @@ import { T0, ev, fakeEngine, makeDiscovery, makeIO, makeStore, makeSummary, tmpD
 const USAGE = { inputTokens: 10, outputTokens: 20, cacheReadTokens: 0, cacheCreationTokens: 0 }
 
 const SAMPLE_EVENTS: RunEvent[] = [
-  ev('run_start', { runId: 'wf_aaaaaaaa-111', name: 'demo', description: 'Ukázka', args: null, cwd: '/p', scriptPath: '/p/demo.ts', resumed: false, phases: [] }),
+  ev('run_start', { runId: 'wf_aaaaaaaa-111', name: 'demo', description: 'Showcase', args: null, cwd: '/p', scriptPath: '/p/demo.ts', resumed: false, phases: [] }),
   ev('phase', { title: 'Scan', workflowPath: ['demo'] }),
   ev('agent_start', { id: 1, label: 'scan', phase: 'Scan', workflowPath: ['demo'], promptPreview: 'p' }),
   ev('agent_done', { id: 1, ok: true, cached: false, durationMs: 1500, usage: USAGE, costUsd: 0.002, toolCalls: 0 }),
   { t: 'run_end', ts: T0, status: 'completed', durationMs: 65_000, totals: makeSummary().totals },
 ]
 
-describe('run: výstup a exit kódy', () => {
-  it('completed: stdout = JSON výsledek, stderr = průběh + souhrn, exit 0', async () => {
+describe('run: output and exit codes', () => {
+  it('completed: stdout = JSON result, stderr = progress + summary, exit 0', async () => {
     const cap = makeIO({ cwd: '/proj' })
     const eng = fakeEngine(makeSummary({ result: { files: ['a', 'b'], n: 2 } }), SAMPLE_EVENTS)
     const code = await main(['run', 'demo'], cap.io, { runWorkflow: eng.runWorkflow })
     assert.equal(code, 0)
     assert.deepEqual(JSON.parse(cap.out()), { files: ['a', 'b'], n: 2 })
-    assert.equal(cap.out(), '{"files":["a","b"],"n":2}\n', 'mimo TTY kompaktní JSON a nic jiného na stdout')
+    assert.equal(cap.out(), '{"files":["a","b"],"n":2}\n', 'outside a TTY compact JSON and nothing else on stdout')
     const err = cap.err()
     assert.match(err, /ultracode wf_aaaaaaaa-111 {2}demo/)
-    assert.match(err, /== Fáze: Scan/)
-    assert.match(err, /#1 hotovo {2}scan {2}1\.5 s/)
-    assert.match(err, /-- Souhrn --/)
-    assert.match(err, /Stav: {5}completed/)
-    assert.doesNotMatch(err, /== Konec:/, 'run_end nahrazuje souhrn, nevypisuje se dvakrát')
-    assert.ok(!cap.out().includes('Souhrn'))
+    assert.match(err, /== Phase: Scan/)
+    assert.match(err, /#1 done {4}scan {2}1\.5 s/)
+    assert.match(err, /-- Summary --/)
+    assert.match(err, /Status: {3}completed/)
+    assert.doesNotMatch(err, /== End:/, 'run_end is replaced by the summary, not printed twice')
+    assert.ok(!cap.out().includes('Summary'))
   })
 
-  it('stdout na TTY je odsazený JSON', async () => {
+  it('stdout on a TTY is indented JSON', async () => {
     const cap = makeIO({ isTTY: true, stdoutIsTTY: true })
     const eng = fakeEngine(makeSummary({ result: { a: 1 } }))
     await main(['run', 'demo'], cap.io, { runWorkflow: eng.runWorkflow })
     assert.equal(cap.out(), '{\n  "a": 1\n}\n')
   })
 
-  it('--json: na stdout celé RunSummary', async () => {
+  it('--json: whole RunSummary on stdout', async () => {
     const cap = makeIO()
     const summary = makeSummary({ result: [1, 2] })
     const eng = fakeEngine(summary)
@@ -50,23 +50,23 @@ describe('run: výstup a exit kódy', () => {
     assert.deepEqual(JSON.parse(cap.out()), JSON.parse(JSON.stringify(summary)))
   })
 
-  it('completed bez výsledku → null', async () => {
+  it('completed without a result → null', async () => {
     const cap = makeIO()
     const eng = fakeEngine(makeSummary())
     assert.equal(await main(['run', 'demo'], cap.io, { runWorkflow: eng.runWorkflow }), 0)
     assert.equal(cap.out(), 'null\n')
   })
 
-  it('failed: exit 1, stdout prázdný, chyba na stderr', async () => {
+  it('failed: exit 1, stdout empty, error on stderr', async () => {
     const cap = makeIO()
-    const eng = fakeEngine(makeSummary({ status: 'failed', error: 'Skript: TypeError x', result: undefined }))
+    const eng = fakeEngine(makeSummary({ status: 'failed', error: 'Script: TypeError x', result: undefined }))
     const code = await main(['run', 'demo'], cap.io, { runWorkflow: eng.runWorkflow })
     assert.equal(code, 1)
     assert.equal(cap.out(), '')
-    assert.match(cap.err(), /Chyba: {4}Skript: TypeError x/)
+    assert.match(cap.err(), /Error: {4}Script: TypeError x/)
   })
 
-  it('failed s --json stále vypíše shrnutí na stdout', async () => {
+  it('failed with --json still prints the summary to stdout', async () => {
     const cap = makeIO()
     const eng = fakeEngine(makeSummary({ status: 'failed', error: 'x' }))
     const code = await main(['run', 'demo', '--json'], cap.io, { runWorkflow: eng.runWorkflow })
@@ -76,12 +76,12 @@ describe('run: výstup a exit kódy', () => {
 
   it('aborted → 130', async () => {
     const cap = makeIO()
-    const eng = fakeEngine(makeSummary({ status: 'aborted', error: 'Běh byl přerušen.' }))
+    const eng = fakeEngine(makeSummary({ status: 'aborted', error: 'Run was aborted.' }))
     assert.equal(await main(['run', 'demo'], cap.io, { runWorkflow: eng.runWorkflow }), 130)
     assert.equal(cap.out(), '')
   })
 
-  it('--quiet potlačí průběh i souhrn, ale chyby ne', async () => {
+  it('--quiet suppresses progress and summary, but not errors', async () => {
     const ok = makeIO()
     const engOk = fakeEngine(makeSummary({ result: 7 }), SAMPLE_EVENTS)
     assert.equal(await main(['run', 'demo', '--quiet'], ok.io, { runWorkflow: engOk.runWorkflow }), 0)
@@ -89,33 +89,33 @@ describe('run: výstup a exit kódy', () => {
     assert.equal(ok.out(), '7\n')
 
     const bad = makeIO()
-    const engBad = fakeEngine(makeSummary({ status: 'failed', error: 'selhalo to' }), SAMPLE_EVENTS)
+    const engBad = fakeEngine(makeSummary({ status: 'failed', error: 'it failed' }), SAMPLE_EVENTS)
     assert.equal(await main(['run', 'demo', '-q'], bad.io, { runWorkflow: engBad.runWorkflow }), 1)
-    assert.match(bad.err(), /selhalo to/)
-    assert.doesNotMatch(bad.err(), /Fáze/)
+    assert.match(bad.err(), /it failed/)
+    assert.doesNotMatch(bad.err(), /Phase/)
   })
 
-  it('překročený rozpočet se oznámí v souhrnu', async () => {
+  it('exceeded budget is reported in the summary', async () => {
     const cap = makeIO()
     const eng = fakeEngine(makeSummary({ budgetExceeded: true, result: 1 }))
     assert.equal(await main(['run', 'demo'], cap.io, { runWorkflow: eng.runWorkflow }), 0)
-    assert.match(cap.err(), /rozpočet překročen/)
+    assert.match(cap.err(), /budget exceeded/)
   })
 })
 
-describe('run: barvy', () => {
+describe('run: colors', () => {
   const run = async (opts: Parameters<typeof makeIO>[0], extra: string[] = []) => {
     const cap = makeIO(opts)
     const eng = fakeEngine(makeSummary({ result: 1 }), SAMPLE_EVENTS)
     await main(['run', 'demo', ...extra], cap.io, { runWorkflow: eng.runWorkflow })
     return cap
   }
-  it('na TTY jsou barvy jen na stderr', async () => {
+  it('on a TTY colors appear only on stderr', async () => {
     const cap = await run({ isTTY: true })
     assert.match(cap.err(), /\u001b\[/)
     assert.ok(!cap.out().includes('\u001b['))
   })
-  it('bez TTY, s NO_COLOR i s --no-color žádné barvy', async () => {
+  it('without a TTY, with NO_COLOR and with --no-color there are no colors', async () => {
     assert.doesNotMatch((await run({ isTTY: false })).err(), /\u001b\[/)
     assert.doesNotMatch((await run({ isTTY: true, env: { NO_COLOR: '1' } })).err(), /\u001b\[/)
     assert.doesNotMatch((await run({ isTTY: true }, ['--no-color'])).err(), /\u001b\[/)
@@ -123,10 +123,10 @@ describe('run: barvy', () => {
   })
 })
 
-describe('run: mapování voleb na RunOptions', () => {
-  it('všechny volby se předají enginu', async () => {
+describe('run: mapping of options to RunOptions', () => {
+  it('all options are passed to the engine', async () => {
     const cwd = tmpDir()
-    const cap = makeIO({ cwd: '/jinde' })
+    const cap = makeIO({ cwd: '/elsewhere' })
     const eng = fakeEngine(makeSummary({ result: 1 }))
     const ctrl = new AbortController()
     const code = await main(
@@ -163,7 +163,7 @@ describe('run: mapování voleb na RunOptions', () => {
     assert.equal(typeof o.onEvent, 'function')
   })
 
-  it('bez voleb se nepředávají klíče navíc (args zůstává undefined)', async () => {
+  it('without options no extra keys are passed (args stays undefined)', async () => {
     const cap = makeIO({ cwd: '/proj' })
     const eng = fakeEngine(makeSummary({ result: 1 }))
     await main(['run', 'demo'], cap.io, { runWorkflow: eng.runWorkflow })
@@ -174,7 +174,7 @@ describe('run: mapování voleb na RunOptions', () => {
     assert.equal(o.cwd, '/proj')
   })
 
-  it('--args může být skalár / null / pole', async () => {
+  it('--args may be a scalar / null / array', async () => {
     for (const [raw, expected] of [['null', null], ['"txt"', 'txt'], ['[1,2]', [1, 2]], ['42', 42]] as const) {
       const eng = fakeEngine(makeSummary({ result: 1 }))
       await main(['run', 'demo', '--args', raw], makeIO().io, { runWorkflow: eng.runWorkflow })
@@ -183,7 +183,7 @@ describe('run: mapování voleb na RunOptions', () => {
     }
   })
 
-  it('--args-file načte JSON relativně k cwd procesu', async () => {
+  it('--args-file loads JSON relative to the process cwd', async () => {
     const dir = tmpDir()
     writeFile(join(dir, 'in.json'), '{"x":[1,2,3]}')
     const eng = fakeEngine(makeSummary({ result: 1 }))
@@ -192,7 +192,7 @@ describe('run: mapování voleb na RunOptions', () => {
     assert.deepEqual(eng.calls[0].args, { x: [1, 2, 3] })
   })
 
-  it('cesta ke skriptu se převede na absolutní vůči cwd procesu (ne --cwd)', async () => {
+  it('script path is made absolute relative to the process cwd (not --cwd)', async () => {
     const dir = tmpDir()
     const proj = tmpDir()
     writeFile(join(dir, 'sub', 'my.workflow.ts'), 'x')
@@ -202,14 +202,14 @@ describe('run: mapování voleb na RunOptions', () => {
     assert.equal(eng.calls[0].cwd, proj)
   })
 
-  it('jméno workflow se předá beze změny', async () => {
+  it('workflow name is passed unchanged', async () => {
     const eng = fakeEngine(makeSummary({ result: 1 }))
     await main(['run', 'php8-upgrade'], makeIO().io, { runWorkflow: eng.runWorkflow })
     assert.equal(eng.calls[0].workflow, 'php8-upgrade')
   })
 })
 
-describe('run: chybné použití (exit 2, engine se nevolá)', () => {
+describe('run: invalid usage (exit 2, engine is not called)', () => {
   const expectUsage = async (argv: string[], pattern: RegExp, extra: Parameters<typeof makeIO>[0] = {}) => {
     const cap = makeIO(extra)
     const eng = fakeEngine(makeSummary())
@@ -217,68 +217,68 @@ describe('run: chybné použití (exit 2, engine se nevolá)', () => {
     assert.equal(code, 2, `argv=${JSON.stringify(argv)} stderr=${cap.err()}`)
     assert.match(cap.err(), pattern)
     assert.equal(cap.out(), '')
-    assert.equal(eng.calls.length, 0, 'engine nesmí být volán')
+    assert.equal(eng.calls.length, 0, 'engine must not be called')
   }
 
-  it('neplatný JSON v --args', async () => {
-    await expectUsage(['run', 'demo', '--args', '{nope'], /--args není platný JSON/)
+  it('invalid JSON in --args', async () => {
+    await expectUsage(['run', 'demo', '--args', '{nope'], /Value of --args is not valid JSON/)
   })
-  it('--args i --args-file současně', async () => {
-    await expectUsage(['run', 'demo', '--args', '{}', '--args-file', 'x.json'], /nelze použít současně/)
+  it('--args and --args-file together', async () => {
+    await expectUsage(['run', 'demo', '--args', '{}', '--args-file', 'x.json'], /cannot be used together/)
   })
-  it('--args-file neexistuje / není JSON', async () => {
+  it('--args-file does not exist / is not JSON', async () => {
     const dir = tmpDir()
-    await expectUsage(['run', 'demo', '--args-file', 'chybi.json'], /nelze přečíst/, { cwd: dir })
+    await expectUsage(['run', 'demo', '--args-file', 'missing.json'], /cannot be read/, { cwd: dir })
     writeFile(join(dir, 'bad.json'), '{oops')
-    await expectUsage(['run', 'demo', '--args-file', 'bad.json'], /neobsahuje platný JSON/, { cwd: dir })
+    await expectUsage(['run', 'demo', '--args-file', 'bad.json'], /does not contain valid JSON/, { cwd: dir })
   })
-  it('chybí workflow', async () => {
-    await expectUsage(['run'], /Chybí workflow/)
+  it('missing workflow', async () => {
+    await expectUsage(['run'], /Missing workflow/)
   })
-  it('příliš mnoho argumentů', async () => {
-    await expectUsage(['run', 'a', 'b'], /jediný argument/)
+  it('too many arguments', async () => {
+    await expectUsage(['run', 'a', 'b'], /takes a single argument/)
   })
-  it('neplatné číselné volby a effort', async () => {
+  it('invalid numeric options and effort', async () => {
     await expectUsage(['run', 'demo', '--concurrency', '0'], /--concurrency/)
-    await expectUsage(['run', 'demo', '--max-usd', 'moc'], /--max-usd/)
-    await expectUsage(['run', 'demo', '--max-tokens', '-5'], /--max-tokens|nejednoznačn/)
+    await expectUsage(['run', 'demo', '--max-usd', 'lots'], /--max-usd/)
+    await expectUsage(['run', 'demo', '--max-tokens', '-5'], /--max-tokens|ambiguous/)
     await expectUsage(['run', 'demo', '--effort', 'turbo'], /--effort/)
   })
-  it('neznámá volba', async () => {
-    await expectUsage(['run', 'demo', '--rychle'], /Neznámá volba --rychle/)
+  it('unknown option', async () => {
+    await expectUsage(['run', 'demo', '--fast'], /Unknown option --fast/)
   })
-  it('neexistující --cwd', async () => {
-    await expectUsage(['run', 'demo', '--cwd', '/neexistuje/vubec'], /--cwd/)
+  it('non-existent --cwd', async () => {
+    await expectUsage(['run', 'demo', '--cwd', '/does/not/exist/at/all'], /--cwd/)
   })
-  it('neexistující soubor skriptu', async () => {
-    await expectUsage(['run', './nic.workflow.ts'], /neexistuje/, { cwd: tmpDir() })
+  it('non-existent script file', async () => {
+    await expectUsage(['run', './nothing.workflow.ts'], /does not exist/, { cwd: tmpDir() })
   })
-  it('nebezpečné --run-id', async () => {
-    await expectUsage(['run', 'demo', '--run-id', '../evil'], /Neplatné --run-id/)
+  it('dangerous --run-id', async () => {
+    await expectUsage(['run', 'demo', '--run-id', '../evil'], /Invalid --run-id/)
   })
 })
 
-describe('run: chyby z enginu', () => {
-  it('ScriptValidationError → exit 2 s diagnostikou', async () => {
+describe('run: engine errors', () => {
+  it('ScriptValidationError → exit 2 with diagnostics', async () => {
     const cap = makeIO()
     const eng = fakeEngine(() => {
-      throw new ScriptValidationError('Skript je neplatný', ['řádek 3: chybí meta', 'řádek 9: import()'])
+      throw new ScriptValidationError('Script is invalid', ['line 3: meta missing', 'line 9: import()'])
     })
     const code = await main(['run', 'demo'], cap.io, { runWorkflow: eng.runWorkflow })
     assert.equal(code, 2)
-    assert.match(cap.err(), /Neplatný skript: Skript je neplatný/)
-    assert.match(cap.err(), /- řádek 3: chybí meta/)
-    assert.match(cap.err(), /- řádek 9: import\(\)/)
+    assert.match(cap.err(), /Invalid script: Script is invalid/)
+    assert.match(cap.err(), /- line 3: meta missing/)
+    assert.match(cap.err(), /- line 9: import\(\)/)
     assert.equal(cap.out(), '')
   })
 
   it('WorkflowNotFoundError → exit 2', async () => {
     const cap = makeIO()
     const eng = fakeEngine(() => {
-      throw new WorkflowNotFoundError('nic', ['/a', '/b'])
+      throw new WorkflowNotFoundError('nothing', ['/a', '/b'])
     })
-    assert.equal(await main(['run', 'nic'], cap.io, { runWorkflow: eng.runWorkflow }), 2)
-    assert.match(cap.err(), /nenalezeno/)
+    assert.equal(await main(['run', 'nothing'], cap.io, { runWorkflow: eng.runWorkflow }), 2)
+    assert.match(cap.err(), /not found/)
     assert.match(cap.err(), /\/a, \/b/)
   })
 
@@ -290,16 +290,16 @@ describe('run: chyby z enginu', () => {
     assert.equal(await main(['run', 'demo'], cap.io, { runWorkflow: eng.runWorkflow }), 130)
   })
 
-  it('neočekávaná výjimka → exit 1, ne pád', async () => {
+  it('unexpected exception → exit 1, not a crash', async () => {
     const cap = makeIO()
     const eng = fakeEngine(() => {
       throw new Error('kaboom')
     })
     assert.equal(await main(['run', 'demo'], cap.io, { runWorkflow: eng.runWorkflow }), 1)
-    assert.match(cap.err(), /neočekávanou chybou: kaboom/)
+    assert.match(cap.err(), /unexpected error:[\s\S]*kaboom/)
   })
 
-  it('vadný onEvent renderer nesmí shodit běh (výjimka v události)', async () => {
+  it('a faulty onEvent renderer must not crash the run (exception in an event)', async () => {
     const cap = makeIO()
     const bad = { t: 'agent_done', ts: T0, id: 1, ok: true, cached: false, durationMs: 1, costUsd: 0, toolCalls: 0 } as unknown as RunEvent
     const eng = fakeEngine(makeSummary({ result: 1 }), [bad])
@@ -310,7 +310,7 @@ describe('run: chyby z enginu', () => {
 describe('resume', () => {
   const prev = makeSummary({ runId: 'wf_prev0001-abc', status: 'failed' })
 
-  it('resume <runId> → workflow prázdné + resumeRunId, args se nepředávají', async () => {
+  it('resume <runId> → empty workflow + resumeRunId, args are not passed', async () => {
     const cap = makeIO()
     const eng = fakeEngine(makeSummary({ result: 'ok' }))
     const code = await main(['resume', 'wf_prev0001-abc'], cap.io, {
@@ -325,7 +325,7 @@ describe('resume', () => {
     assert.equal(cap.out(), '"ok"\n')
   })
 
-  it('resume přebírá stejné volby (--args, --max-usd, --concurrency)', async () => {
+  it('resume takes over the same options (--args, --max-usd, --concurrency)', async () => {
     const eng = fakeEngine(makeSummary({ result: 1 }))
     await main(['resume', 'wf_prev0001-abc', '--args', '{"x":1}', '--max-usd', '3', '--concurrency', '2'], makeIO().io, {
       runWorkflow: eng.runWorkflow,
@@ -337,7 +337,7 @@ describe('resume', () => {
     assert.equal(o.concurrency, 2)
   })
 
-  it('run <wf> --resume <id> zachová workflow a doplní resumeRunId', async () => {
+  it('run <wf> --resume <id> keeps the workflow and fills in resumeRunId', async () => {
     const eng = fakeEngine(makeSummary({ result: 1 }))
     await main(['run', 'demo', '--resume', 'wf_prev0001-abc'], makeIO().io, {
       runWorkflow: eng.runWorkflow,
@@ -347,7 +347,7 @@ describe('resume', () => {
     assert.equal(eng.calls[0].resumeRunId, 'wf_prev0001-abc')
   })
 
-  it('run --resume <id> bez workflow je povoleno', async () => {
+  it('run --resume <id> without a workflow is allowed', async () => {
     const eng = fakeEngine(makeSummary({ result: 1 }))
     const code = await main(['run', '--resume', 'wf_prev0001-abc'], makeIO().io, {
       runWorkflow: eng.runWorkflow,
@@ -357,17 +357,17 @@ describe('resume', () => {
     assert.equal(eng.calls[0].workflow, '')
   })
 
-  it('neexistující běh → exit 2, engine se nevolá', async () => {
+  it('non-existent run → exit 2, engine is not called', async () => {
     const cap = makeIO()
     const eng = fakeEngine(makeSummary())
     const code = await main(['resume', 'wf_nope'], cap.io, { runWorkflow: eng.runWorkflow, store: makeStore([]) })
     assert.equal(code, 2)
-    assert.match(cap.err(), /Běh „wf_nope“ nenalezen/)
+    assert.match(cap.err(), /Run "wf_nope" not found/)
     assert.equal(eng.calls.length, 0)
   })
 
-  it('chybějící / nadbytečné runId, rozpor s --resume', async () => {
-    for (const argv of [['resume'], ['resume', 'a', 'b'], ['resume', 'wf_prev0001-abc', '--resume', 'jiny']]) {
+  it('missing / surplus runId, conflict with --resume', async () => {
+    for (const argv of [['resume'], ['resume', 'a', 'b'], ['resume', 'wf_prev0001-abc', '--resume', 'other']]) {
       const eng = fakeEngine(makeSummary())
       const cap = makeIO()
       const code = await main(argv, cap.io, { runWorkflow: eng.runWorkflow, store: makeStore([{ summary: prev }]) })
@@ -376,7 +376,7 @@ describe('resume', () => {
     }
   })
 
-  it('běh ve stavu running → varování, ale pokračuje', async () => {
+  it('run in state running → warning, but continues', async () => {
     const cap = makeIO()
     const eng = fakeEngine(makeSummary({ result: 1 }))
     const code = await main(['resume', 'wf_prev0001-abc'], cap.io, {
@@ -384,27 +384,27 @@ describe('resume', () => {
       store: makeStore([{ summary: makeSummary({ runId: 'wf_prev0001-abc', status: 'running' }) }]),
     })
     assert.equal(code, 0)
-    assert.match(cap.err(), /Pozor: běh wf_prev0001-abc je podle run\.json stále ve stavu running/)
+    assert.match(cap.err(), /Warning: run wf_prev0001-abc is still in state running according to run\.json/)
   })
 
-  it('průběh obnoveného běhu se vykreslí jako pokračování', async () => {
+  it('progress of the resumed run is rendered as a continuation', async () => {
     const cap = makeIO()
     const start = ev('run_start', { runId: 'wf_prev0001-abc', name: 'demo', description: '', args: null, cwd: '/', scriptPath: '/s', resumed: true, phases: [] })
     const eng = fakeEngine(makeSummary({ result: 1 }), [start])
     await main(['resume', 'wf_prev0001-abc'], cap.io, { runWorkflow: eng.runWorkflow, store: makeStore([{ summary: prev }]) })
-    assert.match(cap.err(), /\(pokračování\)/)
+    assert.match(cap.err(), /\(resumed\)/)
   })
 })
 
 describe('dispatcher', () => {
-  it('main nikdy nevolá process.exit a nehází (neznámý příkaz)', async () => {
+  it('main never calls process.exit and does not throw (unknown command)', async () => {
     const cap = makeIO()
     const code = await main(['frobnicate'], cap.io, {})
     assert.equal(code, 2)
-    assert.match(cap.err(), /neznámý příkaz „frobnicate“/)
+    assert.match(cap.err(), /unknown command "frobnicate"/)
   })
 
-  it('discovery fake je kompatibilní (kontrola helperu)', () => {
-    assert.throws(() => makeDiscovery().findWorkflow('x', '/'), /nenalezeno/)
+  it('fake discovery is compatible (helper check)', () => {
+    assert.throws(() => makeDiscovery().findWorkflow('x', '/'), /not found/)
   })
 })

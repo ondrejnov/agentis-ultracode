@@ -7,7 +7,7 @@ import { join } from 'node:path'
 
 const HOST = new URL('../../src/script/host.ts', import.meta.url).href
 
-/** Spustí `code` jako ESM soubor v novém procesu `node`. */
+/** Runs `code` as an ESM file in a new `node` process. */
 function runModule(code: string): { status: number | null; stdout: string; stderr: string } {
   const dir = mkdtempSync(join(tmpdir(), 'ultracode-script-test-'))
   try {
@@ -19,8 +19,8 @@ function runModule(code: string): { status: number | null; stdout: string; stder
   }
 }
 
-describe('chování v samostatném procesu', () => {
-  it('běh skriptu (vč. vnořeného workflow a TS) nevypíše nic na stderr (žádný ExperimentalWarning) a proces skončí', () => {
+describe('behaviour in a separate process', () => {
+  it('script run (incl. nested workflow and TS) prints nothing to stderr (no ExperimentalWarning) and the process exits', () => {
     const code = `
 import { runScript } from ${JSON.stringify(HOST)}
 const hooks = {
@@ -40,7 +40,7 @@ process.stdout.write(JSON.stringify(r.value))
     assert.deepEqual(JSON.parse(res.stdout), { a: 'A:x', c: 42 })
   })
 
-  it('pád skriptu nevypíše stack trace workeru na stderr a proces skončí s kódem 0, když chybu zachytíme', () => {
+  it('script crash prints no worker stack trace to stderr and the process exits with code 0 when the error is caught', () => {
     const code = `
 import { runScript } from ${JSON.stringify(HOST)}
 const hooks = { agent: async () => null, phase() {}, log() {}, workflowEnter() {}, workflowExit() {}, loadWorkflow: async () => { throw new Error('x') } }

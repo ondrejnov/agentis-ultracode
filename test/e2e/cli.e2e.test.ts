@@ -1,7 +1,7 @@
 /**
- * E2E: skutečný proces `node bin/ultracode.mjs …` + skutečný engine, host skriptu a runner nad fake-claude.
- * Ověřuje chování z pohledu uživatele/Agentisu: stdout = JSON, exit kódy, adresář běhu, resume po zabití,
- * rozpočet, validace a limit souběžnosti (z logu fake-claude).
+ * E2E: real process `node bin/ultracode.mjs …` + real engine, script host and runner on top of fake-claude.
+ * Verifies the behaviour from the user's/Agentis' point of view: stdout = JSON, exit codes, run directory, resume after a kill,
+ * budget, validation and the concurrency limit (from the fake-claude log).
  */
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
@@ -14,7 +14,7 @@ const ROOT = resolve(import.meta.dirname, '..', '..')
 const BIN = join(ROOT, 'bin', 'ultracode.mjs')
 const FAKE = join(ROOT, 'test', 'fixtures', 'fake-claude.mjs')
 
-// ───────────────────────── pomůcky ─────────────────────────
+// ───────────────────────── helpers ─────────────────────────
 
 interface Sandbox {
   cwd: string
@@ -45,7 +45,7 @@ function makeSandbox(): Sandbox {
       ULTRACODE_RETRY_BACKOFF_MS: '5',
       ULTRACODE_KILL_GRACE_MS: '500',
       NO_COLOR: '1',
-      // e2e testují aktuální zdrojáky, ne případný starší dist/ (dist se testuje zvlášť)
+      // e2e tests the current sources, not a possibly older dist/ (dist is tested separately)
       ULTRACODE_FORCE_SRC: '1',
     },
     script(name, content) {
@@ -64,7 +64,7 @@ afterEach(() => {
     try {
       rmSync(d, { recursive: true, force: true })
     } catch {
-      // ignoruj
+      // ignore
     }
   }
 })
@@ -94,7 +94,7 @@ function start(sb: Sandbox, args: string[], extraEnv: NodeJS.ProcessEnv = {}): R
   const done = new Promise<Finished>((res, rej) => {
     const t = setTimeout(() => {
       child.kill('SIGKILL')
-      rej(new Error(`ultracode ${args.join(' ')} neskončil včas.\nstderr:\n${stderr}`))
+      rej(new Error(`ultracode ${args.join(' ')} did not finish in time.\nstderr:\n${stderr}`))
     }, 60_000)
     child.on('close', (code, signal) => {
       clearTimeout(t)
@@ -151,17 +151,17 @@ async function waitFor(cond: () => boolean, what: string, timeoutMs = 20_000): P
     if (cond()) return
     await new Promise((r) => setTimeout(r, 25))
   }
-  throw new Error(`Timeout čekání na: ${what}`)
+  throw new Error(`Timeout waiting for: ${what}`)
 }
 
-/** Maximální počet současně běžících procesů fake-claude podle [startedAt, endedAt]. */
+/** Maximum number of concurrently running fake-claude processes according to [startedAt, endedAt]. */
 function maxOverlap(entries: FakeLog[]): number {
   const points: Array<[number, number]> = []
   for (const e of entries) {
     points.push([Date.parse(e.startedAt), 1])
     points.push([Date.parse(e.endedAt), -1])
   }
-  // při shodném čase nejdřív konec (-1), ať se nepřeceňuje překryv
+  // at the same time the end (-1) comes first, so the overlap is not overestimated
   points.sort((a, b) => a[0] - b[0] || a[1] - b[1])
   let cur = 0
   let max = 0
@@ -174,46 +174,46 @@ function maxOverlap(entries: FakeLog[]): number {
 
 const SCHEMA_VALUE = `{ type: 'object', properties: { value: { type: 'string' } }, required: ['value'] }`
 
-// ───────────────────────── testy ─────────────────────────
+// ───────────────────────── tests ─────────────────────────
 
 describe('e2e: ultracode run', () => {
-  it('úspěšný pipeline běh: stdout JSON, exit 0, kompletní adresář běhu', async () => {
+  it('successful pipeline run: JSON stdout, exit 0, complete run directory', async () => {
     const sb = makeSandbox()
     sb.script(
       'pipe.workflow.ts',
       `export const meta = {
   name: 'pipe',
   description: 'e2e pipeline',
-  phases: [{ title: 'Analýza' }, { title: 'Oprava' }],
+  phases: [{ title: 'Analysis' }, { title: 'Fix' }],
 }
-phase('Analýza')
+phase('Analysis')
 const files: string[] = args.files
-log('soubory: ' + files.length)
+log('files: ' + files.length)
 const out = await pipeline(
   files,
-  (f: string) => agent('Analyzuj ' + f + ' [[fake:json {"value":"analyza-' + f + '"}]]', { label: 'analyza ' + f, phase: 'Analýza', schema: ${SCHEMA_VALUE} }),
+  (f: string) => agent('Analyze ' + f + ' [[fake:json {"value":"analysis-' + f + '"}]]', { label: 'analysis ' + f, phase: 'Analysis', schema: ${SCHEMA_VALUE} }),
   (a: { value: string } | null, f: string) =>
-    agent('Oprav ' + f + ' podle ' + (a ? a.value : 'nic') + ' [[fake:text opraveno-' + f + ']]', { label: 'oprava ' + f, phase: 'Oprava' }),
+    agent('Fix ' + f + ' per ' + (a ? a.value : 'nothing') + ' [[fake:text fixed-' + f + ']]', { label: 'fix ' + f, phase: 'Fix' }),
 )
-return { opraveno: out, spent: budget.spent() }
+return { fixed: out, spent: budget.spent() }
 `,
     )
     const r = await run(sb, ['run', 'pipe', '--cwd', sb.cwd, '--args', '{"files":["a.php","b.php","c.php"]}', '--concurrency', '2'])
     assert.equal(r.code, 0, r.stderr)
 
-    // stdout = čistý JSON výsledku skriptu; průběh je jen na stderr
+    // stdout = pure JSON result of the script; progress is on stderr only
     const result = JSON.parse(r.stdout)
-    assert.deepEqual(result.opraveno, ['opraveno-a.php', 'opraveno-b.php', 'opraveno-c.php'])
+    assert.deepEqual(result.fixed, ['fixed-a.php', 'fixed-b.php', 'fixed-c.php'])
     assert.equal(typeof result.spent, 'number')
-    assert.match(r.stderr, /Analýza/)
-    assert.match(r.stderr, /soubory: 3/)
+    assert.match(r.stderr, /Analysis/)
+    assert.match(r.stderr, /files: 3/)
 
-    // adresář běhu
+    // run directory
     const dirs = runDirs(sb)
     assert.equal(dirs.length, 1)
     const dir = dirs[0]
     for (const f of ['run.json', 'script.ts', 'args.json', 'options.json', 'events.jsonl', 'journal.jsonl', 'result.json']) {
-      assert.ok(existsSync(join(dir, f)), `chybí ${f}`)
+      assert.ok(existsSync(join(dir, f)), `missing ${f}`)
     }
     const runJson = readJson(join(dir, 'run.json'))
     assert.equal(runJson.status, 'completed')
@@ -237,7 +237,7 @@ return { opraveno: out, spent: budget.spent() }
     assert.ok(dones.every((e) => e.ok === true && e.cached === false))
     assert.deepEqual(
       [...new Set(starts.map((e) => e.phase))].sort(),
-      ['Analýza', 'Oprava'],
+      ['Analysis', 'Fix'],
     )
     assert.equal(events.filter((e) => e.t === 'phase').length, 1)
 
@@ -252,7 +252,7 @@ return { opraveno: out, spent: budget.spent() }
     const agentResult = readJson(join(dir, 'agents', '1', 'result.json'))
     assert.equal(agentResult.ok, true)
 
-    // jak byl claude volán: izolace od rekurzivních workflow, bypass, schema, cwd
+    // how claude was called: isolation from recursive workflows, bypass, schema, cwd
     const log = readFakeLog(sb)
     assert.equal(log.length, 6)
     for (const e of log) {
@@ -265,18 +265,18 @@ return { opraveno: out, spent: budget.spent() }
     }
     assert.equal(log.filter((e) => e.args.includes('--json-schema')).length, 3)
 
-    // závislost: oprava dostala výsledek analýzy v promptu
-    assert.ok(log.some((e) => e.prompt.includes('Oprav b.php podle analyza-b.php')))
+    // dependency: the fix received the analysis result in its prompt
+    assert.ok(log.some((e) => e.prompt.includes('Fix b.php per analysis-b.php')))
   })
 
-  it('selhání agenta → null ve výsledku, běh dokončen, selhání v totals; ostatní agenti nedotčeni', async () => {
+  it('agent failure → null in the result, run completed, failure in totals; other agents unaffected', async () => {
     const sb = makeSandbox()
     sb.script(
       'fail.workflow.ts',
-      `export const meta = { name: 'fail', description: 'jeden agent selže' }
+      `export const meta = { name: 'fail', description: 'one agent fails' }
 const r = await parallel([
-  () => agent('Dobrý agent [[fake:text ok]]', { label: 'dobry' }),
-  () => agent('Špatný agent [[fake:fail]]', { label: 'spatny' }),
+  () => agent('Good agent [[fake:text ok]]', { label: 'good' }),
+  () => agent('Bad agent [[fake:fail]]', { label: 'bad' }),
 ])
 return { r, nullCount: r.filter((x: unknown) => x === null).length }
 `,
@@ -291,43 +291,43 @@ return { r, nullCount: r.filter((x: unknown) => x === null).length }
     assert.equal(runJson.totals.agents, 2)
     assert.equal(runJson.totals.failedAgents, 1)
 
-    // do journalu patří jen úspěšný agent (selhání se při resume zopakuje)
+    // only the successful agent belongs to the journal (a failure is repeated on resume)
     assert.equal(readJsonl(join(dir, 'journal.jsonl')).length, 1)
     const failed = readJsonl(join(dir, 'events.jsonl')).filter((e) => e.t === 'agent_done' && e.ok === false)
     assert.equal(failed.length, 1)
     assert.match(String(failed[0].error), /exit/)
 
-    // runner zkusil špatného agenta opakovaně (retry), dobrého jen jednou
+    // runner retried the bad agent repeatedly (retry), the good one only once
     const log = readFakeLog(sb)
-    assert.equal(log.filter((e) => e.prompt.includes('Dobrý agent')).length, 1)
-    assert.equal(log.filter((e) => e.prompt.includes('Špatný agent')).length, 3)
+    assert.equal(log.filter((e) => e.prompt.includes('Good agent')).length, 1)
+    assert.equal(log.filter((e) => e.prompt.includes('Bad agent')).length, 3)
   })
 
-  it('resume po zabitém běhu (SIGTERM): hotoví agenti z cache, doběhne jen zbytek', async () => {
+  it('resume after a killed run (SIGTERM): finished agents from cache, only the rest runs', async () => {
     const sb = makeSandbox()
     sb.script(
       'resumable.workflow.ts',
-      `export const meta = { name: 'resumable', description: 'resume po zabití' }
+      `export const meta = { name: 'resumable', description: 'resume after kill' }
 const first = await parallel(
-  ['x', 'y', 'z'].map((n) => () => agent('Rychlý krok ' + n + ' [[fake:text hotovo-' + n + ']]', { label: 'rychly ' + n })),
+  ['x', 'y', 'z'].map((n) => () => agent('Quick step ' + n + ' [[fake:text done-' + n + ']]', { label: 'quick ' + n })),
 )
-const last = await agent('Závěrečný krok ' + (args && args.slow ? '[[fake:sleep 60000]]' : '') + ' [[fake:text konec]]', { label: 'zaver' })
+const last = await agent('Final step ' + (args && args.slow ? '[[fake:sleep 60000]]' : '') + ' [[fake:text end]]', { label: 'final' })
 return { first, last }
 `,
     )
     const first = start(sb, ['run', 'resumable', '--cwd', sb.cwd, '--args', '{"slow":true}', '--concurrency', '3'])
-    // počkej, až jsou hotoví 3 rychlí agenti a běží závěrečný
+    // wait until 3 quick agents are done and the final one is running
     await waitFor(() => {
       const d = runDirs(sb)[0]
       if (!d) return false
       const ev = readJsonl(join(d, 'events.jsonl'))
       return ev.filter((e) => e.t === 'agent_done').length === 3 && ev.filter((e) => e.t === 'agent_start').length === 4
-    }, '3 hotoví agenti a běžící čtvrtý')
-    // čtvrtý proces musí být opravdu rozběhnutý (init event ve streamu), jinak SIGTERM přijde dřív než jeho handler
+    }, '3 finished agents and a running fourth one')
+    // the fourth process must really be running (init event in the stream), otherwise SIGTERM arrives before its handler
     await waitFor(() => {
       const f = join(runDirs(sb)[0], 'agents', '4', 'stream.jsonl')
       return existsSync(f) && readFileSync(f, 'utf8').includes('"init"')
-    }, 'rozběhnutí čtvrtého agenta')
+    }, 'the fourth agent started')
     first.child.kill('SIGTERM')
     const f1 = await first.done
     assert.equal(f1.code, 130, f1.stderr)
@@ -342,82 +342,82 @@ return { first, last }
     assert.equal(evAfter.at(-1).t, 'run_end')
     assert.equal(evAfter.at(-1).status, 'aborted')
 
-    // zabitý agent opravdu neběží (log vznikne při ukončení procesu SIGTERM)
-    await waitFor(() => readFakeLog(sb).some((e) => e.prompt.includes('Závěrečný krok')), 'ukončení zabitého agenta')
+    // killed agent really is not running (the log is written when the process is terminated by SIGTERM)
+    await waitFor(() => readFakeLog(sb).some((e) => e.prompt.includes('Final step')), 'termination of the killed agent')
 
     const before = readFakeLog(sb).length
     const second = await run(sb, ['resume', runId, '--cwd', sb.cwd, '--args', '{"slow":false}'])
     assert.equal(second.code, 0, second.stderr)
-    assert.deepEqual(JSON.parse(second.stdout), { first: ['hotovo-x', 'hotovo-y', 'hotovo-z'], last: 'konec' })
+    assert.deepEqual(JSON.parse(second.stdout), { first: ['done-x', 'done-y', 'done-z'], last: 'end' })
 
     const fin = readJson(join(dir, 'run.json'))
     assert.equal(fin.status, 'completed')
     assert.equal(fin.runId, runId)
     assert.equal(fin.totals.cachedAgents, 3)
     assert.equal(fin.totals.agents, 4)
-    // nový proces claude jen pro závěrečný krok
+    // new claude process only for the final step
     const newRuns = readFakeLog(sb).slice(before)
     assert.equal(newRuns.length, 1)
-    assert.match(newRuns[0].prompt, /Závěrečný krok/)
+    assert.match(newRuns[0].prompt, /Final step/)
 
-    // pořadová čísla agentů navazují (nepřepisují se artefakty prvního běhu)
+    // agent sequence numbers continue (artifacts of the first run are not overwritten)
     const events = readJsonl(join(dir, 'events.jsonl'))
     const ids = events.filter((e) => e.t === 'agent_start').map((e) => e.id)
-    assert.equal(new Set(ids).size, ids.length, `id agentů musí být unikátní: ${ids.join(',')}`)
+    assert.equal(new Set(ids).size, ids.length, `agent ids must be unique: ${ids.join(',')}`)
     assert.equal(events.filter((e) => e.t === 'run_start').length, 2)
     assert.equal(events.filter((e) => e.t === 'agent_done' && e.cached === true).length, 3)
     assert.equal(events.at(-1).status, 'completed')
 
-    // 100% cache při třetím běhu
+    // 100 % cache on the third run
     const third = await run(sb, ['resume', runId, '--cwd', sb.cwd])
     assert.equal(third.code, 0, third.stderr)
     assert.equal(readFakeLog(sb).length, before + 1)
   })
 
-  it('vnořené workflow(): fáze rodiče přežije potomka, agenti i události mají správnou cestu', async () => {
+  it('nested workflow(): the parent phase survives the child; agents and events have the correct path', async () => {
     const sb = makeSandbox()
     sb.script(
       'child.workflow.ts',
-      `export const meta = { name: 'child', description: 'potomek', phases: [{ title: 'Dítě' }] }
-phase('Dítě')
-const r = await agent('Potomek ' + args.n + ' [[fake:text c' + args.n + ']]')
+      `export const meta = { name: 'child', description: 'child', phases: [{ title: 'Child' }] }
+phase('Child')
+const r = await agent('Child ' + args.n + ' [[fake:text c' + args.n + ']]')
 return { child: r }
 `,
     )
     sb.script(
       'parent.workflow.ts',
-      `export const meta = { name: 'parent', description: 'rodič', phases: [{ title: 'Rodič' }] }
-phase('Rodič')
-const a = await agent('Rodič před [[fake:text pred]]')
+      `export const meta = { name: 'parent', description: 'parent', phases: [{ title: 'Parent' }] }
+phase('Parent')
+const a = await agent('Parent before [[fake:text before]]')
 const c = await workflow('child', { n: 1 })
-const b = await agent('Rodič po [[fake:text po]]')
+const b = await agent('Parent after [[fake:text after]]')
 return { a, c, b }
 `,
     )
     const r = await run(sb, ['run', 'parent', '--cwd', sb.cwd])
     assert.equal(r.code, 0, r.stderr)
-    assert.deepEqual(JSON.parse(r.stdout), { a: 'pred', c: { child: 'c1' }, b: 'po' })
+    assert.deepEqual(JSON.parse(r.stdout), { a: 'before', c: { child: 'c1' }, b: 'after' })
     const events = readJsonl(join(runDirs(sb)[0], 'events.jsonl'))
     const startOf = (needle: string) => events.find((e) => e.t === 'agent_start' && e.promptPreview.includes(needle))
-    assert.equal(startOf('Rodič před').phase, 'Rodič')
-    assert.deepEqual(startOf('Rodič před').workflowPath, ['parent'])
-    assert.equal(startOf('Potomek 1').phase, 'Dítě')
-    assert.deepEqual(startOf('Potomek 1').workflowPath, ['parent', 'child'])
-    assert.equal(startOf('Rodič po').phase, 'Rodič', 'fáze rodiče se po potomkovi nesmí ztratit')
-    assert.deepEqual(startOf('Rodič po').workflowPath, ['parent'])
+    assert.equal(startOf('Parent before').phase, 'Parent')
+    assert.deepEqual(startOf('Parent before').workflowPath, ['parent'])
+    assert.equal(startOf('Child 1').phase, 'Child')
+    assert.deepEqual(startOf('Child 1').workflowPath, ['parent', 'child'])
+    assert.equal(startOf('Parent after').phase, 'Parent', "parent's phase must not be lost after the child")
+    assert.deepEqual(startOf('Parent after').workflowPath, ['parent'])
     const enter = events.find((e) => e.t === 'workflow_enter')
     assert.deepEqual(enter.workflowPath, ['parent', 'child'])
     assert.equal(enter.name, 'child')
   })
 
-  it('--max-usd: sekvenční smyčka skončí chybou rozpočtu (exit 1, budgetExceeded), souběžné parallel doběhne částečně', async () => {
+  it('--max-usd: sequential loop ends with a budget error (exit 1, budgetExceeded), concurrent parallel finishes partially', async () => {
     const sb = makeSandbox()
     sb.script(
       'seq.workflow.ts',
-      `export const meta = { name: 'seq', description: 'smyčka nad rozpočtem' }
+      `export const meta = { name: 'seq', description: 'loop over budget' }
 const done: string[] = []
 for (let i = 0; i < 6; i++) {
-  const r = await agent('Krok ' + i + ' [[fake:cost 0.02]] [[fake:text r' + i + ']]', { label: 'krok ' + i })
+  const r = await agent('Step ' + i + ' [[fake:cost 0.02]] [[fake:text r' + i + ']]', { label: 'step ' + i })
   done.push(r)
 }
 return done
@@ -430,13 +430,13 @@ return done
     assert.equal(summary.budgetExceeded, true)
     assert.equal(summary.totals.agents, 2)
     assert.ok(Math.abs(summary.totals.costUsd - 0.04) < 1e-9, `costUsd=${summary.totals.costUsd}`)
-    assert.match(summary.error, /rozpočet|USD/i)
+    assert.match(summary.error, /budget|USD/i)
     assert.equal(readFakeLog(sb).length, 2)
 
-    // parallel: položky po vyčerpání rozpočtu jsou null, běh se dokončí s částečným výsledkem
+    // parallel: items after the budget is exhausted are null, the run completes with a partial result
     sb.script(
       'par.workflow.ts',
-      `export const meta = { name: 'par', description: 'parallel nad rozpočtem' }
+      `export const meta = { name: 'par', description: 'parallel over budget' }
 const r = await parallel([0, 1, 2, 3, 4].map((i) => () => agent('P' + i + ' [[fake:cost 0.02]] [[fake:text p' + i + ']]')))
 return r
 `,
@@ -449,11 +449,11 @@ return r
     assert.deepEqual(ps.result, ['p0', 'p1', null, null, null])
   })
 
-  it('--max-agents: překročení limitu agentů = chyba rozpočtu', async () => {
+  it('--max-agents: exceeding the agent limit = budget error', async () => {
     const sb = makeSandbox()
     sb.script(
       'many.workflow.ts',
-      `export const meta = { name: 'many', description: 'moc agentů' }
+      `export const meta = { name: 'many', description: 'too many agents' }
 const r = await parallel([0, 1, 2, 3].map((i) => () => agent('A' + i + ' [[fake:text a' + i + ']]')))
 return r
 `,
@@ -466,12 +466,12 @@ return r
     assert.equal(readFakeLog(sb).length, 2)
   })
 
-  it('souběžnost nepřekročí --concurrency (a využije ji)', async () => {
+  it('concurrency does not exceed --concurrency (and uses it)', async () => {
     const sb = makeSandbox()
     sb.script(
       'conc.workflow.ts',
-      `export const meta = { name: 'conc', description: 'souběžnost' }
-const r = await parallel(Array.from({ length: 9 }, (_, i) => () => agent('Úloha ' + i + ' [[fake:sleep 500]] [[fake:text u' + i + ']]')))
+      `export const meta = { name: 'conc', description: 'concurrency' }
+const r = await parallel(Array.from({ length: 9 }, (_, i) => () => agent('Task ' + i + ' [[fake:sleep 500]] [[fake:text u' + i + ']]')))
 return r.length
 `,
     )
@@ -481,10 +481,10 @@ return r.length
     const log = readFakeLog(sb)
     assert.equal(log.length, 9)
     const overlap = maxOverlap(log)
-    assert.ok(overlap <= 3, `souběžně běželo ${overlap} agentů, limit je 3`)
-    assert.ok(overlap >= 2, `souběžnost se nevyužila (max ${overlap})`)
+    assert.ok(overlap <= 3, `${overlap} agents ran concurrently, limit is 3`)
+    assert.ok(overlap >= 2, `concurrency was not used (max ${overlap})`)
 
-    // s --concurrency 1 běží agenti striktně po jednom
+    // with --concurrency 1 agents run strictly one by one
     const seq = makeSandbox()
     seq.script('conc.workflow.ts', readFileSync(join(sb.cwd, '.ultracode', 'workflows', 'conc.workflow.ts'), 'utf8').replace('length: 9', 'length: 4'))
     const r2 = await run(seq, ['run', 'conc', '--cwd', seq.cwd, '--concurrency', '1'])
@@ -494,11 +494,11 @@ return r.length
     assert.equal(maxOverlap(log2), 1)
   })
 
-  it('env ULTRACODE_MAX_CONCURRENCY platí, když není --concurrency', async () => {
+  it('env ULTRACODE_MAX_CONCURRENCY applies when --concurrency is not given', async () => {
     const sb = makeSandbox()
     sb.script(
       'envc.workflow.ts',
-      `export const meta = { name: 'envc', description: 'souběžnost z env' }
+      `export const meta = { name: 'envc', description: 'concurrency from env' }
 const r = await parallel(Array.from({ length: 6 }, (_, i) => () => agent('E' + i + ' [[fake:sleep 400]]')))
 return r.length
 `,
@@ -510,8 +510,8 @@ return r.length
   })
 })
 
-describe('e2e: validate a chybné použití', () => {
-  it('validate neplatného skriptu → exit 2 a diagnostika; platný → exit 0', async () => {
+describe('e2e: validate and invalid usage', () => {
+  it('validate of an invalid script → exit 2 and diagnostics; valid → exit 0', async () => {
     const sb = makeSandbox()
     const bad = sb.script('bad.workflow.ts', `import fs from 'node:fs'\nexport const meta = { name: 'bad', description: 'x' }\nreturn 1\n`)
     const good = sb.script('good.workflow.ts', `export const meta = { name: 'good', description: 'ok' }\nreturn 1\n`)
@@ -522,7 +522,7 @@ describe('e2e: validate a chybné použití', () => {
     assert.equal(ok.code, 0, ok.stdout + ok.stderr)
   })
 
-  it('run neplatného skriptu → exit 2, claude se nespustí a nevznikne adresář běhu', async () => {
+  it('run of an invalid script → exit 2, claude is not started and no run directory is created', async () => {
     const sb = makeSandbox()
     const bad = sb.script('bad2.workflow.ts', `export const meta = { name: 'bad2', description: 'x' }\nconst t = Date.now()\nconst fs = await import('node:fs')\nreturn t\n`)
     const r = await run(sb, ['run', bad, '--cwd', sb.cwd])
@@ -532,62 +532,62 @@ describe('e2e: validate a chybné použití', () => {
     assert.equal(readFakeLog(sb).length, 0)
   })
 
-  it('neznámé workflow → exit 2; neznámý příkaz → exit 2', async () => {
+  it('unknown workflow → exit 2; unknown command → exit 2', async () => {
     const sb = makeSandbox()
-    const r = await run(sb, ['run', 'neexistuje-nikde', '--cwd', sb.cwd])
+    const r = await run(sb, ['run', 'does-not-exist-anywhere', '--cwd', sb.cwd])
     assert.equal(r.code, 2)
-    assert.match(r.stderr, /nenalezeno/)
+    assert.match(r.stderr, /not found/)
     const u = await run(sb, ['blabla'])
     assert.equal(u.code, 2)
   })
 
-  it('chyba ve skriptu za běhu → exit 1, stdout prázdný, status failed s chybou', async () => {
+  it('error in the script during the run → exit 1, empty stdout, status failed with an error', async () => {
     const sb = makeSandbox()
-    sb.script('boom.workflow.ts', `export const meta = { name: 'boom', description: 'chyba' }\nawait agent('x [[fake:text ok]]')\nthrow new Error('rozbito schválně')\n`)
+    sb.script('boom.workflow.ts', `export const meta = { name: 'boom', description: 'error' }\nawait agent('x [[fake:text ok]]')\nthrow new Error('deliberately broken')\n`)
     const r = await run(sb, ['run', 'boom', '--cwd', sb.cwd])
     assert.equal(r.code, 1)
     assert.equal(r.stdout, '')
-    assert.match(r.stderr, /rozbito schválně/)
+    assert.match(r.stderr, /deliberately broken/)
     const run1 = readJson(join(runDirs(sb)[0], 'run.json'))
     assert.equal(run1.status, 'failed')
-    assert.match(run1.error, /rozbito schválně/)
+    assert.match(run1.error, /deliberately broken/)
   })
 
-  it('souběžný resume běžícího běhu → exit 2 (zámek); kolize --run-id → exit 2', async () => {
+  it('concurrent resume of a running run → exit 2 (lock); --run-id collision → exit 2', async () => {
     const sb = makeSandbox()
     sb.script(
       'lock.workflow.ts',
-      `export const meta = { name: 'lock', description: 'zámek' }
-return await agent('Pomalý [[fake:sleep 1500]] [[fake:text hotovo]]')
+      `export const meta = { name: 'lock', description: 'lock' }
+return await agent('Slow [[fake:sleep 1500]] [[fake:text done]]')
 `,
     )
-    const first = start(sb, ['run', 'lock', '--cwd', sb.cwd, '--run-id', 'zamek-1'])
-    await waitFor(() => existsSync(join(sb.cwd, '.ultracode', 'runs', 'zamek-1', '.lock')), 'zámek běhu')
-    const second = await run(sb, ['resume', 'zamek-1', '--cwd', sb.cwd])
+    const first = start(sb, ['run', 'lock', '--cwd', sb.cwd, '--run-id', 'lock-1'])
+    await waitFor(() => existsSync(join(sb.cwd, '.ultracode', 'runs', 'lock-1', '.lock')), 'run lock')
+    const second = await run(sb, ['resume', 'lock-1', '--cwd', sb.cwd])
     assert.equal(second.code, 2, second.stderr)
-    assert.match(second.stderr, /používá jiný proces/)
-    const dup = await run(sb, ['run', 'lock', '--cwd', sb.cwd, '--run-id', 'zamek-1'])
+    assert.match(second.stderr, /is currently in use by another process/)
+    const dup = await run(sb, ['run', 'lock', '--cwd', sb.cwd, '--run-id', 'lock-1'])
     assert.equal(dup.code, 2, dup.stderr)
-    assert.match(dup.stderr, /už existuje/)
+    assert.match(dup.stderr, /already exists/)
     const f = await first.done
     assert.equal(f.code, 0, f.stderr)
-    assert.equal(JSON.parse(f.stdout), 'hotovo')
-    assert.equal(existsSync(join(sb.cwd, '.ultracode', 'runs', 'zamek-1', '.lock')), false)
+    assert.equal(JSON.parse(f.stdout), 'done')
+    assert.equal(existsSync(join(sb.cwd, '.ultracode', 'runs', 'lock-1', '.lock')), false)
   })
 
-  it('běh zabitý přes SIGKILL: status ho ukáže jako aborted a resume ho dodělá (zámek mrtvého pid)', async () => {
+  it('run killed by SIGKILL: status shows it as aborted and resume finishes it (lock of a dead pid)', async () => {
     const sb = makeSandbox()
     sb.script(
       'kill9.workflow.ts',
       `export const meta = { name: 'kill9', description: 'SIGKILL' }
-const a = await agent('Rychlý [[fake:text prvni]]')
-const b = await agent('Pomalý [[fake:sleep 1200]] [[fake:text druhy]]')
+const a = await agent('Quick [[fake:text first]]')
+const b = await agent('Slow [[fake:sleep 1200]] [[fake:text second]]')
 return { a, b }
 `,
     )
     const first = start(sb, ['run', 'kill9', '--cwd', sb.cwd, '--run-id', 'kill9-1'])
     const events = join(sb.cwd, '.ultracode', 'runs', 'kill9-1', 'events.jsonl')
-    await waitFor(() => readJsonl(events).filter((e) => e.t === 'agent_start').length === 2, 'start druhého agenta')
+    await waitFor(() => readJsonl(events).filter((e) => e.t === 'agent_start').length === 2, 'start of the second agent')
     first.child.kill('SIGKILL')
     await first.done
 
@@ -597,18 +597,18 @@ return { a, b }
 
     const resumed = await run(sb, ['resume', 'kill9-1', '--cwd', sb.cwd])
     assert.equal(resumed.code, 0, resumed.stderr)
-    assert.deepEqual(JSON.parse(resumed.stdout), { a: 'prvni', b: 'druhy' })
+    assert.deepEqual(JSON.parse(resumed.stdout), { a: 'first', b: 'second' })
     const fin = readJson(join(sb.cwd, '.ultracode', 'runs', 'kill9-1', 'run.json'))
     assert.equal(fin.status, 'completed')
     assert.equal(fin.totals.cachedAgents, 1)
   })
 
-  it('status a list čtou běh z disku', async () => {
+  it('status and list read the run from disk', async () => {
     const sb = makeSandbox()
-    sb.script('st.workflow.ts', `export const meta = { name: 'st', description: 'status' }\nreturn await agent('s [[fake:text ahoj]]')\n`)
+    sb.script('st.workflow.ts', `export const meta = { name: 'st', description: 'status' }\nreturn await agent('s [[fake:text hello]]')\n`)
     const r = await run(sb, ['run', 'st', '--cwd', sb.cwd])
     assert.equal(r.code, 0, r.stderr)
-    assert.equal(JSON.parse(r.stdout), 'ahoj')
+    assert.equal(JSON.parse(r.stdout), 'hello')
     const runId = runDirs(sb)[0].split('/').pop()!
     const st = await run(sb, ['status', runId, '--cwd', sb.cwd, '--json'])
     assert.equal(st.code, 0, st.stderr)
@@ -619,8 +619,8 @@ return { a, b }
   })
 })
 
-describe('e2e: přeložený dist', () => {
-  it('tsc build do dočasného adresáře → `node <out>/cli/cli.js run` funguje (worker.js, dynamické importy, přímé spuštění)', { timeout: 120_000 }, async () => {
+describe('e2e: built dist', () => {
+  it('tsc build into a temp directory → `node <out>/cli/cli.js run` works (worker.js, dynamic imports, direct run)', { timeout: 120_000 }, async () => {
     const sb = makeSandbox()
     const out = mkdtempSync(join(tmpdir(), 'ultracode-dist-'))
     sandboxes.push(out)
@@ -637,7 +637,7 @@ describe('e2e: přeložený dist', () => {
 
     sb.script(
       'dist.workflow.ts',
-      `export const meta = { name: 'dist', description: 'dist běh' }
+      `export const meta = { name: 'dist', description: 'dist run' }
 const r = await parallel([1, 2].map((n) => () => agent('D' + n + ' [[fake:text d' + n + ']]')))
 return r
 `,

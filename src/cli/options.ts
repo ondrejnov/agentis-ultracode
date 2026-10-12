@@ -1,6 +1,6 @@
 /**
- * Parsování argumentů příkazové řádky (node:util parseArgs) a validace hodnot voleb.
- * Chyby se překládají do češtiny a vyhazují jako UsageError (→ exit 2).
+ * Parsing of command-line arguments (node:util parseArgs) and validation of option values.
+ * Errors are thrown as UsageError (→ exit 2).
  */
 import { parseArgs } from 'node:util'
 import type { EffortLevel } from '../types.ts'
@@ -53,13 +53,13 @@ export interface ParsedCommandLine {
 
 function optionFromMessage(message: string): string {
   const m = /'(-{1,2}[^'\s<]+)/.exec(message)
-  return m ? m[1] : 'neznámá'
+  return m ? m[1] : 'unknown'
 }
 
-/** Rozparsuje argumenty konkrétního příkazu; neznámé volby jsou chyba. */
+/** Parses the arguments of a specific command; unknown options are an error. */
 export function parseCommandLine(command: string, args: string[]): ParsedCommandLine {
   const spec = COMMAND_OPTIONS[command]
-  if (!spec) throw new UsageError(`Neznámý příkaz „${command}“.`)
+  if (!spec) throw new UsageError(`Unknown command "${command}".`)
   try {
     const { values, positionals } = parseArgs({
       args,
@@ -73,27 +73,27 @@ export function parseCommandLine(command: string, args: string[]): ParsedCommand
     const msg = err.message ?? String(e)
     switch (err.code) {
       case 'ERR_PARSE_ARGS_UNKNOWN_OPTION':
-        throw new UsageError(`Neznámá volba ${optionFromMessage(msg)} pro příkaz „${command}“. Nápověda: ultracode ${command} --help`)
+        throw new UsageError(`Unknown option ${optionFromMessage(msg)} for command "${command}". Help: ultracode ${command} --help`)
       case 'ERR_PARSE_ARGS_INVALID_OPTION_VALUE': {
         const opt = optionFromMessage(msg)
         if (/ambiguous/i.test(msg)) {
           throw new UsageError(
-            `Hodnota volby ${opt} začíná pomlčkou a je nejednoznačná. Zapiš ji jako ${opt}=<hodnota>.`,
+            `Value of option ${opt} starts with a dash and is ambiguous. Write it as ${opt}=<value>.`,
           )
         }
-        throw new UsageError(`Volba ${opt} vyžaduje hodnotu.`)
+        throw new UsageError(`Option ${opt} requires a value.`)
       }
       default:
-        throw new UsageError(`Neplatné argumenty: ${msg}`)
+        throw new UsageError(`Invalid arguments: ${msg}`)
     }
   }
 }
 
 export function parsePositiveInt(name: string, raw: string | undefined): number | undefined {
   if (raw === undefined) return undefined
-  if (!/^\d+$/.test(raw.trim())) throw new UsageError(`Volba --${name} musí být kladné celé číslo (dostal jsem „${raw}“).`)
+  if (!/^\d+$/.test(raw.trim())) throw new UsageError(`Option --${name} must be a positive integer (got "${raw}").`)
   const n = Number(raw)
-  if (!Number.isSafeInteger(n) || n < 1) throw new UsageError(`Volba --${name} musí být kladné celé číslo (dostal jsem „${raw}“).`)
+  if (!Number.isSafeInteger(n) || n < 1) throw new UsageError(`Option --${name} must be a positive integer (got "${raw}").`)
   return n
 }
 
@@ -102,7 +102,7 @@ export function parsePositiveNumber(name: string, raw: string | undefined): numb
   const trimmed = raw.trim()
   const n = Number(trimmed)
   if (trimmed === '' || !Number.isFinite(n) || n <= 0) {
-    throw new UsageError(`Volba --${name} musí být kladné číslo (dostal jsem „${raw}“).`)
+    throw new UsageError(`Option --${name} must be a positive number (got "${raw}").`)
   }
   return n
 }
@@ -112,7 +112,7 @@ export const EFFORT_LEVELS: readonly EffortLevel[] = ['low', 'medium', 'high', '
 export function parseEffort(raw: string | undefined): EffortLevel | undefined {
   if (raw === undefined) return undefined
   if (!(EFFORT_LEVELS as readonly string[]).includes(raw)) {
-    throw new UsageError(`Volba --effort musí být jedna z: ${EFFORT_LEVELS.join(', ')} (dostal jsem „${raw}“).`)
+    throw new UsageError(`Option --effort must be one of: ${EFFORT_LEVELS.join(', ')} (got "${raw}").`)
   }
   return raw as EffortLevel
 }

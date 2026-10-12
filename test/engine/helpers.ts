@@ -1,7 +1,7 @@
 /**
- * Společné pomůcky testů enginu: dočasný projekt, stub runneru (ClaudeRunner), stub parseru a hostu skriptu.
- * Skript "workflow" je v testech obyčejná async funkce nad ScriptHooks — engine tak testujeme izolovaně
- * od modulů SCRIPT a RUNNER.
+ * Shared helpers for engine tests: temporary project, runner stub (ClaudeRunner), parser stub and script host.
+ * In tests the "workflow" script is a plain async function over ScriptHooks — this way the engine is tested in isolation
+ * from the SCRIPT and RUNNER modules.
  */
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { readFileSync } from 'node:fs'
@@ -26,7 +26,7 @@ export function sleep(ms: number): Promise<void> {
 
 export interface TempProject {
   cwd: string
-  /** Napíše skript (obsah je pro stuby nepodstatný) a vrátí absolutní cestu. */
+  /** Writes a script (its content is irrelevant for stubs) and returns the absolute path. */
   script(name?: string, content?: string): string
   cleanup(): void
 }
@@ -47,18 +47,18 @@ export function makeProject(): TempProject {
   }
 }
 
-// ───────────────────────── stub runneru ─────────────────────────
+// ───────────────────────── runner stub ─────────────────────────
 
 export interface StubRunnerOptions {
-  /** Prodleva v ms; může záviset na promptu. */
+  /** Delay in ms; may depend on the prompt. */
   delayMs?: number | ((req: ClaudeRunRequest) => number)
   outputTokens?: number | ((req: ClaudeRunRequest) => number)
   costUsd?: number
-  /** Vrací chybovou zprávu → agent selže (ok:false). */
+  /** Returns an error message → the agent fails (ok:false). */
   fail?: (req: ClaudeRunRequest, n: number) => string | undefined
-  /** Vlastní odpověď; default `out:<prompt>` resp. `{ value: <prompt> }` při schema. */
+  /** Custom answer; default `out:<prompt>` or `{ value: <prompt> }` with a schema. */
   respond?: (req: ClaudeRunRequest, n: number) => unknown
-  /** Vyhodí výjimku místo vrácení výsledku. */
+  /** Throws an exception instead of returning a result. */
   throws?: (req: ClaudeRunRequest, n: number) => boolean
 }
 
@@ -107,7 +107,7 @@ export function makeRunner(o: StubRunnerOptions = {}): StubRunner {
         attempts: 1,
       }
       if (aborted) {
-        return { ...base, ok: false, error: { kind: 'aborted', message: 'přerušeno' } }
+        return { ...base, ok: false, error: { kind: 'aborted', message: 'aborted' } }
       }
       if (o.throws?.(req, n)) throw new Error('runner exploded')
       const failMsg = o.fail?.(req, n)
@@ -145,7 +145,7 @@ export function makeRunner(o: StubRunnerOptions = {}): StubRunner {
   }
 }
 
-// ───────────────────────── stub parseru a hostu ─────────────────────────
+// ───────────────────────── parser and host stub ─────────────────────────
 
 export function stubParse(source: string, _filename: string): ParsedScriptLike {
   if (source.includes('INVALID')) {
@@ -153,8 +153,8 @@ export function stubParse(source: string, _filename: string): ParsedScriptLike {
       ok: false,
       meta: null,
       diagnostics: [
-        { level: 'error', message: 'chybí export const meta', line: 1 },
-        { level: 'warning', message: 'jen varování' },
+        { level: 'error', message: 'missing export const meta', line: 1 },
+        { level: 'warning', message: 'just a warning' },
       ],
     }
   }
@@ -164,14 +164,14 @@ export function stubParse(source: string, _filename: string): ParsedScriptLike {
     ok: true,
     meta: {
       name: m ? m[1] : 'test-wf',
-      description: 'testovací workflow',
+      description: 'test workflow',
       ...(phases ? { phases: phases[1].split(',').map((t) => ({ title: t.trim() })) } : {}),
     },
     diagnostics: [],
   }
 }
 
-/** API připomínající globály skriptu, postavené nad hooks z enginu. */
+/** API mimicking the script globals, built on top of the engine hooks. */
 export interface ScriptApi {
   agent(prompt: string, opts?: AgentOptions): Promise<any>
   phase(title: string): void
@@ -205,7 +205,7 @@ export function makeApi(req: RunScriptRequest, path: string[] = ['test-wf']): Sc
   }
 }
 
-/** deps pro runWorkflow: tělo skriptu je zadaná funkce; návratová hodnota = výsledek skriptu. */
+/** deps for runWorkflow: the script body is the given function; its return value = script result. */
 export function scriptDeps(body: (api: ScriptApi, req: RunScriptRequest) => Promise<unknown> | unknown, extra: EngineDeps = {}): EngineDeps {
   return {
     parseScript: stubParse,
@@ -218,7 +218,7 @@ export function scriptDeps(body: (api: ScriptApi, req: RunScriptRequest) => Prom
   }
 }
 
-// ───────────────────────── čtení výstupů ─────────────────────────
+// ───────────────────────── reading outputs ─────────────────────────
 
 export function readJsonl<T = any>(path: string): T[] {
   let text = ''
@@ -245,11 +245,11 @@ export function journalOf(summary: RunSummary): any[] {
   return readJsonl(join(summary.runDir, 'journal.jsonl'))
 }
 
-/** Počká, až podmínka platí (max `timeoutMs`). */
+/** Waits until the condition holds (max `timeoutMs`). */
 export async function waitFor(cond: () => boolean, timeoutMs = 3000): Promise<void> {
   const start = Date.now()
   while (!cond()) {
-    if (Date.now() - start > timeoutMs) throw new Error('waitFor: vypršel čas')
+    if (Date.now() - start > timeoutMs) throw new Error('waitFor: timed out')
     await sleep(5)
   }
 }

@@ -1,16 +1,16 @@
 /**
- * Runtime globálů pro skript workflow – kód, který běží UVNITŘ vm kontextu skriptu.
+ * Runtime globals for a workflow script – code that runs INSIDE the script's vm context.
  *
- * `installRuntime` je záměrně samostatná funkce bez odkazů na okolní modul: do kontextu se dostane přes
- * `Function.prototype.toString()` (viz sandbox.ts) a vykoná se v realmu skriptu. Díky tomu jsou `Promise`,
- * `Array`, `Error` i výsledky `parallel()`/`pipeline()` objekty téhož realmu jako kód skriptu
- * (`instanceof Array`, `Array.isArray`, `await` fungují očekávaně) a skript nikdy nedostane referenci
- * na objekty vnějšího realmu (ty by umožnily únik k `process`).
+ * `installRuntime` is intentionally a standalone function with no references to the surrounding module: it reaches the context via
+ * `Function.prototype.toString()` (see sandbox.ts) and is executed in the script's realm. Therefore `Promise`,
+ * `Array`, `Error` and the results of `parallel()`/`pipeline()` objects of the same realm as the script code
+ * (`instanceof Array`, `Array.isArray`, `await` work as expected) and the script never gets a reference
+ * to objects of the outer realm (those would allow an escape to `process`).
  *
- * Přes hranici realmu jdou VÝHRADNĚ řetězce (JSON) a čísla:
- *  - `bridge.call(method, json)`  → Promise<string> s obálkou `{ok:true,value}` / `{ok:false,error}` (nikdy nerejectne),
- *  - `bridge.fire(method, json)`  → synchronní obálka (phase/log),
- *  - `bridge.slot(i)`             → číslo z SharedArrayBuffer rozpočtu,
+ * Across the realm boundary ONLY strings (JSON) and numbers pass:
+ *  - `bridge.call(method, json)`  → Promise<string> with an envelope `{ok:true,value}` / `{ok:false,error}` (never rejects),
+ *  - `bridge.fire(method, json)`  → synchronous envelope (phase/log),
+ *  - `bridge.slot(i)`             → number from the budget SharedArrayBuffer,
  *  - `bridge.determinism(what)`   → text chyby DeterminismError.
  */
 
@@ -50,7 +50,7 @@ export function installRuntime(bridge: RuntimeBridge, cfg: RuntimeConfig): void 
     info: { name?: string; message?: string; code?: string; stack?: string; diagnostics?: string[] },
     skipFn?: Function,
   ): any {
-    const err: any = new NativeError(String(info && info.message !== undefined ? info.message : 'Neznámá chyba'))
+    const err: any = new NativeError(String(info && info.message !== undefined ? info.message : 'Unknown error'))
     if (info && info.name && info.name !== 'Error') {
       try {
         defineProperty(err, 'name', { value: String(info.name), configurable: true, writable: true, enumerable: false })
@@ -62,7 +62,7 @@ export function installRuntime(bridge: RuntimeBridge, cfg: RuntimeConfig): void 
     if (info && isArray(info.diagnostics)) err.diagnostics = info.diagnostics
     if (skipFn && typeof NativeError.captureStackTrace === 'function') NativeError.captureStackTrace(err, skipFn)
     if (info && typeof info.stack === 'string' && info.stack !== '') {
-      // Chyba z vnořeného workflow: ponecháme její původní stack (řádky potomka) a přidáme rámce volajícího.
+      // Error from a nested workflow: we keep its original stack (child lines) and add the caller's frames.
       const own = String(err.stack)
         .split('\n')
         .filter((l: string) => /^\s+at /.test(l))
@@ -82,10 +82,10 @@ export function installRuntime(bridge: RuntimeBridge, cfg: RuntimeConfig): void 
   function safeStringify(value: unknown, what: string): string {
     try {
       const s = jsonStringify(value)
-      if (s === undefined) throw new NativeError('hodnota není serializovatelná')
+      if (s === undefined) throw new NativeError('value is not serializable')
       return s
     } catch (e) {
-      throw new TypeError(what + ': argumenty nelze serializovat do JSON (' + describe(e) + ')')
+      throw new TypeError(what + ': arguments cannot be serialized to JSON (' + describe(e) + ')')
     }
   }
 
@@ -149,15 +149,15 @@ export function installRuntime(bridge: RuntimeBridge, cfg: RuntimeConfig): void 
         count++
         if (count > MAX_REPORTED_FAILURES) return
         try {
-          fire('log', { message: who + ': ' + where + ' selhala a výsledek je null: ' + describe(e) })
+          fire('log', { message: who + ': ' + where + ' failed and its result is null: ' + describe(e) })
         } catch (_) {
-          /* log nesmí shodit běh */
+          /* logging must not crash the run */
         }
       },
       flush(): void {
         if (count <= MAX_REPORTED_FAILURES) return
         try {
-          fire('log', { message: who + ': dalších ' + (count - MAX_REPORTED_FAILURES) + ' chyb nezobrazeno (celkem ' + count + ')' })
+          fire('log', { message: who + ': ' + (count - MAX_REPORTED_FAILURES) + ' more errors not shown (total ' + count + ')' })
         } catch (_) {
           /* nic */
         }
@@ -167,22 +167,22 @@ export function installRuntime(bridge: RuntimeBridge, cfg: RuntimeConfig): void 
 
   function checkCount(who: string, count: number): void {
     if (count > cfg.maxItems) {
-      throw new RangeError(who + ': příliš mnoho položek (' + count + '), maximum je ' + cfg.maxItems + '. Rozděl práci na dávky.')
+      throw new RangeError(who + ': too many items (' + count + '), maximum is ' + cfg.maxItems + '. Split the work into batches.')
     }
   }
 
   async function parallel(thunks: unknown): Promise<any[]> {
-    if (!isArray(thunks)) throw new TypeError('parallel(): očekává pole funkcí (thunků), např. parallel(items.map((x) => () => agent(...)))')
+    if (!isArray(thunks)) throw new TypeError('parallel(): expects an array of functions (thunks), e.g. parallel(items.map((x) => () => agent(...)))')
     checkCount('parallel()', (thunks as unknown[]).length)
     const failures = failureReporter('parallel()')
-    // Všechny thunky se spustí synchronně v pořadí; selhání jednoho je jen null v jeho pozici.
-    // Hotový Promise místo funkce se tolerantně awaituje (jinak by se jeho výsledek tiše ztratil).
+    // All thunks are started synchronously in order; a failure of one is just null in its position.
+    // A ready Promise instead of a function is awaited leniently (otherwise its result would be silently lost).
     const results = await promiseAll(
       arrayFrom(thunks as unknown[], async (thunk: any, index: number) => {
         try {
           return typeof thunk === 'function' ? await thunk() : await thunk
         } catch (e) {
-          failures.add('položka ' + index, e)
+          failures.add('item ' + index, e)
           return null
         }
       }),
@@ -192,13 +192,13 @@ export function installRuntime(bridge: RuntimeBridge, cfg: RuntimeConfig): void 
   }
 
   async function pipeline(items: unknown, ...stages: unknown[]): Promise<any[]> {
-    if (!isArray(items)) throw new TypeError('pipeline(): první argument musí být pole položek')
+    if (!isArray(items)) throw new TypeError('pipeline(): the first argument must be an array of items')
     checkCount('pipeline()', (items as unknown[]).length)
     for (let s = 0; s < stages.length; s++) {
-      if (typeof stages[s] !== 'function') throw new TypeError('pipeline(): stage ' + (s + 1) + ' musí být funkce (prev, original, index)')
+      if (typeof stages[s] !== 'function') throw new TypeError('pipeline(): stage ' + (s + 1) + ' must be a function (prev, original, index)')
     }
     const failures = failureReporter('pipeline()')
-    // Každá položka prochází stagemi samostatně – žádná bariéra mezi stagemi.
+    // Each item passes through the stages independently – no barrier between stages.
     const results = await promiseAll(
       arrayFrom(items as unknown[], async (item: unknown, index: number) => {
         let current: unknown = item
@@ -206,7 +206,7 @@ export function installRuntime(bridge: RuntimeBridge, cfg: RuntimeConfig): void 
           try {
             current = await (stages[s] as Function)(current, item, index)
           } catch (e) {
-            failures.add('položka ' + index + ', stage ' + (s + 1), e)
+            failures.add('item ' + index + ', stage ' + (s + 1), e)
             return null
           }
         }
@@ -220,7 +220,7 @@ export function installRuntime(bridge: RuntimeBridge, cfg: RuntimeConfig): void 
   // ───────── phase / log / console ─────────
 
   function phase(title: unknown): void {
-    if (typeof title !== 'string' || title.trim() === '') throw new TypeError('phase(): titul musí být neprázdný řetězec')
+    if (typeof title !== 'string' || title.trim() === '') throw new TypeError('phase(): the title must be a non-empty string')
     fire('phase', { title })
   }
 
@@ -237,7 +237,7 @@ export function installRuntime(bridge: RuntimeBridge, cfg: RuntimeConfig): void 
       try {
         return String(v)
       } catch (__) {
-        return '[nelze zobrazit]'
+        return '[cannot display]'
       }
     }
   }
@@ -286,7 +286,7 @@ export function installRuntime(bridge: RuntimeBridge, cfg: RuntimeConfig): void 
     },
   }
 
-  // ───────── globály ─────────
+  // ───────── globals ─────────
 
   const g: any = globalThis
   function define(name: string, value: unknown): void {

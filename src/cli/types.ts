@@ -1,7 +1,7 @@
 /**
- * Typy CLI: I/O rozhraní a injektovatelné závislosti.
- * Závislosti na enginu a skriptu jsou deklarovány strukturálně (podle sdílených kontraktů),
- * aby šlo v testech podvrhnout a CLI se nevázalo na konkrétní soubory cizích modulů.
+ * CLI types: I/O interfaces and injectable dependencies.
+ * Engine and script dependencies are declared structurally (per the shared contracts),
+ * so tests can substitute them and the CLI is not bound to concrete files of other modules.
  */
 import type { RunEvent, RunOptions, RunSummary, WorkflowMeta } from '../types.ts'
 
@@ -12,9 +12,9 @@ export interface CliWritable {
 export interface CliIO {
   stdout: CliWritable
   stderr: CliWritable
-  /** Barvy (stderr) se používají jen na TTY. */
+  /** Colors (stderr) are used only on a TTY. */
   isTTY?: boolean
-  /** Je stdout terminál? Pak je JSON odsazený; default = `isTTY`. */
+  /** Is stdout a terminal? Then JSON is indented; default = `isTTY`. */
   stdoutIsTTY?: boolean
   env: Record<string, string | undefined>
   cwd: string
@@ -27,7 +27,7 @@ export interface CliStore {
   listRuns(cwd: string): MaybePromise<RunSummary[]>
   readRunSummary(cwd: string, runId: string): MaybePromise<RunSummary | null>
   readEvents(cwd: string, runId: string): MaybePromise<RunEvent[]>
-  /** Volitelné (testovací náhrady ho nemusí mít): drží proces běh? */
+  /** Optional (test stand-ins need not have it): does a process hold the run? */
   runLockHeld?(cwd: string, runId: string): MaybePromise<boolean>
 }
 
@@ -64,19 +64,19 @@ export interface CliDeps {
   store?: CliStore
   discovery?: CliDiscovery
   parseScript?: ParseScriptFn
-  /** Kořen balíčku (kde leží `types/`, `skills/`, `package.json`). Default se odvodí z `import.meta.url`. */
+  /** Package root (where `types/`, `skills/`, `package.json` live). Default is derived from `import.meta.url`. */
   packageRoot?: string
-  /** Abort signál (SIGINT/SIGTERM z `bin/ultracode.mjs`). */
+  /** Abort signal (SIGINT/SIGTERM from `bin/ultracode.mjs`). */
   signal?: AbortSignal
   now?: () => number
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>
-  /** Perioda dotazování u `logs --follow` (default 500 ms). */
+  /** Polling interval for `logs --follow` (default 500 ms). */
   followPollMs?: number
-  /** Po kolika ms bez nové události se `logs --follow` vzdá, když běh stále hlásí `running` (default 30 min). */
+  /** After how many ms without a new event `logs --follow` gives up while the run still reports `running` (default 30 min). */
   followIdleMs?: number
 }
 
-/** Chyba použití (neznámá volba, chybějící argument…) → exit 2. */
+/** Usage error (unknown option, missing argument…) → exit 2. */
 export class UsageError extends Error {
   constructor(message: string) {
     super(message)
@@ -84,10 +84,10 @@ export class UsageError extends Error {
   }
 }
 
-/** Kontext předávaný příkazům. */
+/** Context passed to commands. */
 export interface CommandContext {
   io: CliIO
   deps: CliDeps
-  /** Absolutní cesta k balíčku. */
+  /** Absolute path to the package. */
   packageRoot: string
 }

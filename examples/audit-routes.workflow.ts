@@ -1,19 +1,19 @@
 /// <reference path="../types/workflow.d.ts" />
 
-// Audit HTTP route handlerů: najdi soubory → pipeline(audit souboru → adversariální verifikace nálezů)
-// → syntéza. Každý soubor prochází audit → verify NEZÁVISLE (bez bariéry); bariéra je až před syntézou,
-// protože ta opravdu potřebuje všechny potvrzené nálezy najednou.
+// Audit HTTP route handlers: find files → pipeline(audit of a file → adversarial verification of findings)
+// → synthesis. Each file goes through audit → verify INDEPENDENTLY (no barrier); the barrier comes only before synthesis,
+// because that one really needs all confirmed findings at once.
 //
-// Spuštění:
+// Run:
 //   ultracode run audit-routes --args '{"root":"src/api","focus":["authz","injection"],"votes":3}'
 //
-// args (vše volitelné):
-//   root      adresář k auditu, relativně k cwd běhu (default ".")
-//   scope     doplňující věta pro hledání souborů (např. "jen verze v2 API")
-//   focus     seznam oblastí auditu (default viz FOCUS)
-//   maxFiles  strop počtu auditovaných souborů (default 40; zahozené se logují)
-//   votes     počet skeptiků na nález, 1–5 (default 3)
-//   language  jazyk reportu (default "česky")
+// args (all optional):
+//   root      directory to audit, relative to the run cwd (default ".")
+//   scope     extra sentence for the file search (e.g. "only v2 API versions")
+//   focus     list of audit areas (default see FOCUS)
+//   maxFiles  cap on the number of audited files (default 40; skipped ones are logged)
+//   votes     number of skeptics per finding, 1–5 (default 3)
+//   language  report language (default "English")
 
 export const meta = {
   name: 'audit-routes',
@@ -69,7 +69,7 @@ interface FileOutcome {
   unverified: number
 }
 
-// ───────── vstup ─────────
+// ───────── input ─────────
 
 const input = (args ?? {}) as {
   root?: string
@@ -81,7 +81,7 @@ const input = (args ?? {}) as {
 }
 
 const ROOT = input.root ?? '.'
-const LANGUAGE = input.language ?? 'česky'
+const LANGUAGE = input.language ?? 'English'
 const MAX_FILES = Math.max(1, input.maxFiles ?? 40)
 const VOTES = Math.max(1, Math.min(5, input.votes ?? 3))
 const FOCUS = input.focus && input.focus.length
@@ -93,10 +93,10 @@ const FOCUS = input.focus && input.focus.length
       'race conditions, missing idempotency, unsafe state changes',
     ]
 
-// Auditoři a skeptici nesmí nic měnit. Bez `tools` běží agent v bypassPermissions, kde omezuje jen disallowedTools.
+// Auditors and skeptics must not change anything. Without `tools` the agent runs in bypassPermissions, where only disallowedTools restricts it.
 const READONLY = ['Edit', 'Write', 'NotebookEdit']
 
-// Každý skeptik se dívá jinou čočkou (diverse verify), ne N× stejnou otázkou.
+// Each skeptic looks through a different lens (diverse verify), not N times the same question.
 const LENSES = [
   { id: 'reachability', ask: 'Trace callers, routing and middleware: can a real request actually reach the flagged code with the flagged input?' },
   { id: 'impact', ask: 'Considering framework defaults, escaping, ORM parameterisation and surrounding checks: does this cause real harm, or is it neutralised elsewhere?' },
@@ -105,11 +105,11 @@ const LENSES = [
   { id: 'fix-sanity', ask: 'Would the proposed fix actually remove the problem, and is the problem there to begin with? Check the exact line referenced.' },
 ]
 
-// ───────── pomocné ─────────
+// ───────── helpers ─────────
 
 const present = <T>(xs: Array<T | null>): T[] => xs.filter((x): x is T => x !== null && x !== undefined)
 
-// ───────── schémata ─────────
+// ───────── schemas ─────────
 
 const FILES_SCHEMA = {
   type: 'object',
@@ -187,7 +187,7 @@ const REPORT_SCHEMA = {
   required: ['summary', 'priorities'],
 }
 
-// ───────── fáze Discover ─────────
+// ───────── Discover phase ─────────
 
 phase('Discover')
 
@@ -202,7 +202,7 @@ DO NOT read files in depth and DO NOT modify anything.`,
 )
 
 if (!discovered) {
-  throw new Error('Agent pro hledání souborů selhal; audit nemá co auditovat.')
+  throw new Error('The file discovery agent failed; there is nothing to audit.')
 }
 
 const uniqueByPath = new Map<string, RouteFile>()
@@ -213,22 +213,22 @@ const allFiles = [...uniqueByPath.values()].sort((a, b) => a.path.localeCompare(
 const files = allFiles.slice(0, MAX_FILES)
 
 if (allFiles.length > files.length) {
-  // žádné tiché ořezy: uživatel musí vidět, co se neauditovalo
-  log(`Nalezeno ${allFiles.length} souborů, auditováno ${files.length}. Vynecháno: ${allFiles.slice(MAX_FILES).map((f) => f.path).join(', ')}`)
+  // no silent cuts: the user must see what was not audited
+  log(`Found ${allFiles.length} files, audited ${files.length}. Skipped: ${allFiles.slice(MAX_FILES).map((f) => f.path).join(', ')}`)
 } else {
-  log(`Nalezeno ${files.length} souborů k auditu.`)
+  log(`Found ${files.length} files to audit.`)
 }
 
 if (files.length === 0) {
-  return { files: 0, confirmed: [], note: 'Žádné route soubory nenalezeny.' }
+  return { files: 0, confirmed: [], note: 'No route files found.' }
 }
 
-// ───────── fáze Audit + Verify (pipeline, bez bariéry) ─────────
+// ───────── Audit + Verify phase (pipeline, no barrier) ─────────
 
 const outcomes = await pipeline(
   files,
 
-  // stage 1: audit jednoho souboru
+  // stage 1: audit of one file
   (f: RouteFile) =>
     agent<AuditResult>(
       `You are a meticulous application-security and correctness auditor.
@@ -245,7 +245,7 @@ Rules:
       { label: `audit:${f.path}`, phase: 'Audit', schema: AUDIT_SCHEMA, effort: 'high', disallowedTools: READONLY },
     ),
 
-  // stage 2: každý nález ověří nezávislí skeptici; běží hned, jak je hotový audit TOHOTO souboru
+  // stage 2: independent skeptics verify each finding; runs as soon as the audit of THIS file is done
   async (audit: AuditResult | null, f: RouteFile): Promise<FileOutcome> => {
     if (!audit) return { file: f.path, audited: false, confirmed: [], rejected: 0, unverified: 0 }
 
@@ -279,7 +279,7 @@ Return refuted=false ONLY if you verified the flaw is real. Do NOT modify any fi
 
     for (const j of present(judged)) {
       const against = j.votes.filter((v) => v.refuted).length
-      // bez kvóra (méně než 2 hlasy, nebo 1 při votes=1) nález nepovažujeme za potvrzený
+      // without a quorum (fewer than 2 votes, or 1 when votes=1) the finding is not considered confirmed
       const needed = Math.min(2, VOTES)
       if (j.votes.length < needed) {
         unverified++
@@ -298,16 +298,16 @@ const failedFiles = files.length - outcomeList.length + outcomeList.filter((o) =
 const unverified = outcomeList.reduce((n, o) => n + o.unverified, 0)
 const rejected = outcomeList.reduce((n, o) => n + o.rejected, 0)
 
-// globální ID přidělujeme deterministicky v kódu (soubor, pořadí), ne agentem
+// global IDs are assigned deterministically in code (file, order), not by the agent
 const SEVERITY_ORDER: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 }
 const confirmed: ConfirmedFinding[] = outcomeList
   .flatMap((o) => o.confirmed)
   .sort((a, b) => (SEVERITY_ORDER[a.severity] ?? 9) - (SEVERITY_ORDER[b.severity] ?? 9) || a.file.localeCompare(b.file) || (a.line ?? 0) - (b.line ?? 0))
   .map((f, i) => ({ ...f, gid: 'F' + (i + 1) }))
 
-log(`Potvrzeno ${confirmed.length}, vyvráceno ${rejected}, neověřeno ${unverified}, selhalo souborů ${failedFiles}.`)
+log(`Confirmed ${confirmed.length}, refuted ${rejected}, unverified ${unverified}, files failed ${failedFiles}.`)
 
-// rozpočet (tokeny/USD) vyčerpán: parallel/pipeline chybu rozpočtu mění na null, takže jinak by zůstala nepovšimnutá
+// budget (tokens/USD) exhausted: parallel/pipeline turn the budget error into null, so otherwise it would go unnoticed
 const budgetGone = (): boolean => (budget.total !== null && budget.remaining() <= 0) || (budget.totalUsd !== null && budget.remainingUsd() <= 0)
 
 const stats = { files: files.length, filesNotAudited: failedFiles, confirmed: confirmed.length, rejected, unverified }
@@ -316,7 +316,7 @@ if (confirmed.length === 0) {
   return { stats: { ...stats, ...(budgetGone() ? { budgetExceeded: true } : {}) }, confirmed: [], report: null }
 }
 
-// ───────── fáze Synthesize (bariéra je oprávněná: potřebuje všechny nálezy najednou) ─────────
+// ───────── Synthesize phase (the barrier is justified: it needs all findings at once) ─────────
 
 phase('Synthesize')
 
@@ -345,13 +345,13 @@ ${JSON.stringify(confirmed.map((f) => ({ gid: f.gid, file: f.file, line: f.line,
     { label: 'synthesize:report', phase: 'Synthesize', schema: REPORT_SCHEMA, effort: 'high', disallowedTools: READONLY },
   )
 } catch (e) {
-  // vyčerpaný rozpočet (code BUDGET_EXCEEDED): potvrzené nálezy se nesmí ztratit kvůli chybějícímu souhrnu
+  // budget exhausted (code BUDGET_EXCEEDED): confirmed findings must not be lost because of a missing summary
   if (e === null || typeof e !== 'object' || (e as { code?: unknown }).code !== 'BUDGET_EXCEEDED') throw e
   synthBudgetHit = true
-  log('Rozpočet vyčerpán před syntézou; vracím potvrzené nálezy bez souhrnu.')
+  log('Budget exhausted before synthesis; returning confirmed findings without a summary.')
 }
 
-// Odkazy na neexistující ID zahodíme (LLM si je nesmí vymyslet).
+// Drop references to non-existent IDs (the LLM must not make them up).
 const known = new Set(confirmed.map((f) => f.gid))
 const cleanedReport = report
   ? {
@@ -363,6 +363,6 @@ const cleanedReport = report
     }
   : null
 
-if (!cleanedReport && !synthBudgetHit) log('Syntéza selhala; vracím potvrzené nálezy bez souhrnu.')
+if (!cleanedReport && !synthBudgetHit) log('Synthesis failed; returning confirmed findings without a summary.')
 
 return { stats: { ...stats, ...(synthBudgetHit || budgetGone() ? { budgetExceeded: true } : {}) }, confirmed, report: cleanedReport }

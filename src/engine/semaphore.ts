@@ -1,4 +1,4 @@
-/** Férový (FIFO) semafor pro omezení souběžnosti agentů; čekání jde přerušit přes AbortSignal. */
+/** Fair (FIFO) semaphore limiting agent concurrency; waiting can be aborted via AbortSignal. */
 import { AbortedError } from '../errors.ts'
 
 export class Semaphore {
@@ -8,16 +8,16 @@ export class Semaphore {
   private waiters: Array<() => void> = []
 
   constructor(limit: number) {
-    if (!Number.isInteger(limit) || limit < 1) throw new RangeError(`Limit semaforu musí být celé číslo >= 1, dostal jsem ${limit}.`)
+    if (!Number.isInteger(limit) || limit < 1) throw new RangeError(`Semaphore limit must be an integer >= 1, got ${limit}.`)
     this.limit = limit
   }
 
-  /** Aktuálně držené sloty. */
+  /** Currently held slots. */
   get inUse(): number {
     return this.active
   }
 
-  /** Nejvyšší dosažená souběžnost (pro diagnostiku/testy). */
+  /** Peak concurrency reached (for diagnostics/tests). */
   get peak(): number {
     return this.maxActive
   }
@@ -27,8 +27,8 @@ export class Semaphore {
   }
 
   /**
-   * Získá slot; vrací funkci `release` (idempotentní). Při abortu čekání odmítne `AbortedError`
-   * a slot se nezíská.
+   * Acquires a slot; returns a `release` function (idempotent). When waiting is aborted it rejects with `AbortedError`
+   * and no slot is acquired.
    */
   acquire(signal?: AbortSignal): Promise<() => void> {
     if (signal?.aborted) return Promise.reject(new AbortedError())

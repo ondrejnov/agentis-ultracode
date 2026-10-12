@@ -1,10 +1,10 @@
 /**
- * Identita procesů pro zámky běhů. Samotné PID nestačí: po restartu systému nebo u dlouhého běhu se PID
- * může přepoužít jiným procesem, který by pak navždy blokoval `resume`. Proto zámek ukládá i start time procesu.
+ * Process identity for run locks. A PID alone is not enough: after a system restart or in a long run a PID
+ * may be reused by another process, which would then block `resume` forever. So the lock also stores the process start time.
  */
 import { readFileSync } from 'node:fs'
 
-/** Je proces s tímto PID živý? (EPERM = existuje, jen nemáme právo ho signalizovat.) */
+/** Is the process with this PID alive? (EPERM = it exists, we just lack the permission to signal it.) */
 export function isPidAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false
   try {
@@ -15,11 +15,11 @@ export function isPidAlive(pid: number): boolean {
   }
 }
 
-/** Start time procesu z /proc (Linux); na jiných systémech `null`. */
+/** Process start time from /proc (Linux); `null` on other systems. */
 export function processStartTime(pid: number): string | null {
   try {
     const stat = readFileSync(`/proc/${pid}/stat`, 'utf8')
-    // za jménem v závorkách začíná pole 3 (stav); starttime je pole 22 → index 19
+    // field 3 (state) starts after the name in parentheses; starttime is field 22 → index 19
     const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ')
     return fields[19] ?? null
   } catch {
@@ -27,13 +27,13 @@ export function processStartTime(pid: number): string | null {
   }
 }
 
-/** Identita držitele zámku: PID a (pokud je známý) start time procesu. */
+/** Identity of the lock holder: PID and (if known) the process start time. */
 export interface LockHolder {
   pid: number
   start?: string
 }
 
-/** Drží zámek živý proces? Přepoužité PID (jiný start time) se nepočítá jako držitel. */
+/** Is the lock holder process alive? A reused PID (different start time) does not count as the holder. */
 export function lockHolderAlive(holder: LockHolder): boolean {
   if (!isPidAlive(holder.pid)) return false
   if (!holder.start) return true
@@ -41,7 +41,7 @@ export function lockHolderAlive(holder: LockHolder): boolean {
   return now === null || now === holder.start
 }
 
-/** Identita aktuálního procesu pro zápis do zámku. */
+/** Identity of the current process, for writing to the lock. */
 export function currentLockHolder(): LockHolder {
   const start = processStartTime(process.pid)
   return start ? { pid: process.pid, start } : { pid: process.pid }

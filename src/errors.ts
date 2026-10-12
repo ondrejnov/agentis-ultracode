@@ -1,4 +1,4 @@
-/** Chyby runtime. Pouze erasable syntaxe: pole deklarujeme explicitně, ne přes parameter properties. */
+/** Runtime errors. Erasable syntax only: fields are declared explicitly, not via parameter properties. */
 
 export class UltracodeError extends Error {
   code: string
@@ -9,7 +9,7 @@ export class UltracodeError extends Error {
   }
 }
 
-/** Skript je neplatný (chybí meta, import(), nevalidní meta literál, syntaktická chyba…). Vyhazuje se PŘED startem běhu. */
+/** The script is invalid (missing meta, import(), invalid meta literal, syntax error…). Thrown BEFORE the run starts. */
 export class ScriptValidationError extends UltracodeError {
   diagnostics: string[]
   constructor(message: string, diagnostics: string[] = []) {
@@ -18,17 +18,17 @@ export class ScriptValidationError extends UltracodeError {
   }
 }
 
-/** Skript použil zakázanou nedeterministickou funkci (Date.now, Math.random, new Date()). */
+/** The script used a forbidden non-deterministic function (Date.now, Math.random, new Date()). */
 export class DeterminismError extends UltracodeError {
   constructor(what: string) {
     super(
       'NON_DETERMINISTIC',
-      `${what} není ve skriptu workflow povoleno (rozbilo by resume). Předej hodnotu přes \`args\`.`,
+      `${what} is not allowed in a workflow script (it would break resume). Pass the value via \`args\`.`,
     )
   }
 }
 
-/** Překročen strop tokenů/USD/agentů; další `agent()` volání už nejsou povolena. */
+/** A token/USD/agent cap was exceeded; further `agent()` calls are no longer allowed. */
 export class BudgetExceededError extends UltracodeError {
   constructor(message: string) {
     super('BUDGET_EXCEEDED', message)
@@ -37,12 +37,12 @@ export class BudgetExceededError extends UltracodeError {
 
 export class WorkflowNotFoundError extends UltracodeError {
   constructor(ref: string, searched: string[]) {
-    super('WORKFLOW_NOT_FOUND', `Workflow „${ref}“ nenalezeno. Hledáno: ${searched.join(', ') || '(nikde)'}`)
+    super('WORKFLOW_NOT_FOUND', `Workflow “${ref}” not found. Searched: ${searched.join(', ') || '(nowhere)'}`)
   }
 }
 
 export class AbortedError extends UltracodeError {
-  constructor(message = 'Běh byl přerušen.') {
+  constructor(message = 'Run was aborted.') {
     super('ABORTED', message)
   }
 }

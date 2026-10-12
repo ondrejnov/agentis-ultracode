@@ -1,9 +1,9 @@
 /**
- * Typová kontrola `examples/*.workflow.ts` proti `types/workflow.d.ts`.
+ * Type check of `examples/*.workflow.ts` against `types/workflow.d.ts`.
  *
- * `tsc -p tsconfig.json` příklady nezahrnuje (top-level `return` je pro TypeScript chyba TS1108 a ta by
- * navíc potlačila všechny sémantické diagnostiky), proto je tu kontrolujeme přes TypeScript API:
- * syntaktickou chybu TS1108 ignorujeme a sémantické diagnostiky bereme vždy.
+ * `tsc -p tsconfig.json` does not include the examples (top-level `return` is TS error TS1108, which would also
+ * suppress all semantic diagnostics), so we check them here via the TypeScript API:
+ * we ignore the syntax error TS1108 and always take the semantic diagnostics.
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -14,7 +14,7 @@ import ts from 'typescript'
 const ROOT = join(import.meta.dirname, '..', '..')
 const EXAMPLES = join(ROOT, 'examples')
 
-test('examples/*.workflow.ts nemají typové chyby', () => {
+test('examples/*.workflow.ts have no type errors', () => {
   const files = readdirSync(EXAMPLES).filter((f) => f.endsWith('.workflow.ts')).map((f) => join(EXAMPLES, f))
   assert.ok(files.length > 0)
 
@@ -25,7 +25,7 @@ test('examples/*.workflow.ts nemají typové chyby', () => {
   const problems: string[] = []
   for (const f of files) {
     const sf = program.getSourceFile(f)
-    assert.ok(sf, `nelze načíst ${f}`)
+    assert.ok(sf, `cannot load ${f}`)
     const diags = [...program.getSyntacticDiagnostics(sf), ...program.getSemanticDiagnostics(sf)].filter((d) => d.code !== 1108)
     for (const d of diags) {
       const line = sf.getLineAndCharacterOfPosition(d.start ?? 0).line + 1

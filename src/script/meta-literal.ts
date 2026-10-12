@@ -1,10 +1,10 @@
 /**
- * Parser „čistého literálu“ pro `export const meta = { … }`.
+ * Parser for a “plain literal” in `export const meta = { … }`.
  *
- * Záměrně neevaluuje kód: přijme jen JSON-like podmnožinu JavaScriptu (objekty, pole, řetězce, šablony bez `${}`,
- * čísla, true/false/null, komentáře, koncové čárky, neuvozované klíče). Cokoli jiného (proměnná, volání,
- * spread, zřetězení, funkce…) je chyba s přesnou pozicí – díky tomu jde hlásit rozumná česká diagnostika
- * a meta se nikdy nevykoná.
+ * Intentionally does not evaluate code: it accepts only a JSON-like subset of JavaScript (objects, arrays, strings, templates without `${}`,
+ * numbers, true/false/null, comments, trailing commas, unquoted keys). Anything else (variable, call,
+ * spread, concatenation, function…) is an error with an exact position – so a clear diagnostic can be reported
+ * and meta is never executed.
  */
 
 export type LiteralNode =
@@ -38,7 +38,7 @@ const SIMPLE_ESCAPES: Record<string, string> = {
   '0': '\0',
 }
 
-/** Dekóduje obsah řetězce (bez uvozovek) podle pravidel JS. Neplatné escape sekvence → LiteralError. */
+/** Decodes string content (without quotes) per JS rules. Invalid escape sequences → LiteralError. */
 function decodeEscapes(raw: string, offset: number): string {
   if (!raw.includes('\\')) return raw
   let out = ''
@@ -54,7 +54,7 @@ function decodeEscapes(raw: string, offset: number): string {
       out += SIMPLE_ESCAPES[next]
     } else if (next === 'x') {
       const hex = raw.slice(i + 1, i + 3)
-      if (!/^[0-9a-fA-F]{2}$/.test(hex)) throw new LiteralError('neplatná escape sekvence \\x v řetězci', offset)
+      if (!/^[0-9a-fA-F]{2}$/.test(hex)) throw new LiteralError('invalid escape sequence \\x in string', offset)
       out += String.fromCharCode(parseInt(hex, 16))
       i += 2
     } else if (next === 'u') {
@@ -62,19 +62,19 @@ function decodeEscapes(raw: string, offset: number): string {
         const close = raw.indexOf('}', i + 2)
         const hex = close < 0 ? '' : raw.slice(i + 2, close)
         const cp = /^[0-9a-fA-F]+$/.test(hex) ? parseInt(hex, 16) : NaN
-        if (!(cp <= 0x10ffff)) throw new LiteralError('neplatná escape sekvence \\u{…} v řetězci', offset)
+        if (!(cp <= 0x10ffff)) throw new LiteralError('invalid escape sequence \\u{…} in string', offset)
         out += String.fromCodePoint(cp)
         i = close
       } else {
         const hex = raw.slice(i + 1, i + 5)
-        if (!/^[0-9a-fA-F]{4}$/.test(hex)) throw new LiteralError('neplatná escape sekvence \\u v řetězci', offset)
+        if (!/^[0-9a-fA-F]{4}$/.test(hex)) throw new LiteralError('invalid escape sequence \\u in string', offset)
         out += String.fromCharCode(parseInt(hex, 16))
         i += 4
       }
     } else if (next === '\r') {
       if (raw[i + 1] === '\n') i++
     } else if (next === '\n' || next.charCodeAt(0) === 0x2028 || next.charCodeAt(0) === 0x2029) {
-      // pokračování řádku
+      // line continuation
     } else {
       out += next
     }
@@ -83,7 +83,7 @@ function decodeEscapes(raw: string, offset: number): string {
 }
 
 /**
- * Naparsuje literál začínající přesně na `start` (ukazuje na `{`). Vrací AST a offset za posledním znakem.
+ * Parses the literal starting exactly at `start` (points to `{`). Returns the AST and the offset after the last character.
  */
 export function parseLiteral(src: string, start: number): { node: LiteralNode; end: number } {
   let pos = start
@@ -98,7 +98,7 @@ export function parseLiteral(src: string, start: number): { node: LiteralNode; e
         while (pos < src.length && src[pos] !== '\n' && src[pos] !== '\r') pos++
       } else if (c === '/' && src[pos + 1] === '*') {
         const end = src.indexOf('*/', pos + 2)
-        if (end < 0) throw new LiteralError('neukončený komentář v meta', pos)
+        if (end < 0) throw new LiteralError('unterminated comment in meta', pos)
         pos = end + 2
       } else {
         return
@@ -131,7 +131,7 @@ export function parseLiteral(src: string, start: number): { node: LiteralNode; e
       if (c === '\n' || c === '\r') break
       pos++
     }
-    throw new LiteralError('neukončený řetězec v meta', s)
+    throw new LiteralError('unterminated string in meta', s)
   }
 
   const readTemplate = (): string => {
@@ -145,7 +145,7 @@ export function parseLiteral(src: string, start: number): { node: LiteralNode; e
         continue
       }
       if (c === '$' && src[pos + 1] === '{') {
-        throw new LiteralError('meta musí být čistý literál: šablonový řetězec s ${} není povolen (použij běžný řetězec)', pos)
+        throw new LiteralError('meta must be a plain literal: template string with ${} is not allowed (use a regular string)', pos)
       }
       if (c === '`') {
         const raw = src.slice(contentStart, pos)
@@ -154,14 +154,14 @@ export function parseLiteral(src: string, start: number): { node: LiteralNode; e
       }
       pos++
     }
-    throw new LiteralError('neukončená šablona v meta', s)
+    throw new LiteralError('unterminated template in meta', s)
   }
 
   const afterValueCheck = (): void => {
     skipTrivia()
     const c = src[pos]
     if (c === '+') {
-      throw new LiteralError('meta musí být čistý literál: zřetězení (+) není povoleno, zapiš hodnotu jedním řetězcem', pos)
+      throw new LiteralError('meta must be a plain literal: concatenation (+) is not allowed, write the value as a single string', pos)
     }
   }
 
@@ -169,7 +169,7 @@ export function parseLiteral(src: string, start: number): { node: LiteralNode; e
     skipTrivia()
     const s = pos
     const c = src[pos]
-    if (c === undefined) throw new LiteralError('meta končí uprostřed literálu', pos)
+    if (c === undefined) throw new LiteralError('meta ends in the middle of a literal', pos)
     if (c === '{') return parseObject()
     if (c === '[') return parseArray()
     if (c === '"' || c === "'") {
@@ -183,18 +183,18 @@ export function parseLiteral(src: string, start: number): { node: LiteralNode; e
       return { kind: 'string', start: s, value }
     }
     if (c === '.' && src.startsWith('...', pos)) {
-      throw new LiteralError('meta musí být čistý literál: spread (...) není povolen', pos)
+      throw new LiteralError('meta must be a plain literal: spread (...) is not allowed', pos)
     }
     if (c === '-' || c === '+' || c === '.' || (c >= '0' && c <= '9')) {
       const m = NUMBER.exec(src.slice(pos, pos + 64))
       if (m) {
         pos += m[0].length
         const value = Number(m[0].replace(/_/g, ''))
-        if (Number.isNaN(value)) throw new LiteralError(`neplatné číslo „${m[0]}“ v meta`, s)
+        if (Number.isNaN(value)) throw new LiteralError(`invalid number “${m[0]}” in meta`, s)
         afterValueCheck()
         return { kind: 'number', start: s, value }
       }
-      throw new LiteralError(`meta musí být čistý literál: nepovolený výraz začínající „${c}“`, s)
+      throw new LiteralError(`meta must be a plain literal: disallowed expression starting with “${c}”`, s)
     }
     if (isIdentStart(c)) {
       const word = readIdent()
@@ -208,11 +208,11 @@ export function parseLiteral(src: string, start: number): { node: LiteralNode; e
       }
       skipTrivia()
       if (src[pos] === '(' || src[pos] === '.') {
-        throw new LiteralError(`meta musí být čistý literál: volání nebo přístup k „${word}“ není povolen`, s)
+        throw new LiteralError(`meta must be a plain literal: calling or accessing “${word}” is not allowed`, s)
       }
-      throw new LiteralError(`meta musí být čistý literál: identifikátor „${word}“ (proměnné nejsou povoleny)`, s)
+      throw new LiteralError(`meta must be a plain literal: identifier “${word}” (variables are not allowed)`, s)
     }
-    throw new LiteralError(`meta musí být čistý literál: nepovolený výraz začínající „${c}“`, s)
+    throw new LiteralError(`meta must be a plain literal: disallowed expression starting with “${c}”`, s)
   }
 
   const parseArray = (): LiteralNode => {
@@ -225,7 +225,7 @@ export function parseLiteral(src: string, start: number): { node: LiteralNode; e
         pos++
         break
       }
-      if (src[pos] === ',') throw new LiteralError('meta musí být čistý literál: prázdné prvky v poli nejsou povoleny', pos)
+      if (src[pos] === ',') throw new LiteralError('meta must be a plain literal: empty elements in an array are not allowed', pos)
       items.push(parseValue())
       skipTrivia()
       if (src[pos] === ',') {
@@ -236,7 +236,7 @@ export function parseLiteral(src: string, start: number): { node: LiteralNode; e
         pos++
         break
       }
-      throw new LiteralError('v poli v meta se očekává „,“ nebo „]“', pos)
+      throw new LiteralError('an array in meta expects “,” or “]”', pos)
     }
     return { kind: 'array', start: s, items }
   }
@@ -248,7 +248,7 @@ export function parseLiteral(src: string, start: number): { node: LiteralNode; e
     for (;;) {
       skipTrivia()
       const c = src[pos]
-      if (c === undefined) throw new LiteralError('objekt v meta není ukončen', s)
+      if (c === undefined) throw new LiteralError('object in meta is not terminated', s)
       if (c === '}') {
         pos++
         break
@@ -256,30 +256,30 @@ export function parseLiteral(src: string, start: number): { node: LiteralNode; e
       const keyStart = pos
       let key: string
       if (c === '.' && src.startsWith('...', pos)) {
-        throw new LiteralError('meta musí být čistý literál: spread (...) není povolen', pos)
+        throw new LiteralError('meta must be a plain literal: spread (...) is not allowed', pos)
       } else if (c === '[') {
-        throw new LiteralError('meta musí být čistý literál: počítané klíče [..] nejsou povoleny', pos)
+        throw new LiteralError('meta must be a plain literal: computed keys [..] are not allowed', pos)
       } else if (c === '"' || c === "'") {
         key = readQuoted(c)
       } else if (c >= '0' && c <= '9') {
         const m = NUMBER.exec(src.slice(pos, pos + 64))
-        if (!m) throw new LiteralError('neplatný klíč v meta', pos)
+        if (!m) throw new LiteralError('invalid key in meta', pos)
         pos += m[0].length
         key = String(Number(m[0].replace(/_/g, '')))
       } else if (isIdentStart(c)) {
         key = readIdent()
       } else {
-        throw new LiteralError(`v meta se očekává klíč vlastnosti, nalezeno „${c}“`, pos)
+        throw new LiteralError(`meta expects a property key, found “${c}”`, pos)
       }
       skipTrivia()
       const sep = src[pos]
       if (sep === ',' || sep === '}') {
-        throw new LiteralError(`meta musí být čistý literál: zkrácený zápis „${key}“ odkazuje na proměnnou (zapiš „${key}: hodnota“)`, keyStart)
+        throw new LiteralError(`meta must be a plain literal: shorthand “${key}” refers to a variable (write “${key}: value”)`, keyStart)
       }
       if (sep === '(') {
-        throw new LiteralError(`meta musí být čistý literál: metoda „${key}()“ není povolena`, keyStart)
+        throw new LiteralError(`meta must be a plain literal: method “${key}()” is not allowed`, keyStart)
       }
-      if (sep !== ':') throw new LiteralError(`za klíčem „${key}“ v meta se očekává „:“`, pos)
+      if (sep !== ':') throw new LiteralError(`after key “${key}” in meta, “:” is expected`, pos)
       pos++
       const value = parseValue()
       props.push({ key, keyStart, value })
@@ -292,23 +292,23 @@ export function parseLiteral(src: string, start: number): { node: LiteralNode; e
         pos++
         break
       }
-      throw new LiteralError('v objektu v meta se očekává „,“ nebo „}“', pos)
+      throw new LiteralError('an object in meta expects “,” or “}”', pos)
     }
     return { kind: 'object', start: s, props }
   }
 
-  if (src[pos] !== '{') throw new LiteralError('meta musí být objektový literál { … }', pos)
+  if (src[pos] !== '{') throw new LiteralError('meta must be an object literal { … }', pos)
   const node = parseObject()
   return { node, end: pos }
 }
 
-/** Převede AST na obyčejnou hodnotu (poslední duplicitní klíč vyhrává, jako v JS). */
+/** Converts the AST to a plain value (the last duplicate key wins, as in JS). */
 export function nodeToValue(node: LiteralNode): unknown {
   switch (node.kind) {
     case 'object': {
       const out: Record<string, unknown> = {}
       for (const p of node.props) {
-        // defineProperty kvůli klíči „__proto__“ (obyčejné přiřazení by změnilo prototyp)
+        // defineProperty because of the key “__proto__” (a plain assignment would change the prototype)
         Object.defineProperty(out, p.key, { value: nodeToValue(p.value), enumerable: true, writable: true, configurable: true })
       }
       return out

@@ -1,4 +1,4 @@
-/** `ultracode validate <cesta...>`. */
+/** `ultracode validate <path...>`. */
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { resolve } from 'node:path'
 import type { WorkflowMeta } from '../../types.ts'
@@ -19,7 +19,7 @@ interface FileReport {
 export async function validateCommand(ctx: CommandContext, argv: string[]): Promise<number> {
   const { io } = ctx
   const parsed = parseCommandLine('validate', argv)
-  if (parsed.positionals.length === 0) throw new UsageError('Chybí cesta ke skriptu: ultracode validate <cesta...>')
+  if (parsed.positionals.length === 0) throw new UsageError('Missing script path: ultracode validate <path...>')
   const cwd = resolveCwd(ctx, parsed.values)
   const parseScript = await resolveParseScript(ctx.deps)
   const style = styleFor(ctx, parsed.values)
@@ -39,25 +39,25 @@ export async function validateCommand(ctx: CommandContext, argv: string[]): Prom
       const warnings = r.diagnostics.filter((d) => d.level === 'warning')
       if (r.ok) {
         const phases = r.meta?.phases?.length ?? 0
-        const what = r.meta ? `${r.meta.name}${phases > 0 ? `, ${phases} ${plural(phases, 'fáze', 'fáze', 'fází')}` : ''}` : ''
+        const what = r.meta ? `${r.meta.name}${phases > 0 ? `, ${phases} ${plural(phases, 'phase', 'phases', 'phases')}` : ''}` : ''
         out.push(`${style.green('OK')}  ${r.path}${what ? style.dim(`  (${what})`) : ''}`)
       } else {
-        out.push(`${style.red('CHYBA')}  ${r.path}`)
+        out.push(`${style.red('ERROR')}  ${r.path}`)
       }
       for (const d of [...errors, ...warnings]) {
         const loc = d.line !== undefined ? `${r.path}:${d.line}` : r.path
-        const tag = d.level === 'error' ? style.red('chyba') : style.yellow('varování')
+        const tag = d.level === 'error' ? style.red('error') : style.yellow('warning')
         out.push(`  ${loc}: ${tag}: ${d.message}`)
       }
-      if (!r.ok && errors.length === 0) out.push(`  ${r.path}: ${style.red('chyba')}: skript je neplatný (parser nevrátil podrobnosti)`)
+      if (!r.ok && errors.length === 0) out.push(`  ${r.path}: ${style.red('error')}: script is invalid (the parser returned no details)`)
     }
     const bad = reports.filter((r) => !r.ok).length
     out.push(
       bad === 0
-        ? style.green(`Vše v pořádku (${reports.length} ${plural(reports.length, 'soubor', 'soubory', 'souborů')}).`)
-        : style.red(`Neplatné skripty: ${bad} z ${reports.length}.`),
+        ? style.green(`All good (${reports.length} ${plural(reports.length, 'file', 'files', 'files')}).`)
+        : style.red(`Invalid scripts: ${bad} of ${reports.length}.`),
     )
-    // výsledek validace je výstup příkazu → stdout
+    // the validation result is command output → stdout
     writeLines(io.stdout, out)
   }
   return reports.every((r) => r.ok) ? 0 : 2
@@ -70,37 +70,37 @@ async function validateOne(
   parseScript: ParseScriptFn,
 ): Promise<FileReport> {
   let abs = resolve(ctx.io.cwd, ref)
-  // jméno workflow (ne cesta) → zkus vyhledání
+  // workflow name (not a path) → try discovery
   if (!existsSync(abs) && !looksLikePath(ref)) {
     try {
       const discovery = await resolveDiscovery(ctx.deps)
       abs = discovery.findWorkflow(ref, cwd)
     } catch {
-      // zůstane původní cesta → hláška „nelze přečíst“ níže
+      // the original path stays → the "cannot be read" message below
     }
   }
   let source: string
   try {
-    if (statSync(abs).isDirectory()) throw new Error('je to adresář')
+    if (statSync(abs).isDirectory()) throw new Error('it is a directory')
     source = readFileSync(abs, 'utf8')
   } catch (e) {
     return {
       path: ref,
       ok: false,
       meta: null,
-      diagnostics: [{ level: 'error', message: `soubor nelze přečíst: ${errorMessage(e)}` }],
+      diagnostics: [{ level: 'error', message: `file cannot be read: ${errorMessage(e)}` }],
     }
   }
   try {
     const res = parseScript(source, abs)
     return { path: ref, ok: res.ok, meta: res.meta, diagnostics: res.diagnostics }
   } catch (e) {
-    // parseScript nemá házet, ale CLI nesmí kvůli jednomu souboru spadnout
+    // parseScript should not throw, but the CLI must not crash because of a single file
     return {
       path: ref,
       ok: false,
       meta: null,
-      diagnostics: [{ level: 'error', message: `parser selhal: ${errorMessage(e)}` }],
+      diagnostics: [{ level: 'error', message: `parser failed: ${errorMessage(e)}` }],
     }
   }
 }

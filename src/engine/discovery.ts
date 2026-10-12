@@ -1,10 +1,10 @@
 /**
- * Hledání workflow podle jména.
+ * Looks up a workflow by name.
  *
- * Pořadí adresářů: `<cwd>/.ultracode/workflows`, pak stejný podadresář v každém rodičovském adresáři až ke
- * kořeni, poté `~/.ultracode/workflows` a nakonec `$ULTRACODE_WORKFLOWS_DIR` (může obsahovat více cest
- * oddělených `path.delimiter`). V rámci adresáře se zkouší `<ref>.workflow.ts`, `<ref>.workflow.js`,
- * `<ref>.ts`, `<ref>.js`. První nález vyhrává (projekt přebíjí uživatele).
+ * Search order: `<cwd>/.ultracode/workflows`, then the same subdirectory in every parent directory up to the
+ * root, then `~/.ultracode/workflows` and finally `$ULTRACODE_WORKFLOWS_DIR` (may contain several paths
+ * separated by `path.delimiter`). Within a directory the candidates `<ref>.workflow.ts`, `<ref>.workflow.js`,
+ * `<ref>.ts`, `<ref>.js` are tried in that order. The first match wins (project overrides user).
  */
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -35,13 +35,13 @@ interface DirEntry {
 }
 
 function searchEntries(cwd: string): DirEntry[] {
-  // uživatelské adresáře (i když leží v řetězci rodičů) mají scope 'user'
+  // user directories (even if they sit in the parent chain) have scope 'user'
   const userDirs = new Set<string>()
   try {
     const home = homedir()
     if (home) userDirs.add(join(home, '.ultracode', 'workflows'))
   } catch {
-    // homedir nelze zjistit — přeskočíme
+    // homedir cannot be determined — skip it
   }
   const envDirs: string[] = []
   const fromEnv = process.env.ULTRACODE_WORKFLOWS_DIR
@@ -73,18 +73,18 @@ function searchEntries(cwd: string): DirEntry[] {
   return entries
 }
 
-/** Adresáře, ve kterých se hledá (v pořadí priority; nemusí existovat). */
+/** Directories to search, in priority order (they need not exist). */
 export function workflowSearchDirs(cwd: string): string[] {
   return searchEntries(cwd).map((e) => e.dir)
 }
 
-/** Vypadá `ref` jako cesta k souboru (obsahuje oddělovač nebo má příponu skriptu)? */
+/** Does `ref` look like a file path (contains a separator or has a script extension)? */
 export function looksLikePath(ref: string): boolean {
   return /[\\/]/.test(ref) || /\.(?:ts|js|mts|mjs|cts|cjs)$/.test(ref)
 }
 
 /**
- * Najde skript podle jména (nebo vezme existující cestu). Vrací absolutní cestu.
+ * Finds a script by name (or takes an existing path). Returns an absolute path.
  * @throws WorkflowNotFoundError
  */
 export function findWorkflow(ref: string, cwd: string): string {
@@ -104,7 +104,7 @@ export function findWorkflow(ref: string, cwd: string): string {
   throw new WorkflowNotFoundError(name, dirs)
 }
 
-/** Z hlavičky skriptu vytáhne `description` z `export const meta = {...}` (bez plného parsování). */
+/** Extracts `description` from `export const meta = {...}` in the script header (without full parsing). */
 function extractDescription(source: string): string | undefined {
   const at = source.indexOf('export const meta')
   if (at < 0) return undefined
@@ -134,7 +134,7 @@ export function listWorkflows(cwd: string): Array<{ name: string; path: string; 
     } catch {
       continue
     }
-    // `.workflow.ts` má přednost před `.ts` se stejným jménem (stejné pořadí jako ve findWorkflow)
+    // `.workflow.ts` takes precedence over `.ts` with the same name (same order as in findWorkflow)
     const rank = (f: string) => SUFFIXES.findIndex((s) => f.endsWith(s))
     files.sort((a, b) => rank(a) - rank(b) || (a < b ? -1 : 1))
     const batch: Array<{ name: string; path: string; description?: string; scope: 'project' | 'user' }> = []
@@ -158,7 +158,7 @@ export function listWorkflows(cwd: string): Array<{ name: string; path: string; 
   return out
 }
 
-/** Pomocná: jméno souboru bez přípon, pro zobrazení. */
+/** Helper: file name without extensions, for display. */
 export function displayNameOf(path: string): string {
   return workflowNameOf(basename(path)) ?? basename(path)
 }

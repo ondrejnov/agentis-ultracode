@@ -1,11 +1,11 @@
 /**
- * Chování příkladů `examples/*.workflow.ts` ověřené proti SKUTEČNÉMU script hostu (`runScript` ze
- * `src/script/host.ts`: worker, vm sandbox, skutečné `parallel`/`pipeline`, determinismus, validace schema)
- * s mock hooky místo enginu a bez `claude`.
+ * Behaviour of the examples `examples/*.workflow.ts` verified against the REAL script host (`runScript` from
+ * `src/script/host.ts`: worker, vm sandbox, real `parallel`/`pipeline`, determinism, schema validation)
+ * with mock hooks instead of the engine and without `claude`.
  *
- * Test tak ověřuje to, co typy nezachytí: ošetření `null`, ukončení smyček, disjunktní vlastnictví souborů,
- * filtrování vymyšlených ID, počty volání, platnost všech `opts` a schema, která příklady posílají agentům.
- * Dokud `src/script/host.ts` neexistuje, testy se přeskočí.
+ * The test thus verifies what the types do not catch: handling of `null`, loop termination, disjoint file ownership,
+ * filtering of invented IDs, call counts, validity of all `opts` and the schemas the examples send to the agents.
+ * Until `src/script/host.ts` exists, the tests are skipped.
  */
 import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -26,9 +26,9 @@ if (existsSync(HOST_PATH)) {
   runScript = ((await import(pathToFileURL(HOST_PATH).href)) as { runScript: RunScriptFn }).runScript
   BudgetExceededError = ((await import(pathToFileURL(ERRORS_PATH).href)) as { BudgetExceededError: typeof BudgetExceededError }).BudgetExceededError
 }
-const SKIP = runScript ? false : 'src/script/host.ts zatím neexistuje (modul SCRIPT); test spustí integrátor'
+const SKIP = runScript ? false : 'src/script/host.ts does not exist yet (SCRIPT module); the integrator will run this test'
 
-// ───────── mock hooky ─────────
+// ───────── mock hooks ─────────
 
 interface Call {
   prompt: string
@@ -43,7 +43,7 @@ interface Outcome {
   logs: string[]
 }
 
-/** Třetí argument: sdílený buffer rozpočtu [spent, total, spentUsd, totalUsd] (handler jím simuluje útratu). */
+/** Third argument: shared budget buffer [spent, total, spentUsd, totalUsd] (the handler simulates spending with it). */
 type Handler = (call: Call, index: number, budgetView?: Float64Array) => unknown
 
 function minimal(schema: any): unknown {
@@ -76,7 +76,7 @@ interface BudgetInit {
   spentUsd?: number
 }
 
-/** `handler` vrací výsledek agenta; `undefined` = minimální objekt podle schema, `null` = selhání agenta. */
+/** `handler` returns the agent result; `undefined` = minimal object per schema, `null` = agent failure. */
 async function run(name: string, args: unknown, handler: Handler, budget: BudgetInit = {}): Promise<Outcome> {
   assert.ok(runScript)
   const calls: Call[] = []
@@ -95,20 +95,20 @@ async function run(name: string, args: unknown, handler: Handler, budget: Budget
     async agent(prompt: string, opts: any) {
       const call: Call = { prompt, opts, label: String(opts.label ?? '') }
       calls.push(call)
-      if (opts.phase !== undefined) assert.ok(declared.has(opts.phase), `opts.phase „${opts.phase}“ není v meta.phases`)
+      if (opts.phase !== undefined) assert.ok(declared.has(opts.phase), `opts.phase “${opts.phase}” is not in meta.phases`)
       const out = handler(call, calls.length - 1, view)
       if (out === undefined) return opts.schema ? minimal(opts.schema) : 'text'
       return out
     },
     phase(title: string) {
-      assert.ok(declared.has(title), `phase „${title}“ není v meta.phases`)
+      assert.ok(declared.has(title), `phase “${title}” is not in meta.phases`)
       phases.push(title)
     },
     log(message: string) {
       logs.push(message)
     },
     async loadWorkflow() {
-      throw new Error('loadWorkflow se v příkladech nepoužívá')
+      throw new Error('loadWorkflow is not used in the examples')
     },
     workflowEnter() {},
     workflowExit() {},
@@ -129,9 +129,9 @@ const byLabel = (o: Outcome, prefix: string) => o.calls.filter((c) => c.label.st
 
 // ───────── audit-routes ─────────
 
-describe('audit-routes (skutečný host, mock agenti)', { skip: SKIP }, () => {
+describe('audit-routes (real host, mock agents)', { skip: SKIP }, () => {
   const finding = (id: string, severity = 'high') => ({
-    id, title: 'Problem ' + id, severity, line: 10, category: 'authz', description: 'popis', evidence: 'kód', fix: 'oprava',
+    id, title: 'Problem ' + id, severity, line: 10, category: 'authz', description: 'description', evidence: 'code', fix: 'fix',
   })
 
   const base: Handler = (c) => {
@@ -140,14 +140,14 @@ describe('audit-routes (skutečný host, mock agenti)', { skip: SKIP }, () => {
     }
     if (c.label === 'audit:a.php') return { findings: [finding('A1', 'critical'), finding('A2', 'low')] }
     if (c.label.startsWith('audit:')) return { findings: [] }
-    if (c.label.startsWith('verify:a.php#A1/')) return { refuted: false, reason: 'reálné' }
-    if (c.label.startsWith('verify:a.php#A2/')) return { refuted: true, reason: 'neutralizováno' }
+    if (c.label.startsWith('verify:a.php#A1/')) return { refuted: false, reason: 'real' }
+    if (c.label.startsWith('verify:a.php#A2/')) return { refuted: true, reason: 'neutralised' }
     if (c.label.startsWith('synthesize:')) {
       return {
-        summary: 'souhrn',
+        summary: 'summary',
         priorities: [
-          { rank: 1, title: 'oprav authz', gids: ['F1', 'F99'], rationale: 'r' },
-          { rank: 2, title: 'duch', gids: ['F77'], rationale: 'vymyšlené' },
+          { rank: 1, title: 'fix authz', gids: ['F1', 'F99'], rationale: 'r' },
+          { rank: 2, title: 'ghost', gids: ['F77'], rationale: 'invented' },
         ],
         duplicateGroups: [['F1', 'F42']],
       }
@@ -155,23 +155,23 @@ describe('audit-routes (skutečný host, mock agenti)', { skip: SKIP }, () => {
     return undefined
   }
 
-  test('happy path: dedup souborů, 3 hlasy, potvrzení/vyvrácení, syntéza bez vymyšlených ID', async () => {
+  test('happy path: file dedup, 3 votes, confirmation/refutation, synthesis without invented IDs', async () => {
     const r = await run('audit-routes', { root: 'src' }, base)
     assert.deepEqual(r.value.stats, { files: 2, filesNotAudited: 0, confirmed: 1, rejected: 1, unverified: 0 })
     assert.equal(r.value.confirmed.length, 1)
     assert.equal(r.value.confirmed[0].gid, 'F1')
     assert.equal(r.value.confirmed[0].file, 'a.php')
     assert.equal(r.value.confirmed[0].votesTotal, 3)
-    // vymyšlená ID syntéza zahazuje
+    // synthesis drops invented IDs
     assert.deepEqual(r.value.report.priorities.map((p: any) => p.gids), [['F1']])
     assert.deepEqual(r.value.report.duplicateGroups, [])
-    // 1 discover + 2 audit + 2 nálezy × 3 skeptici + 1 syntéza
+    // 1 discover + 2 audit + 2 findings × 3 skeptics + 1 synthesis
     assert.equal(r.calls.length, 10)
     assert.equal(byLabel(r, 'verify:').length, 6)
     assert.deepEqual(r.phases, ['Discover', 'Synthesize'])
   })
 
-  test('každý agent je read-only a skeptici mají každý jinou čočku', async () => {
+  test('each agent is read-only and each skeptic has a different lens', async () => {
     const r = await run('audit-routes', {}, base)
     for (const c of r.calls) {
       assert.ok(c.opts.disallowedTools.includes('Write') && c.opts.disallowedTools.includes('Edit'), c.label)
@@ -181,7 +181,7 @@ describe('audit-routes (skutečný host, mock agenti)', { skip: SKIP }, () => {
     assert.ok(!lenses.includes(undefined))
   })
 
-  test('prompty skeptiků jsou samostatné (soubor, tvrzení, důkaz) a vedou k vyvracení', async () => {
+  test('skeptic prompts are standalone (file, claim, evidence) and lead to refutation', async () => {
     const r = await run('audit-routes', {}, base)
     const p = byLabel(r, 'verify:a.php#A1/')[0].prompt
     assert.match(p, /a\.php/)
@@ -189,17 +189,17 @@ describe('audit-routes (skutečný host, mock agenti)', { skip: SKIP }, () => {
     assert.match(p, /Default to refuted=true/)
   })
 
-  test('selhání discoveru vyhodí srozumitelnou chybu', async () => {
-    await assert.rejects(run('audit-routes', {}, (c) => (c.label.startsWith('discover:') ? null : undefined)), /selhal/)
+  test('discovery failure throws an understandable error', async () => {
+    await assert.rejects(run('audit-routes', {}, (c) => (c.label.startsWith('discover:') ? null : undefined)), /failed/)
   })
 
-  test('null z auditu = soubor neauditován, ostatní soubory pokračují', async () => {
+  test('null from audit = file not audited, other files continue', async () => {
     const r = await run('audit-routes', {}, (c, i) => (c.label === 'audit:b.php' ? null : base(c, i)))
     assert.equal(r.value.stats.filesNotAudited, 1)
     assert.equal(r.value.stats.confirmed, 1)
   })
 
-  test('verifikátoři bez kvóra (null) → nález je „neověřený“, ne potvrzený, a syntéza se přeskočí', async () => {
+  test('verifiers without quorum (null) → finding is "unverified", not confirmed, and synthesis is skipped', async () => {
     const r = await run('audit-routes', {}, (c, i) => (c.label.startsWith('verify:a.php#A1/') ? null : base(c, i)))
     assert.equal(r.value.stats.unverified, 1)
     assert.equal(r.value.stats.confirmed, 0)
@@ -207,7 +207,7 @@ describe('audit-routes (skutečný host, mock agenti)', { skip: SKIP }, () => {
     assert.equal(byLabel(r, 'synthesize:').length, 0)
   })
 
-  test('jediný hlas z tří je pod kvórem', async () => {
+  test('a single vote out of three is below quorum', async () => {
     const r = await run('audit-routes', {}, (c, i) => {
       if (c.label.startsWith('verify:a.php#A1/') && !c.label.endsWith('/reachability')) return null
       return base(c, i)
@@ -216,7 +216,7 @@ describe('audit-routes (skutečný host, mock agenti)', { skip: SKIP }, () => {
     assert.equal(r.value.stats.confirmed, 0)
   })
 
-  test('shoda hlasů 2:1 pro vyvrácení nález zamítne, 1:2 potvrdí', async () => {
+  test('a 2:1 vote for refutation rejects the finding, 1:2 confirms it', async () => {
     const twoRefute = await run('audit-routes', {}, (c, i) => {
       if (c.label.startsWith('verify:a.php#A1/')) return { refuted: !c.label.endsWith('/impact'), reason: 'x' }
       return base(c, i)
@@ -230,26 +230,26 @@ describe('audit-routes (skutečný host, mock agenti)', { skip: SKIP }, () => {
     assert.equal(oneRefute.value.confirmed[0].votesAgainst, 1)
   })
 
-  test('maxFiles ořízne seznam a zahozené soubory zaloguje', async () => {
+  test('maxFiles truncates the list and logs skipped files', async () => {
     const r = await run('audit-routes', { maxFiles: 1 }, base)
     assert.equal(byLabel(r, 'audit:').length, 1)
-    assert.ok(r.logs.some((l) => l.includes('b.php') && /Vynecháno/.test(l)), r.logs.join('\n'))
+    assert.ok(r.logs.some((l) => l.includes('b.php') && /Skipped/.test(l)), r.logs.join('\n'))
   })
 
-  test('votes=1 → jeden skeptik na nález', async () => {
+  test('votes=1 → one skeptic per finding', async () => {
     const r = await run('audit-routes', { votes: 1 }, base)
     assert.equal(byLabel(r, 'verify:a.php#A1/').length, 1)
     assert.equal(r.value.stats.confirmed, 1)
   })
 
-  test('vyčerpaný USD rozpočet před syntézou: potvrzené nálezy se vrátí (ne failed) s budgetExceeded', async () => {
+  test('USD budget exhausted before synthesis: confirmed findings are returned (not failed) with budgetExceeded', async () => {
     const r = await run(
       'audit-routes',
       { root: 'src' },
       (c, i, view) => {
         if (c.label.startsWith('synthesize:')) {
           view![2] =1
-          throw new BudgetExceededError('Vyčerpán rozpočet v USD (1.0000 z 1).')
+          throw new BudgetExceededError('USD budget exhausted (1.0000 of 1).')
         }
         return base(c, i, view)
       },
@@ -260,20 +260,20 @@ describe('audit-routes (skutečný host, mock agenti)', { skip: SKIP }, () => {
     assert.equal(r.value.confirmed[0].gid, 'F1')
     assert.equal(r.value.stats.confirmed, 1)
     assert.equal(r.value.stats.budgetExceeded, true)
-    assert.ok(r.logs.some((l) => /rozpočet/i.test(l)), r.logs.join('\n'))
+    assert.ok(r.logs.some((l) => /budget/i.test(l)), r.logs.join('\n'))
   })
 
-  test('jiná chyba syntézy než rozpočet se dál propaguje', async () => {
+  test('a non-budget synthesis error keeps propagating', async () => {
     await assert.rejects(
       run('audit-routes', {}, (c, i, v) => {
-        if (c.label.startsWith('synthesize:')) throw new Error('něco jiného')
+        if (c.label.startsWith('synthesize:')) throw new Error('something else')
         return base(c, i, v)
       }),
-      /něco jiného/,
+      /something else/,
     )
   })
 
-  test('žádné route soubory → brzký návrat bez auditorů', async () => {
+  test('no route files → early return without auditors', async () => {
     const r = await run('audit-routes', {}, (c) => (c.label.startsWith('discover:') ? { files: [] } : undefined))
     assert.equal(r.value.files, 0)
     assert.equal(r.calls.length, 1)
@@ -282,12 +282,12 @@ describe('audit-routes (skutečný host, mock agenti)', { skip: SKIP }, () => {
 
 // ───────── fix-until-green ─────────
 
-describe('fix-until-green (skutečný host, mock agenti)', { skip: SKIP }, () => {
+describe('fix-until-green (real host, mock agents)', { skip: SKIP }, () => {
   const roundOf = (c: Call): number => Number(/round-(\d+)/.exec(c.label)?.[1] ?? 0)
-  const failure = (id: string, file: string) => ({ id, file, summary: 'selhává ' + id })
-  const fixOk = { filesChanged: [], summary: 'opraveno', couldNotFix: [], needsOutside: [] }
+  const failure = (id: string, file: string) => ({ id, file, summary: 'failing ' + id })
+  const fixOk = { filesChanged: [], summary: 'fixed', couldNotFix: [], needsOutside: [] }
 
-  test('zelená po třetím kole + nezávislé potvrzení', async () => {
+  test('green after the third round + independent confirmation', async () => {
     const r = await run('fix-until-green', { command: 'npm test' }, (c) => {
       if (c.label.startsWith('run:')) {
         const n = roundOf(c)
@@ -301,13 +301,13 @@ describe('fix-until-green (skutečný host, mock agenti)', { skip: SKIP }, () =>
     })
     assert.equal(r.value.status, 'green')
     assert.equal(r.value.rounds, 3)
-    assert.equal(byLabel(r, 'fix:').length, 4) // 3 skupiny v kole 1 + 1 v kole 2
+    assert.equal(byLabel(r, 'fix:').length, 4) // 3 groups in round 1 + 1 in round 2
     assert.equal(byLabel(r, 'confirm:').length, 1)
     assert.deepEqual(r.phases, ['Run', 'Fix', 'Run', 'Fix', 'Run', 'Confirm'])
     assert.deepEqual(r.value.remainingFailures, [])
   })
 
-  test('dvě kola bez poklesu selhání → no-progress; po posledním měření se neopravuje', async () => {
+  test('two rounds without a drop in failures → no-progress; no fixing after the last measurement', async () => {
     const r = await run('fix-until-green', { command: 'make' }, (c) => {
       if (c.label.startsWith('run:')) return { exitCode: 2, totalFailures: 3, failures: [failure('t1', 'a.ts'), failure('t2', 'a.ts'), failure('t3', 'a.ts')] }
       if (c.label.startsWith('fix:')) return fixOk
@@ -316,12 +316,12 @@ describe('fix-until-green (skutečný host, mock agenti)', { skip: SKIP }, () =>
     assert.equal(r.value.status, 'no-progress')
     assert.deepEqual(r.value.history.map((h: any) => h.noProgress), [0, 1, 2])
     assert.equal(byLabel(r, 'run:').length, 3)
-    assert.equal(byLabel(r, 'fix:').length, 2) // jen v kolech 1 a 2, jedna skupina (jeden soubor)
+    assert.equal(byLabel(r, 'fix:').length, 2) // only in rounds 1 and 2, one group (one file)
     assert.equal(byLabel(r, 'confirm:').length, 0)
     assert.equal(r.value.remainingFailures.length, 3)
   })
 
-  test('pokles počtu selhání resetuje počítadlo bez pokroku', async () => {
+  test('a drop in the failure count resets the no-progress counter', async () => {
     const counts = [5, 5, 4, 4, 4]
     const r = await run('fix-until-green', { command: 'x', maxRounds: 10 }, (c) => {
       if (c.label.startsWith('run:')) {
@@ -334,21 +334,21 @@ describe('fix-until-green (skutečný host, mock agenti)', { skip: SKIP }, () =>
     assert.equal(r.value.status, 'no-progress')
   })
 
-  test('runner, který stále vrací null, smyčku ukončí (žádné nekonečné opakování)', async () => {
+  test('a runner that keeps returning null ends the loop (no infinite retry)', async () => {
     const r = await run('fix-until-green', { command: 'x', maxRounds: 50 }, (c) => (c.label.startsWith('run:') ? null : undefined))
     assert.equal(r.value.status, 'no-progress')
     assert.equal(byLabel(r, 'run:').length, 2)
     assert.equal(byLabel(r, 'fix:').length, 0)
   })
 
-  test('maxRounds=1 a stále červeno → max-rounds bez neověřené opravy', async () => {
+  test('maxRounds=1 and still red → max-rounds without an unverified fix', async () => {
     const r = await run('fix-until-green', { command: 'x', maxRounds: 1 }, (c) =>
       c.label.startsWith('run:') ? { exitCode: 1, totalFailures: 1, failures: [failure('t', 'a.ts')] } : undefined)
     assert.equal(r.value.status, 'max-rounds')
     assert.equal(byLabel(r, 'fix:').length, 0)
   })
 
-  test('vlastnictví souborů je disjunktní a každý opravář zná cizí soubory', async () => {
+  test('file ownership is disjoint and each fixer knows the foreign files', async () => {
     const files = ['f1.ts', 'f2.ts', 'f3.ts', 'f4.ts', 'f5.ts']
     const r = await run('fix-until-green', { command: 'x', maxGroups: 2, maxRounds: 2 }, (c) => {
       if (c.label.startsWith('run:')) {
@@ -366,7 +366,7 @@ describe('fix-until-green (skutečný host, mock agenti)', { skip: SKIP }, () =>
     assert.deepEqual([...foreign[1]].sort(), [...owned[0]].sort())
   })
 
-  test('selhání jednoho opraváře (null) smyčku nezastaví', async () => {
+  test('failure of one fixer (null) does not stop the loop', async () => {
     let round = 0
     const r = await run('fix-until-green', { command: 'x', maxRounds: 3 }, (c) => {
       if (c.label.startsWith('run:')) {
@@ -381,47 +381,47 @@ describe('fix-until-green (skutečný host, mock agenti)', { skip: SKIP }, () =>
     assert.equal(r.value.status, 'green')
   })
 
-  test('nezávislé potvrzení s nenulovým exit kódem zelenou zruší', async () => {
+  test('independent confirmation with non-zero exit cancels green', async () => {
     const r = await run('fix-until-green', { command: 'x' }, (c) => {
       if (c.label.startsWith('run:')) return { exitCode: 0, totalFailures: 0, failures: [] }
-      if (c.label.startsWith('confirm:')) return { exitCode: 3, suspicious: ['skipped test'], summary: 'červené' }
+      if (c.label.startsWith('confirm:')) return { exitCode: 3, suspicious: ['skipped test'], summary: 'red' }
       return undefined
     })
     assert.equal(r.value.status, 'error')
-    assert.match(r.value.error, /potvrzení/i)
+    assert.match(r.value.error, /confirmation failed/i)
     assert.deepEqual(r.value.confirmation.suspicious, ['skipped test'])
   })
 
-  test('chyba skriptu uvnitř smyčky (např. rozpočet) vrátí částečný výsledek, ne výjimku', async () => {
+  test('a script error inside the loop (e.g. budget) returns a partial result, not an exception', async () => {
     const r = await run('fix-until-green', { command: 'x' }, (c) => {
       if (c.label.startsWith('run:')) return { exitCode: 1, totalFailures: 2, failures: [failure('a', 'a.ts')] }
-      if (c.label.startsWith('fix:')) throw new BudgetExceededError('Vyčerpán rozpočet výstupních tokenů.')
+      if (c.label.startsWith('fix:')) throw new BudgetExceededError('Output token budget exhausted.')
       return undefined
     })
-    // thunk v parallel() výjimku promění v null → smyčka pokračuje a skončí na no-progress
+    // a thunk in parallel() turns the exception into null → the loop continues and ends on no-progress
     assert.ok(['no-progress', 'budget'].includes(r.value.status), r.value.status)
     assert.ok(r.value.history.length >= 2)
   })
 
-  test('jiná chyba skriptu než rozpočet skončí jako error s historií', async () => {
+  test('a script error other than budget ends as error with history', async () => {
     const r = await run('fix-until-green', { command: 'x' }, (c) => {
-      if (c.label.startsWith('run:')) throw new Error('něco se pokazilo')
+      if (c.label.startsWith('run:')) throw new Error('something went wrong')
       return undefined
     })
     assert.equal(r.value.status, 'error')
-    assert.match(r.value.error, /pokazilo/)
+    assert.match(r.value.error, /went wrong/)
   })
 
-  test('chyba v runneru (mimo parallel) skončí jako budget/error s historií', async () => {
+  test('error in the runner (outside parallel) ends as budget/error with history', async () => {
     const r = await run('fix-until-green', { command: 'x' }, (c) => {
-      if (c.label.startsWith('run:')) throw new BudgetExceededError('Vyčerpán rozpočet výstupních tokenů (10 z 10).')
+      if (c.label.startsWith('run:')) throw new BudgetExceededError('Output token budget exhausted (10 of 10).')
       return undefined
     })
     assert.equal(r.value.status, 'budget')
-    assert.match(r.value.error, /rozpočet/)
+    assert.match(r.value.error, /budget/)
   })
 
-  test('rozpočet pod prahem ukončí smyčku před dalším kolem', async () => {
+  test('budget below threshold ends the loop before another round', async () => {
     const r = await run('fix-until-green', { command: 'x' }, (c) =>
       c.label.startsWith('run:') ? { exitCode: 1, totalFailures: 2, failures: [failure('a', 'a.ts')] } : undefined,
     { total: 1_000_000, spent: 990_000 })
@@ -429,7 +429,7 @@ describe('fix-until-green (skutečný host, mock agenti)', { skip: SKIP }, () =>
     assert.equal(byLabel(r, 'fix:').length, 0)
   })
 
-  test('chybějící command', async () => {
+  test('missing command', async () => {
     await assert.rejects(run('fix-until-green', {}, () => undefined), /args\.command/)
     await assert.rejects(run('fix-until-green', undefined, () => undefined), /args\.command/)
   })
@@ -437,18 +437,18 @@ describe('fix-until-green (skutečný host, mock agenti)', { skip: SKIP }, () =>
 
 // ───────── deep-research ─────────
 
-describe('deep-research (skutečný host, mock agenti)', { skip: SKIP }, () => {
-  const claim = (text: string, url: string) => ({ claim: text, sourceUrl: url, quote: 'citace', sourceTitle: 'T ' + url })
+describe('deep-research (real host, mock agents)', { skip: SKIP }, () => {
+  const claim = (text: string, url: string) => ({ claim: text, sourceUrl: url, quote: 'quote', sourceTitle: 'T ' + url })
 
   const base: Handler = (c) => {
     if (c.label === 'sweep:r1:overview') {
-      return { claims: [claim('X is slow.', 'https://a.example/1'), claim('Y is fast', 'ftp://bad.example/y')], gaps: ['něco chybí'] }
+      return { claims: [claim('X is slow.', 'https://a.example/1'), claim('Y is fast', 'ftp://bad.example/y')], gaps: ['something is missing'] }
     }
     if (c.label === 'sweep:r1:primary') {
       return { claims: [claim('x is  SLOW', 'https://b.example/2'), claim('Z causes W.', 'https://c.example/3')] }
     }
     if (c.label.startsWith('sweep:')) return { claims: [] }
-    if (c.label.startsWith('verify:src:')) return { supported: !c.prompt.includes('Z causes W'), note: 'poznámka' }
+    if (c.label.startsWith('verify:src:')) return { supported: !c.prompt.includes('Z causes W'), note: 'note' }
     if (c.label.startsWith('verify:corr:')) return { status: 'corroborated', otherUrls: ['https://d.example/4', 'notaurl'], note: 'ok' }
     if (c.label.startsWith('critic:')) return { complete: true, missing: [] }
     if (c.label.startsWith('synthesize:')) {
@@ -457,39 +457,39 @@ describe('deep-research (skutečný host, mock agenti)', { skip: SKIP }, () => {
     return undefined
   }
 
-  test('happy path: dedup claimů, neplatné URL pryč, druhý stupeň jen po prvním, citace z dat', async () => {
-    const r = await run('deep-research', { question: 'Je X pomalé?' }, base)
+  test('happy path: claim dedup, invalid URLs dropped, second stage only after the first, citations from data', async () => {
+    const r = await run('deep-research', { question: 'Is X slow?' }, base)
     assert.equal(byLabel(r, 'sweep:r1:').length, 6)
-    assert.equal(byLabel(r, 'verify:src:').length, 2) // X (sloučeno s duplicitou) a Z; ftp:// nikdy
-    assert.equal(byLabel(r, 'verify:corr:').length, 1) // Z neprošel kontrolou zdroje → druhý agent se nespouští
-    assert.match(byLabel(r, 'verify:corr:')[0].prompt, /b\.example\/2/, 'duplicitní zdroj má být vodítko pro korroboraci')
+    assert.equal(byLabel(r, 'verify:src:').length, 2) // X (merged with the duplicate) and Z; ftp:// never
+    assert.equal(byLabel(r, 'verify:corr:').length, 1) // Z failed the source check → the second agent does not run
+    assert.match(byLabel(r, 'verify:corr:')[0].prompt, /b\.example\/2/, 'the duplicate source should be a hint for corroboration')
     assert.equal(r.value.answer, 'A [1]. B [1]. C .')
     assert.deepEqual(r.value.sources, [{ n: 1, url: 'https://a.example/1', title: 'T https://a.example/1' }])
     assert.equal(r.value.stats.dropped, 1)
     assert.equal(r.value.stats.verified, 1)
     assert.equal(r.value.stats.stoppedBecause, 'complete')
-    assert.deepEqual(r.phases, ['Sweep', 'Critic', 'Synthesize'], 'Verify se přiřazuje jen přes opts.phase')
-    // do syntézy jdou jen ID přidělená kódem
+    assert.deepEqual(r.phases, ['Sweep', 'Critic', 'Synthesize'], 'Verify is assigned only via opts.phase')
+    // only IDs assigned by the code go into the synthesis
     assert.match(byLabel(r, 'synthesize:')[0].prompt, /"id": "C1"/)
   })
 
-  test('critic s mezerami spustí 2. kolo s max. 4 cílenými průzkumy a známé claimy neopakuje', async () => {
+  test('critic with gaps starts round 2 with at most 4 targeted sweeps and does not repeat known claims', async () => {
     const r = await run('deep-research', { question: 'Q', rounds: 2 }, (c, i) => {
       if (c.label.startsWith('critic:')) {
         return { complete: false, missing: [1, 2, 3, 4, 5].map((n) => ({ aspect: 'a' + n, why: 'w', suggestedQuery: 'q' + n })) }
       }
-      if (c.label === 'sweep:r2:targeted-1') return { claims: [claim('Nový claim.', 'https://e.example/5')] }
+      if (c.label === 'sweep:r2:targeted-1') return { claims: [claim('New claim.', 'https://e.example/5')] }
       return base(c, i)
     })
     assert.equal(byLabel(r, 'sweep:r2:').length, 4)
     assert.match(byLabel(r, 'sweep:r2:')[0].prompt, /Already known/)
     assert.match(byLabel(r, 'sweep:r2:')[0].prompt, /a1/)
     assert.equal(r.value.stats.rounds, 2)
-    assert.equal(r.value.stats.claimsUsed, 2) // X + nový claim
-    assert.equal(byLabel(r, 'critic:').length, 1, 'po posledním kole critic nemá smysl')
+    assert.equal(r.value.stats.claimsUsed, 2) // X + new claim
+    assert.equal(byLabel(r, 'critic:').length, 1, 'after the last round the critic makes no sense')
   })
 
-  test('kolo bez nových claimů ukončí rešerši (dry)', async () => {
+  test('round without new claims ends the research (dry)', async () => {
     const r = await run('deep-research', { question: 'Q', rounds: 3 }, (c, i) => {
       if (c.label.startsWith('critic:')) return { complete: false, missing: [{ aspect: 'a', why: 'w', suggestedQuery: 'q' }] }
       if (c.label.startsWith('sweep:r2:')) return { claims: [claim('X is slow.', 'https://a.example/1')] }
@@ -499,49 +499,49 @@ describe('deep-research (skutečný host, mock agenti)', { skip: SKIP }, () => {
     assert.equal(r.value.stats.rounds, 2)
   })
 
-  test('zamítnuté claimy se nevracejí do dalšího kola (dedup vůči všem viděným)', async () => {
+  test('rejected claims do not come back in the next round (dedup against all seen)', async () => {
     const r = await run('deep-research', { question: 'Q', rounds: 2 }, (c, i) => {
       if (c.label.startsWith('critic:')) return { complete: false, missing: [{ aspect: 'a', why: 'w', suggestedQuery: 'q' }] }
       if (c.label.startsWith('sweep:r2:')) return { claims: [claim('Z causes W.', 'https://c.example/3')] }
       return base(c, i)
     })
-    assert.equal(byLabel(r, 'verify:src:').length, 2, 'Z se neověřuje podruhé')
+    assert.equal(byLabel(r, 'verify:src:').length, 2, 'Z is not verified a second time')
   })
 
-  test('contradicted → sporné claimy jsou vyděleny a syntéza je dostane označené', async () => {
+  test('contradicted → disputed claims are separated and synthesis gets them marked', async () => {
     const r = await run('deep-research', { question: 'Q' }, (c, i) =>
-      c.label.startsWith('verify:corr:') ? { status: 'contradicted', otherUrls: [], note: 'protiargument' } : base(c, i))
+      c.label.startsWith('verify:corr:') ? { status: 'contradicted', otherUrls: [], note: 'counter-argument' } : base(c, i))
     assert.equal(r.value.stats.disputed, 1)
     assert.equal(r.value.disputed.length, 1)
     assert.match(byLabel(r, 'synthesize:')[0].prompt, /"status": "disputed"/)
   })
 
-  test('selhání korroborace degraduje na single-source, ne na ztrátu claimu', async () => {
+  test('corroboration failure degrades to single-source, not claim loss', async () => {
     const r = await run('deep-research', { question: 'Q' }, (c, i) => (c.label.startsWith('verify:corr:') ? null : base(c, i)))
     assert.equal(r.value.stats.singleSource, 1)
   })
 
-  test('všechny průzkumy selhaly → answer null a důvod, bez syntézy', async () => {
+  test('all sweeps failed → answer null and reason, no synthesis', async () => {
     const r = await run('deep-research', { question: 'Q' }, (c) => (c.label.startsWith('sweep:') ? null : undefined))
     assert.equal(r.value.answer, null)
-    assert.match(r.value.note, /žádný claim/)
+    assert.match(r.value.note, /No claim could be verified/)
     assert.equal(byLabel(r, 'synthesize:').length, 0)
   })
 
-  test('selhání syntézy vrátí ověřené claimy', async () => {
+  test('synthesis failure returns verified claims', async () => {
     const r = await run('deep-research', { question: 'Q' }, (c, i) => (c.label.startsWith('synthesize:') ? null : base(c, i)))
     assert.equal(r.value.answer, null)
     assert.equal(r.value.claims.length, 1)
   })
 
-  test('vyčerpaný rozpočet při syntéze: ověřené claimy se vrátí, stoppedBecause budget (ne výjimka)', async () => {
+  test('budget exhausted during synthesis: verified claims returned, stoppedBecause budget (not exception)', async () => {
     const r = await run(
       'deep-research',
       { question: 'Q' },
       (c, i, view) => {
         if (c.label.startsWith('synthesize:')) {
           view![2] =1
-          throw new BudgetExceededError('Vyčerpán rozpočet v USD (1.0000 z 1).')
+          throw new BudgetExceededError('USD budget exhausted (1.0000 of 1).')
         }
         return base(c, i, view)
       },
@@ -550,16 +550,16 @@ describe('deep-research (skutečný host, mock agenti)', { skip: SKIP }, () => {
     assert.equal(r.value.answer, null)
     assert.equal(r.value.claims.length, 1)
     assert.equal(r.value.stats.stoppedBecause, 'budget')
-    assert.match(r.value.note, /rozpočet/i)
+    assert.match(r.value.note, /budget/i)
   })
 
-  test('USD rozpočet pod prahem ukončí rešerši před dalším kolem (stoppedBecause budget)', async () => {
+  test('USD budget below threshold ends research before another round (stoppedBecause budget)', async () => {
     const r = await run(
       'deep-research',
       { question: 'Q', rounds: 3 },
       (c, i, view) => {
         if (c.label.startsWith('critic:')) {
-          view![2] =9.5 // zbývá 0.5 USD z 10
+          view![2] =9.5 // 0.5 USD left of 10
           return { complete: false, missing: [{ aspect: 'a', why: 'w', suggestedQuery: 'q' }] }
         }
         return base(c, i, view)
@@ -568,17 +568,17 @@ describe('deep-research (skutečný host, mock agenti)', { skip: SKIP }, () => {
     )
     assert.equal(byLabel(r, 'sweep:r2:').length, 0)
     assert.equal(r.value.stats.stoppedBecause, 'budget')
-    assert.ok(r.value.answer, 'syntéza z ověřených claimů proběhne')
+    assert.ok(r.value.answer, 'synthesis from verified claims runs')
   })
 
-  test('rozpočet vyčerpán už při průzkumech: answer null s důvodem budget, ne „dry“/„rounds“', async () => {
+  test('budget exhausted already during sweeps: answer null with reason budget, not "dry"/"rounds"', async () => {
     const r = await run(
       'deep-research',
       { question: 'Q' },
       (c, i, view) => {
         if (c.label.startsWith('sweep:')) {
           view![2] =1
-          throw new BudgetExceededError('Vyčerpán rozpočet v USD (1.0000 z 1).')
+          throw new BudgetExceededError('USD budget exhausted (1.0000 of 1).')
         }
         return base(c, i, view)
       },
@@ -586,43 +586,43 @@ describe('deep-research (skutečný host, mock agenti)', { skip: SKIP }, () => {
     )
     assert.equal(r.value.answer, null)
     assert.equal(r.value.stats.stoppedBecause, 'budget')
-    assert.match(r.value.note, /rozpočet/i)
+    assert.match(r.value.note, /budget/i)
     assert.equal(byLabel(r, 'synthesize:').length, 0)
   })
 
-  test('critic vyhodí chybu rozpočtu: skončí se na budget a syntéza proběhne z toho, co je', async () => {
+  test('critic throws a budget error: ends with budget and synthesis runs from what is there', async () => {
     const r = await run('deep-research', { question: 'Q', rounds: 2 }, (c, i, v) => {
-      if (c.label.startsWith('critic:')) throw new BudgetExceededError('Vyčerpán rozpočet výstupních tokenů (10 z 10).')
+      if (c.label.startsWith('critic:')) throw new BudgetExceededError('Output token budget exhausted (10 of 10).')
       return base(c, i, v)
     })
     assert.equal(r.value.stats.stoppedBecause, 'budget')
     assert.ok(r.value.answer)
   })
 
-  test('modalities omezí průzkumy; neznámá modalita a chybějící otázka vyhodí chybu', async () => {
+  test('modalities limit sweeps; unknown modality and missing question throw an error', async () => {
     const r = await run('deep-research', { question: 'Q', modalities: ['primary'] }, base)
     assert.equal(byLabel(r, 'sweep:r1:').length, 1)
-    await assert.rejects(run('deep-research', { question: 'Q', modalities: ['nope'] }, base), /modalit/)
+    await assert.rejects(run('deep-research', { question: 'Q', modalities: ['nope'] }, base), /known modality/)
     await assert.rejects(run('deep-research', {}, base), /args\.question/)
   })
 
-  test('maxClaims ořízne ověřování a zahozené claimy zaloguje', async () => {
+  test('maxClaims truncates verification and logs dropped claims', async () => {
     const r = await run('deep-research', { question: 'Q', maxClaims: 1 }, base)
     assert.equal(byLabel(r, 'verify:src:').length, 1)
-    assert.ok(r.logs.some((l) => /neověřeno/.test(l)), r.logs.join('\n'))
+    assert.ok(r.logs.some((l) => /not verified/.test(l)), r.logs.join('\n'))
   })
 })
 
 // ───────── php8-upgrade ─────────
 
-describe('php8-upgrade (skutečný host, mock agenti)', { skip: SKIP }, () => {
+describe('php8-upgrade (real host, mock agents)', { skip: SKIP }, () => {
   const partitions = [
     { key: 'app', paths: ['app', './src/'] },
     { key: 'lib', paths: ['include/lib'] },
     { key: 'pdf', paths: ['include/mpdf'], notes: 'bundled' },
   ]
-  const fixed = (key: string) => ({ partition: key, filesChanged: ['x.php'], summary: 'souhrn ' + key, lintClean: true, residualRisks: [], outsidePartition: [] })
-  const reviewed = (key: string) => ({ partition: key, verdict: 'ok', issuesFound: [], summary: 'review ' + key, outsidePartition: key === 'lib' ? ['app/a.php:3 změnit X'] : [] })
+  const fixed = (key: string) => ({ partition: key, filesChanged: ['x.php'], summary: 'summary ' + key, lintClean: true, residualRisks: [], outsidePartition: [] })
+  const reviewed = (key: string) => ({ partition: key, verdict: 'ok', issuesFound: [], summary: 'review ' + key, outsidePartition: key === 'lib' ? ['app/a.php:3 change X'] : [] })
 
   const base: Handler = (c) => {
     if (c.label === 'core:cross-cutting') return { partition: 'core', filesChanged: ['b.php'], summary: 'CORE-SUMMARY', lintClean: true, residualRisks: [], outsidePartition: [] }
@@ -631,36 +631,36 @@ describe('php8-upgrade (skutečný host, mock agenti)', { skip: SKIP }, () => {
     return undefined
   }
 
-  test('Core → pipeline(Fix → Review): počty volání, fáze a předání výsledků', async () => {
+  test('Core → pipeline(Fix → Review): call counts, phases and result passing', async () => {
     const r = await run('php8-upgrade', { root: '/var/www/app/', partitions }, base)
     assert.equal(r.calls.length, 1 + 3 + 3)
     assert.deepEqual(r.phases, ['Core'])
     assert.equal(r.calls[0].label, 'core:cross-cutting')
-    // fixeři dostanou shrnutí Core, revieweři shrnutí fixeru
+    // fixers get the Core summary, reviewers the fixer's summary
     assert.match(byLabel(r, 'fix:app')[0].prompt, /CORE-SUMMARY/)
-    assert.match(byLabel(r, 'review:app')[0].prompt, /souhrn app/)
+    assert.match(byLabel(r, 'review:app')[0].prompt, /summary app/)
     assert.match(byLabel(r, 'fix:app')[0].prompt, /\/var\/www\/app\/app, \/var\/www\/app\/src/)
     assert.equal(r.value.partitions.length, 3)
     assert.deepEqual(r.value.unreviewed, [])
-    assert.deepEqual(r.value.outsidePartition, ['lib: app/a.php:3 změnit X'])
-    // lomítko na konci rootu se normalizuje
+    assert.deepEqual(r.value.outsidePartition, ['lib: app/a.php:3 change X'])
+    // the trailing slash of the root is normalized
     assert.ok(!byLabel(r, 'fix:app')[0].prompt.includes('/var/www/app//'))
   })
 
-  test('selhání fixeru → reviewer dostane pokyn udělat celou práci sám', async () => {
+  test('fixer failure → reviewer is told to do the whole job itself', async () => {
     const r = await run('php8-upgrade', { root: '/r', partitions }, (c, i) => (c.label === 'fix:lib' ? null : base(c, i)))
     assert.match(byLabel(r, 'review:lib')[0].prompt, /FIXER FAILED/)
     assert.doesNotMatch(byLabel(r, 'review:app')[0].prompt, /FIXER FAILED/)
   })
 
-  test('selhání Core agenta neshodí běh a je v promptech zmíněno', async () => {
+  test('Core agent failure does not break the run and is mentioned in prompts', async () => {
     const r = await run('php8-upgrade', { root: '/r', partitions }, (c, i) => (c.label.startsWith('core:') ? null : base(c, i)))
     assert.equal(r.value.core, null)
     assert.match(byLabel(r, 'fix:app')[0].prompt, /core agent failed/)
-    assert.ok(r.logs.some((l) => /Core agent selhal/.test(l)))
+    assert.ok(r.logs.some((l) => /Core agent failed/.test(l)))
   })
 
-  test('oddíl, jehož reviewer vrátil null, je v unreviewed; problems se hlásí', async () => {
+  test('partition whose reviewer returned null is in unreviewed; problems are reported', async () => {
     const r = await run('php8-upgrade', { root: '/r', partitions }, (c, i) => {
       if (c.label === 'review:pdf') return null
       if (c.label === 'review:app') return { ...reviewed('app'), verdict: 'problems' }
@@ -670,47 +670,47 @@ describe('php8-upgrade (skutečný host, mock agenti)', { skip: SKIP }, () => {
     assert.deepEqual(r.value.problems, ['app'])
   })
 
-  test('překrývající se oddíly se odmítnou před spuštěním jakéhokoli agenta', async () => {
+  test('overlapping partitions are rejected before any agent starts', async () => {
     const calls: string[] = []
     const bad = [{ key: 'a', paths: ['app'] }, { key: 'b', paths: ['app/models/'] }]
     await assert.rejects(
       run('php8-upgrade', { root: '/r', partitions: bad }, (c) => { calls.push(c.label); return undefined }),
-      /překrývají/,
+      /overlap/,
     )
     assert.equal(calls.length, 0)
-    // stejný prefix jména, ale jiný adresář, překryv NENÍ
+    // same name prefix but different directory is NOT an overlap
     const ok = await run('php8-upgrade', { root: '/r', partitions: [{ key: 'a', paths: ['app'] }, { key: 'b', paths: ['app2'] }] }, base)
     assert.equal(ok.value.partitions.length, 2)
   })
 
-  test('překryv oddílů se pozná i v jiném zápisu téže cesty (., prázdná, absolutní, .., //, /./)', async () => {
+  test('overlap is detected even in a different notation of the same path (., empty, absolute, .., //, /./)', async () => {
     const cases: Array<[string, string[], string[]]> = [
-      ['celý kořen "."', ['.'], ['app']],
-      ['prázdná cesta', [''], ['app']],
-      ['absolutní cesta pod root', ['/var/www/app/app'], ['app']],
+      ['whole root "."', ['.'], ['app']],
+      ['empty path', [''], ['app']],
+      ['absolute path under root', ['/var/www/app/app'], ['app']],
       ['app/../app', ['app/../app'], ['app/x']],
-      ['dvojité lomítko', ['app//lib'], ['app/lib/x']],
-      ['tečka uvnitř', ['app/./lib'], ['app/lib/x']],
+      ['double slash', ['app//lib'], ['app/lib/x']],
+      ['dot inside', ['app/./lib'], ['app/lib/x']],
     ]
     for (const [name, a, b] of cases) {
       const calls: string[] = []
       await assert.rejects(
         run('php8-upgrade', { root: '/var/www/app', partitions: [{ key: 'a', paths: a }, { key: 'b', paths: b }] }, (c) => { calls.push(c.label); return undefined }),
-        /překrývají/,
+        /overlap/,
         name,
       )
       assert.equal(calls.length, 0, name)
     }
   })
 
-  test('cesta oddílu mimo root (.. nad kořen, cizí absolutní cesta) se odmítne; stejný prefix jména není překryv', async () => {
+  test('partition path outside root (.. above root, foreign absolute path) is rejected; same name prefix is not overlap', async () => {
     await assert.rejects(
       run('php8-upgrade', { root: '/var/www/app', partitions: [{ key: 'a', paths: ['../other'] }] }, base),
-      /root|kořen/i,
+      /root/i,
     )
     await assert.rejects(
       run('php8-upgrade', { root: '/var/www/app', partitions: [{ key: 'a', paths: ['/etc/passwd'] }] }, base),
-      /root|kořen/i,
+      /root/i,
     )
     const ok = await run(
       'php8-upgrade',
@@ -720,22 +720,22 @@ describe('php8-upgrade (skutečný host, mock agenti)', { skip: SKIP }, () => {
     assert.equal(ok.value.partitions.length, 2)
   })
 
-  test('chybné vstupy: root, partitions, duplicitní klíč', async () => {
+  test('invalid inputs: root, partitions, duplicate key', async () => {
     await assert.rejects(run('php8-upgrade', { partitions }, base), /args\.root/)
-    await assert.rejects(run('php8-upgrade', { root: 'relativni', partitions }, base), /args\.root/)
+    await assert.rejects(run('php8-upgrade', { root: 'relative', partitions }, base), /args\.root/)
     await assert.rejects(run('php8-upgrade', { root: '/r' }, base), /args\.partitions/)
-    await assert.rejects(run('php8-upgrade', { root: '/r', partitions: [{ key: 'a', paths: ['x'] }, { key: 'a', paths: ['y'] }] }, base), /Duplicitní/)
+    await assert.rejects(run('php8-upgrade', { root: '/r', partitions: [{ key: 'a', paths: ['x'] }, { key: 'a', paths: ['y'] }] }, base), /Duplicate/)
     await assert.rejects(run('php8-upgrade', { root: '/r', partitions: [{ key: 'a', paths: [] }] }, base), /paths/)
   })
 
-  test('goal, description a coreTasks se promítnou do promptů', async () => {
+  test('goal, description and coreTasks propagate into prompts', async () => {
     const r = await run('php8-upgrade', {
-      root: '/r', partitions: [partitions[0]], goal: 'cíl-GOAL-8.4', description: 'popis-DESC', coreTasks: ['jediný-úkol-TASK'],
+      root: '/r', partitions: [partitions[0]], goal: 'goal-GOAL-8.4', description: 'description-DESC', coreTasks: ['single-task-TASK'],
     }, base)
     const core = r.calls[0].prompt
-    assert.match(core, /cíl-GOAL-8\.4/)
-    assert.match(core, /popis-DESC/)
-    assert.match(core, /1\. jediný-úkol-TASK/)
-    assert.doesNotMatch(core, /delegating old-name method/, 'výchozí úkoly se nahrazují, ne doplňují')
+    assert.match(core, /goal-GOAL-8\.4/)
+    assert.match(core, /description-DESC/)
+    assert.match(core, /1\. single-task-TASK/)
+    assert.doesNotMatch(core, /delegating old-name method/, 'default tasks are replaced, not appended')
   })
 })

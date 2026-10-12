@@ -1,4 +1,4 @@
-/** Sdílené pomůcky testů CLI: zachycení I/O, podvržený store/discovery/engine. */
+/** Shared helpers for CLI tests: I/O capture, fake store/discovery/engine. */
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -86,13 +86,13 @@ export function makeDiscovery(workflows: WorkflowInfo[] = [], map: Record<string
     listWorkflows: () => workflows,
     findWorkflow: (ref) => {
       const p = map[ref]
-      if (!p) throw Object.assign(new Error(`Workflow „${ref}“ nenalezeno.`), { code: 'WORKFLOW_NOT_FOUND' })
+      if (!p) throw Object.assign(new Error(`Workflow “${ref}” not found.`), { code: 'WORKFLOW_NOT_FOUND' })
       return p
     },
   }
 }
 
-/** Engine, který zaznamená volání a vrátí zadané shrnutí (případně pošle události přes onEvent). */
+/** Engine that records calls and returns the given summary (optionally emitting events via onEvent). */
 export function fakeEngine(result: RunSummary | ((o: RunOptions) => Promise<RunSummary> | RunSummary), events: RunEvent[] = []) {
   const calls: RunOptions[] = []
   const runWorkflow: NonNullable<CliDeps['runWorkflow']> = async (opts) => {

@@ -1,6 +1,6 @@
 /**
- * Lehká integrace CLI se SKUTEČNÝM enginem, store a discovery nad falešným claude.
- * Přeskočí se, pokud runtime ještě není kompletní (host skriptu nebo fake claude chybí).
+ * Light CLI integration with the REAL engine, store and discovery on top of a fake claude.
+ * Skipped if the runtime is not complete yet (script host or fake claude is missing).
  */
 import assert from 'node:assert/strict'
 import { existsSync } from 'node:fs'
@@ -15,16 +15,16 @@ const READY = existsSync(join(ROOT, 'src', 'script', 'host.ts')) && existsSync(j
 
 const SCRIPT = `export const meta = {
   name: 'cli-int',
-  description: 'integrační test CLI',
-  phases: [{ title: 'Jedna' }],
+  description: 'CLI integration test',
+  phases: [{ title: 'One' }],
 }
-phase('Jedna')
+phase('One')
 log('start ' + JSON.stringify(args))
-const r = await agent('Vrať pozdrav [[fake:json {"greeting":"ahoj"}]]', { label: 'pozdrav', schema: { type: 'object', properties: { greeting: { type: 'string' } }, required: ['greeting'] } })
+const r = await agent('Return a greeting [[fake:json {"greeting":"hello"}]]', { label: 'greeting', schema: { type: 'object', properties: { greeting: { type: 'string' } }, required: ['greeting'] } })
 return { greeting: r && r.greeting, args }
 `
 
-describe('integrace s reálným enginem a falešným claude', { skip: !READY && 'runtime ještě není kompletní' }, () => {
+describe('integration with the real engine and a fake claude', { skip: !READY && 'runtime is not complete yet' }, () => {
   it('run → status → logs → list → resume (100 % cache)', async () => {
     const prevBin = process.env.ULTRACODE_CLAUDE_BIN
     process.env.ULTRACODE_CLAUDE_BIN = FAKE
@@ -32,21 +32,21 @@ describe('integrace s reálným enginem a falešným claude', { skip: !READY && 
       const cwd = tmpDir('uc-int-')
       writeFile(join(cwd, '.ultracode', 'workflows', 'cli-int.workflow.ts'), SCRIPT)
 
-      // run přes jméno workflow (discovery)
+      // run by workflow name (discovery)
       const run = makeIO({ cwd })
       const code = await main(['run', 'cli-int', '--args', '{"k":1}', '--cwd', cwd, '--concurrency', '2'], run.io, {})
       assert.equal(code, 0, run.err())
-      assert.deepEqual(JSON.parse(run.out()), { greeting: 'ahoj', args: { k: 1 } })
-      assert.match(run.err(), /== Fáze: Jedna/)
+      assert.deepEqual(JSON.parse(run.out()), { greeting: 'hello', args: { k: 1 } })
+      assert.match(run.err(), /== Phase: One/)
       assert.match(run.err(), /\[log\] start \{"k":1\}/)
-      assert.match(run.err(), /#1 hotovo +pozdrav/)
-      const runId = /Běh: {6}(\S+)/.exec(run.err())?.[1]
-      assert.ok(runId, 'souhrn musí obsahovat runId')
+      assert.match(run.err(), /#1 done +greeting/)
+      const runId = /Run: {6}(\S+)/.exec(run.err())?.[1]
+      assert.ok(runId, 'summary must contain runId')
 
       const status = makeIO({ cwd })
       assert.equal(await main(['status', runId, '--cwd', cwd], status.io, {}), 0)
-      assert.match(status.out(), /Stav: {5}completed/)
-      assert.match(status.out(), /#1 {2}hotovo {2}pozdrav/)
+      assert.match(status.out(), /Status: {3}completed/)
+      assert.match(status.out(), /#1 {2}done {2}greeting/)
 
       const latest = makeIO({ cwd })
       assert.equal(await main(['status', '--cwd', cwd], latest.io, {}), 0)
@@ -54,30 +54,30 @@ describe('integrace s reálným enginem a falešným claude', { skip: !READY && 
 
       const logs = makeIO({ cwd })
       assert.equal(await main(['logs', runId, '--cwd', cwd], logs.io, {}), 0)
-      assert.match(logs.out(), /== Konec: completed/)
+      assert.match(logs.out(), /== End: completed/)
 
       const agent = makeIO({ cwd })
       assert.equal(await main(['logs', runId, '--agent', '1', '--cwd', cwd], agent.io, {}), 0)
-      assert.match(agent.out(), /-- Prompt --\n.*Vrať pozdrav/)
+      assert.match(agent.out(), /-- Prompt --\n.*Return a greeting/)
 
       const list = makeIO({ cwd })
       assert.equal(await main(['list', '--cwd', cwd], list.io, {}), 0)
       assert.match(list.out(), new RegExp(`${runId}\\s+cli-int\\s+completed`))
-      assert.match(list.out(), /cli-int {2}projekt/)
+      assert.match(list.out(), /cli-int {2}project/)
 
-      // resume: stejný skript i args z běhu → agent z cache
+      // resume: same script and args from the run → agent from cache
       const resumed = makeIO({ cwd })
       const code2 = await main(['resume', runId, '--cwd', cwd], resumed.io, {})
       assert.equal(code2, 0, resumed.err())
-      assert.deepEqual(JSON.parse(resumed.out()), { greeting: 'ahoj', args: { k: 1 } })
-      assert.match(resumed.err(), /#\d+ cache +pozdrav/)
+      assert.deepEqual(JSON.parse(resumed.out()), { greeting: 'hello', args: { k: 1 } })
+      assert.match(resumed.err(), /#\d+ cache +greeting/)
     } finally {
       if (prevBin === undefined) delete process.env.ULTRACODE_CLAUDE_BIN
       else process.env.ULTRACODE_CLAUDE_BIN = prevBin
     }
   })
 
-  it('neplatný skript → exit 2 (engine hází ScriptValidationError)', async () => {
+  it('invalid script → exit 2 (engine throws ScriptValidationError)', async () => {
     const cwd = tmpDir('uc-int-')
     writeFile(join(cwd, 'bad.workflow.ts'), 'const x = 1\nreturn x\n')
     const cap = makeIO({ cwd })
@@ -86,10 +86,10 @@ describe('integrace s reálným enginem a falešným claude', { skip: !READY && 
     assert.equal(cap.out(), '')
   })
 
-  it('neznámé workflow → exit 2', async () => {
+  it('unknown workflow → exit 2', async () => {
     const cwd = tmpDir('uc-int-')
     const cap = makeIO({ cwd })
-    assert.equal(await main(['run', 'neexistuje-xyz', '--cwd', cwd], cap.io, {}), 2)
-    assert.match(cap.err(), /nenalezeno/)
+    assert.equal(await main(['run', 'does-not-exist-xyz', '--cwd', cwd], cap.io, {}), 2)
+    assert.match(cap.err(), /not found/)
   })
 })

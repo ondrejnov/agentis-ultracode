@@ -7,7 +7,7 @@ import { UsageError } from '../types.ts'
 
 export type OptValues = Record<string, string | boolean | undefined>
 
-/** Absolutní cwd z `--cwd` (relativně k cwd procesu); musí existovat jako adresář. */
+/** Absolute cwd from `--cwd` (relative to the process cwd); must exist as a directory. */
 export function resolveCwd(ctx: CommandContext, values: OptValues): string {
   const raw = typeof values.cwd === 'string' ? values.cwd : undefined
   const abs = resolve(ctx.io.cwd, raw ?? '.')
@@ -18,12 +18,12 @@ export function resolveCwd(ctx: CommandContext, values: OptValues): string {
     } catch {
       ok = false
     }
-    if (!ok) throw new UsageError(`Adresář --cwd „${raw}“ neexistuje (${abs}).`)
+    if (!ok) throw new UsageError(`Directory --cwd "${raw}" does not exist (${abs}).`)
   }
   return abs
 }
 
-/** Barvy jen na TTY, bez NO_COLOR, bez TERM=dumb a bez --no-color. */
+/** Colors only on a TTY, without NO_COLOR, without TERM=dumb and without --no-color. */
 export function styleFor(ctx: CommandContext, values: OptValues): Style {
   const env = ctx.io.env
   const enabled =
@@ -34,14 +34,14 @@ export function styleFor(ctx: CommandContext, values: OptValues): Style {
   return makeStyle(enabled)
 }
 
-/** Stejná pravidla jako store: žádné `/`, `..`, bílé znaky. */
+/** Same rules as the store: no `/`, `..`, or whitespace. */
 export function assertSafeRunId(runId: string, what = 'runId'): void {
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(runId)) {
-    throw new UsageError(`Neplatné ${what} „${runId}“ (povoleno: písmena, číslice, _ . -; max. 128 znaků).`)
+    throw new UsageError(`Invalid ${what} "${runId}" (allowed: letters, digits, _ . -; max. 128 characters).`)
   }
 }
 
-/** Odsazení JSON na stdout: jen když stdout je terminál. */
+/** JSON indentation on stdout: only when stdout is a terminal. */
 export function jsonIndent(io: { isTTY?: boolean; stdoutIsTTY?: boolean }): number | undefined {
   return (io.stdoutIsTTY ?? io.isTTY) ? 2 : undefined
 }
@@ -55,7 +55,7 @@ export function errorLine(ctx: CommandContext, message: string): void {
   ctx.io.stderr.write(`ultracode: ${message}\n`)
 }
 
-/** Odkaz na workflow vypadá jako cesta (ne jako jméno k vyhledání). */
+/** A workflow reference looks like a path (not like a name to search for). */
 export function looksLikePath(ref: string): boolean {
   return ref.includes('/') || ref.includes('\\') || /\.(m?[jt]s|cjs|cts)$/.test(ref)
 }

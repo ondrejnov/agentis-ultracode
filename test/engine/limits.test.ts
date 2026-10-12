@@ -5,8 +5,8 @@ import { resolveConcurrency, runWorkflow } from '../../src/engine/engine.ts'
 import { Semaphore } from '../../src/engine/semaphore.ts'
 import { eventsOf, journalOf, makeProject, makeRunner, scriptDeps } from './helpers.ts'
 
-describe('souběžnost (semafor)', () => {
-  test('opts.concurrency je skutečně dodržen (a využit)', async () => {
+describe('concurrency (semaphore)', () => {
+  test('opts.concurrency is really respected (and used)', async () => {
     const p = makeProject()
     try {
       const stub = makeRunner({ delayMs: 25 })
@@ -24,7 +24,7 @@ describe('souběžnost (semafor)', () => {
     }
   })
 
-  test('concurrency 1 serializuje a zachová FIFO pořadí startu; id agentů = pořadí startu', async () => {
+  test('concurrency 1 serializes and keeps FIFO start order; agent ids = start order', async () => {
     const p = makeProject()
     try {
       const stub = makeRunner({ delayMs: 5 })
@@ -47,7 +47,7 @@ describe('souběžnost (semafor)', () => {
     }
   })
 
-  test('env ULTRACODE_MAX_CONCURRENCY se použije, opts.concurrency ho přebíjí', async () => {
+  test('env ULTRACODE_MAX_CONCURRENCY is used, opts.concurrency overrides it', async () => {
     const p = makeProject()
     const prev = process.env.ULTRACODE_MAX_CONCURRENCY
     try {
@@ -66,7 +66,7 @@ describe('souběžnost (semafor)', () => {
     }
   })
 
-  test('resolveConcurrency: default min(16, max(1, cpus-2)), neplatné hodnoty se ignorují', () => {
+  test('resolveConcurrency: default min(16, max(1, cpus-2)), invalid values are ignored', () => {
     const expected = Math.min(16, Math.max(1, availableParallelism() - 2))
     assert.equal(resolveConcurrency(undefined, {}), expected)
     assert.equal(resolveConcurrency(undefined, { ULTRACODE_MAX_CONCURRENCY: 'abc' }), expected)
@@ -77,7 +77,7 @@ describe('souběžnost (semafor)', () => {
     assert.equal(resolveConcurrency(2.9, {}), 2)
   })
 
-  test('Semaphore: abort vyřadí čekatele a slot se nikdy neztratí', async () => {
+  test('Semaphore: abort removes waiters and a slot is never lost', async () => {
     const sem = new Semaphore(1)
     const r1 = await sem.acquire()
     const ac = new AbortController()
@@ -87,7 +87,7 @@ describe('souběžnost (semafor)', () => {
     await assert.rejects(waiting, (e: any) => e.code === 'ABORTED')
     assert.equal(sem.waiting, 1)
     r1()
-    r1() // idempotentní
+    r1() // idempotent
     const r2 = await waiting2
     assert.equal(sem.inUse, 1)
     r2()
@@ -98,8 +98,8 @@ describe('souběžnost (semafor)', () => {
   })
 })
 
-describe('limit agentů', () => {
-  test('maxAgents: další volání vyhodí BudgetExceededError, v parallel() se změní na null, běh doběhne', async () => {
+describe('agent limit', () => {
+  test('maxAgents: the next call throws BudgetExceededError, becomes null in parallel(), and the run finishes', async () => {
     const p = makeProject()
     try {
       const stub = makeRunner()
@@ -117,7 +117,7 @@ describe('limit agentů', () => {
     }
   })
 
-  test('maxAgents: nezachycená chyba ve skriptu → failed s budgetExceeded', async () => {
+  test('maxAgents: uncaught error in script → failed with budgetExceeded', async () => {
     const p = makeProject()
     try {
       const stub = makeRunner()
@@ -130,14 +130,14 @@ describe('limit agentů', () => {
       )
       assert.equal(summary.status, 'failed')
       assert.equal(summary.budgetExceeded, true)
-      assert.match(summary.error ?? '', /limit 2 agentů/)
+      assert.match(summary.error ?? '', /Agent limit of 2 per run exceeded/)
       assert.equal(stub.calls.length, 2)
     } finally {
       p.cleanup()
     }
   })
 
-  test('cache hity se do maxAgents počítají (každé volání agent() je agent), ale nespotřebují rozpočet', async () => {
+  test('cache hits count towards maxAgents (every agent() call is an agent), but do not consume the budget', async () => {
     const p = makeProject()
     try {
       const body = scriptDeps(async (api) => [await api.agent('a'), await api.agent('b')])
@@ -153,8 +153,8 @@ describe('limit agentů', () => {
   })
 })
 
-describe('rozpočet', () => {
-  test('výstupní tokeny: po dosažení stropu další agent() vyhodí, budget čte spotřebu přes SAB', async () => {
+describe('budget', () => {
+  test('output tokens: after the cap is reached the next agent() throws, budget reads usage via SAB', async () => {
     const p = makeProject()
     try {
       const stub = makeRunner({ outputTokens: 60 })
@@ -193,7 +193,7 @@ describe('rozpočet', () => {
     }
   })
 
-  test('USD: strop se dodrží a agentovi se předá zbývající částka jako --max-budget-usd', async () => {
+  test('USD: the cap is respected and the agent gets the remaining amount as --max-budget-usd', async () => {
     const p = makeProject()
     try {
       const stub = makeRunner({ costUsd: 0.03 })
@@ -222,7 +222,7 @@ describe('rozpočet', () => {
     }
   })
 
-  test('souběžně startující agenti: fronta za semaforem znovu zkontroluje rozpočet', async () => {
+  test('concurrently starting agents: the queue behind the semaphore re-checks the budget', async () => {
     const p = makeProject()
     try {
       const stub = makeRunner({ outputTokens: 30, delayMs: 5 })
@@ -230,7 +230,7 @@ describe('rozpočet', () => {
         { workflow: p.script(), cwd: p.cwd, runner: stub.runner, concurrency: 1, maxOutputTokens: 50 },
         scriptDeps(async (api) => api.parallel(Array.from({ length: 6 }, (_, i) => () => api.agent(`q${i}`)))),
       )
-      // 30 → 60 >= 50: dál už nikdo nesmí odstartovat, ač všech 6 volání prošlo první kontrolou
+      // 30 → 60 >= 50: nobody else may start, even though all 6 calls passed the first check
       assert.equal(stub.calls.length, 2)
       assert.deepEqual(summary.result, ['out:q0', 'out:q1', null, null, null, null])
       assert.equal(summary.budgetExceeded, true)
@@ -240,7 +240,7 @@ describe('rozpočet', () => {
     }
   })
 
-  test('selhaný agent také spotřebuje rozpočet (tokeny a USD se ztratily)', async () => {
+  test('a failed agent also consumes the budget (tokens and USD are lost)', async () => {
     const p = makeProject()
     try {
       const stub = makeRunner({ outputTokens: 40, costUsd: 0.01, fail: () => 'boom' })
@@ -260,7 +260,7 @@ describe('rozpočet', () => {
     }
   })
 
-  test('bez limitů je budget.total null a spotřeba se přesto počítá', async () => {
+  test('without limits budget.total is null and usage is still counted', async () => {
     const p = makeProject()
     try {
       const summary = await runWorkflow(

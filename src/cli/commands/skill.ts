@@ -9,7 +9,7 @@ import { errorLine, errorMessage, resolveCwd } from './shared.ts'
 
 export const SKILL_NAME = 'ultracode-workflow'
 
-/** Relativní cesty všech souborů pod `dir` (rekurzivně, seřazené). */
+/** Relative paths of all files under `dir` (recursive, sorted). */
 function listFiles(dir: string, base = ''): string[] {
   const out: string[] = []
   for (const entry of readdirSync(join(dir, base), { withFileTypes: true })) {
@@ -44,19 +44,19 @@ export async function skillCommand(ctx: CommandContext, argv: string[]): Promise
   const { io } = ctx
   const [sub, ...rest] = argv
   if (sub === undefined || sub.startsWith('-')) {
-    // `ultracode skill --help` obslouží cli.ts; zde jde o chybějící podpříkaz
-    throw new UsageError('Chybí podpříkaz. Použití: ultracode skill install [--user|--project] [--force]')
+    // `ultracode skill --help` is handled by cli.ts; here the subcommand is missing
+    throw new UsageError('Missing subcommand. Usage: ultracode skill install [--user|--project] [--force]')
   }
-  if (sub !== 'install') throw new UsageError(`Neznámý podpříkaz „skill ${sub}“. Podporováno: skill install`)
+  if (sub !== 'install') throw new UsageError(`Unknown subcommand "skill ${sub}". Supported: skill install`)
 
   const parsed = parseCommandLine('skill', rest)
-  if (parsed.positionals.length > 0) throw new UsageError('Příkaz skill install nebere žádné argumenty.')
+  if (parsed.positionals.length > 0) throw new UsageError('The skill install command takes no arguments.')
   const wantUser = bool(parsed.values.user)
   const wantProject = bool(parsed.values.project)
-  if (wantUser && wantProject) throw new UsageError('Volby --user a --project nelze použít současně.')
+  if (wantUser && wantProject) throw new UsageError('The --user and --project options cannot be used together.')
   const force = bool(parsed.values.force)
 
-  // cíl: ~/.claude/skills (respektuje CLAUDE_CONFIG_DIR) nebo <cwd>/.claude/skills
+  // target: ~/.claude/skills (respects CLAUDE_CONFIG_DIR) or <cwd>/.claude/skills
   let skillsBase: string
   if (wantProject) {
     skillsBase = join(resolveCwd(ctx, parsed.values), '.claude', 'skills')
@@ -69,7 +69,7 @@ export async function skillCommand(ctx: CommandContext, argv: string[]): Promise
 
   const source = join(ctx.packageRoot, 'skills', SKILL_NAME)
   if (!existsSync(join(source, 'SKILL.md'))) {
-    errorLine(ctx, `V balíčku chybí skill (${join(source, 'SKILL.md')}).`)
+    errorLine(ctx, `Skill is missing from the package (${join(source, 'SKILL.md')}).`)
     return 1
   }
 
@@ -79,12 +79,12 @@ export async function skillCommand(ctx: CommandContext, argv: string[]): Promise
     if (existing.length > 0 && !force) {
       const identical = existing.length === files.length && files.every((f) => sameContent(join(source, f), join(dest, f)))
       if (identical) {
-        io.stdout.write(`Skill je již nainstalován a aktuální: ${dest}\n`)
+        io.stdout.write(`Skill is already installed and up to date: ${dest}\n`)
         return 0
       }
       errorLine(
         ctx,
-        `Skill už existuje a liší se: ${dest}\n  Nic jsem nepřepsal. Pro přepsání použij --force.`,
+        `Skill already exists and differs: ${dest}\n  Nothing was overwritten. Use --force to overwrite.`,
       )
       return 2
     }
@@ -93,10 +93,10 @@ export async function skillCommand(ctx: CommandContext, argv: string[]): Promise
       mkdirSync(dirname(target), { recursive: true })
       copyFileSync(join(source, f), target)
     }
-    io.stdout.write(`Skill ${SKILL_NAME} nainstalován (${files.length} souborů): ${dest}\n`)
+    io.stdout.write(`Skill ${SKILL_NAME} installed (${files.length} files): ${dest}\n`)
     return 0
   } catch (e) {
-    errorLine(ctx, `Instalace skillu selhala: ${errorMessage(e)}`)
+    errorLine(ctx, `Skill installation failed: ${errorMessage(e)}`)
     return 1
   }
 }

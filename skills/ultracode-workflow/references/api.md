@@ -1,57 +1,57 @@
-# API workflow skriptů — úplný popis
+# Workflow script API — full description
 
-Platí pro `*.workflow.ts` (a `.js`) spouštěné přes `ultracode run`. Typy jsou v `types/workflow.d.ts`
-(`ultracode types` je zapíše jako `.ultracode/workflow.d.ts`). Skript nemá importy; vše níže jsou globály.
+Applies to `*.workflow.ts` (and `.js`) run via `ultracode run`. Types are in `types/workflow.d.ts`
+(`ultracode types` writes them as `.ultracode/workflow.d.ts`). The script has no imports; everything below is a global.
 
-## Obsah
+## Contents
 
-1. Tvar skriptu
+1. Script shape
 2. `meta`
-3. `agent()` — volby, návratové hodnoty, selhání
-4. `parallel()` a `pipeline()`
+3. `agent()` — options, return values, failures
+4. `parallel()` and `pipeline()`
 5. `phase()`, `log()`, `console`
 6. `args`
 7. `budget`
 8. `workflow()`
-9. Prostředí a determinismus
-10. Limity
-11. Chybové stavy a jejich zdroj
-12. Konvence `null`
-13. Cache a resume
-14. Co není podporováno
+9. Environment and determinism
+10. Limits
+11. Error states and their source
+12. The `null` convention
+13. Cache and resume
+14. What is not supported
 
 ---
 
-## 1. Tvar skriptu
+## 1. Script shape
 
 ```ts
 /// <reference path="../workflow.d.ts" />
 
-export const meta = { name: 'x', description: 'Ukázka tvaru skriptu' }   // 1) meta (první příkaz)
+export const meta = { name: 'x', description: 'Example of the script shape' }   // 1) meta (first statement)
 
-phase('Scan')                                                            // 2) tělo: top-level await
-const r = await agent<{ count: number }>('Spočítej soubory v src/ a vrať počet.', {
+phase('Scan')                                                            // 2) body: top-level await
+const r = await agent<{ count: number }>('Count the files in src/ and return the count.', {
   schema: { type: 'object', properties: { count: { type: 'number' } }, required: ['count'] },
 })
-return { count: r ? r.count : null }                                     // 3) návratová hodnota = výsledek běhu (JSON)
+return { count: r ? r.count : null }                                     // 3) return value = run result (JSON)
 ```
 
-- Tělo je `async` funkce: používej top-level `await` a `return`.
-- Povolený je jen jeden `export`: `export const meta`. Jiné `export`, `import`, `import()`, `require()` jsou
-  chyba při validaci.
-- TypeScript pouze „erasable“: typy, `interface`, `type`, `as`, `satisfies`, generika. Ne `enum`,
+- The body is an `async` function: use top-level `await` and `return`.
+- Only one `export` is allowed: `export const meta`. Any other `export`, `import`, `import()`, `require()` is an
+  error during validation.
+- TypeScript must be only "erasable": types, `interface`, `type`, `as`, `satisfies`, generics. Not `enum`,
   `namespace`, parameter properties, `import x = require()`.
-- `return` je výsledek běhu; musí jít serializovat do JSON (`undefined` → `null`).
+- `return` is the run result; it must be serializable to JSON (`undefined` → `null`).
 
 ## 2. `meta`
 
 ```ts
 export const meta = {
-  name: 'find-flaky-tests',          // povinné: [A-Za-z0-9][A-Za-z0-9_.-]*
-  description: 'Find flaky tests',   // povinné, neprázdné, jedna věta
-  whenToUse: 'Kdy workflow použít',  // volitelné
-  phases: [                          // volitelné
-    { title: 'Scan', detail: '…' },  // title povinné; detail, model volitelné
+  name: 'find-flaky-tests',          // required: [A-Za-z0-9][A-Za-z0-9_.-]*
+  description: 'Find flaky tests',   // required, non-empty, one sentence
+  whenToUse: 'When to use the workflow',  // optional
+  phases: [                          // optional
+    { title: 'Scan', detail: '…' },  // title required; detail, model optional
     { title: 'Fix', detail: '…', model: 'sonnet' },
   ],
 }
@@ -60,19 +60,19 @@ phase('Scan')
 phase('Fix')
 ```
 
-| Pravidlo | Důsledek při porušení |
+| Rule | Consequence when violated |
 | --- | --- |
-| čistý literál (žádné proměnné, volání, spread, šablony s `${}`) | chyba validace |
-| `name` a `description` jsou řetězce | chyba validace |
-| za objektem smí následovat jen `as const`, `satisfies T`, `;` | chyba validace |
-| první příkaz skriptu (před ním jen komentáře) | varování |
-| neznámý klíč v `meta` / `meta.phases[i]` | varování, klíč se ignoruje |
-| `phase('X')` nebo `phase: 'X'` s titulem, který není v `meta.phases` | varování |
-| titul v `meta.phases`, který skript nikdy nepoužije | varování (nehlásí se, je-li někde dynamické `phase(proměnná)`) |
-| duplicitní titul v `meta.phases` | varování |
+| pure literal (no variables, calls, spread, templates with `${}`) | validation error |
+| `name` and `description` are strings | validation error |
+| after the object only `as const`, `satisfies T`, `;` may follow | validation error |
+| first statement of the script (only comments before it) | warning |
+| unknown key in `meta` / `meta.phases[i]` | warning, the key is ignored |
+| `phase('X')` or `phase: 'X'` with a title that is not in `meta.phases` | warning |
+| a title in `meta.phases` that the script never uses | warning (not reported if a dynamic `phase(variable)` exists somewhere) |
+| duplicate title in `meta.phases` | warning |
 
-`meta.phases[i].model` je informativní (zobrazuje se); skutečný model určuje `agent({ model })`.
-Jméno workflow = `meta.name`; soubor se hledá podle jména souboru (`<jmeno>.workflow.ts`), proto je drž shodné.
+`meta.phases[i].model` is informational (it is displayed); the actual model is set by `agent({ model })`.
+The workflow name = `meta.name`; the file is looked up by file name (`<name>.workflow.ts`), so keep them identical.
 
 ## 3. `agent(prompt, opts?)`
 
@@ -81,79 +81,77 @@ declare function agent<T = any>(prompt: string, opts: AgentOptions & { schema: S
 declare function agent(prompt: string, opts?: AgentOptions): Promise<string | null>
 ```
 
-Spustí jednoho agenta (proces `claude -p`) a čeká na jeho dokončení.
+Starts one agent (a `claude -p` process) and waits for it to finish.
 
-- **Bez `schema`:** vrací finální text agenta (`string`).
-- **Se `schema`:** agent je donucen vrátit strukturovaný výstup; vrací ověřený objekt.
-- **`null`:** agent po všech pokusech selhal, nebo byl běh přerušen. Viz sekce 12.
-- **Výjimka:** jen chyba skriptu — neplatný prompt/volba/schema, překročený rozpočet nebo limit agentů.
+- **Without `schema`:** returns the agent's final text (`string`).
+- **With `schema`:** the agent is forced to return structured output; returns a validated object.
+- **`null`:** the agent failed after all attempts, or the run was aborted. See section 12.
+- **Exception:** only a script error — invalid prompt/option/schema, exceeded budget or agent limit.
 
-### Volby
+### Options
 
-| Volba | Typ | Default | Význam |
+| Option | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `label` | string | první řádek promptu (60 znaků) | popisek v logu, `status`, eventech; nepatří do klíče cache |
-| `phase` | string | aktuální `phase()` | explicitní fáze; **uvnitř `pipeline`/`parallel` vždy používej `phase:`**, globální `phase()` se mezi souběžnými úlohami přepisuje |
-| `schema` | JSON Schema | — | strukturovaný výstup; viz níže |
-| `model` | string | z `--model`, jinak model claude | alias (`sonnet`, `opus`, `haiku`) nebo plné jméno; raději nenastavuj |
-| `effort` | `'low'\|'medium'\|'high'\|'xhigh'\|'max'` | z `--effort`, jinak výchozí | úroveň uvažování |
-| `cwd` | string | cwd běhu (`--cwd`) | pracovní adresář agenta; relativně k cwd běhu; musí existovat |
-| `tools` | string[] | — | **skutečný whitelist** (`--allowedTools`, např. `['Read','Grep','Bash(git diff:*)']`): agent se zadaným `tools` běží v `--permission-mode dontAsk`, takže cokoli mimo seznam se odmítne (včetně MCP nástrojů a `Skill`, vyjmenuj je, mají-li být dostupné). Čtecí nástroje v cwd jsou povoleny vždy |
-| `disallowedTools` | string[] | — | `--disallowedTools`; **skutečně zakáže** nástroje (např. `['Edit','Write','NotebookEdit']`). `Workflow` je zakázán vždy |
-| `systemPrompt` | string | — | přidá se ZA výchozí system prompt subagenta (`--append-system-prompt`) |
-| `stallMs` | number > 0 | 600 000 | ticho na výstupu, po kterém se agent zabije a zkusí znovu |
-| `timeoutMs` | number > 0 | žádný | tvrdý limit délky jednoho pokusu; po něm selhání bez opakování |
-| `maxUsd` | number > 0 | — | strop útrat jednoho agenta (`--max-budget-usd`); při `--max-usd` se omezí na zbytek rozpočtu |
-| `noCache` | boolean | `false` | při resume neber uložený výsledek tohoto volání |
+| `label` | string | first line of the prompt (60 characters) | label in the log, `status`, events; not part of the cache key |
+| `phase` | string | current `phase()` | explicit phase; **inside `pipeline`/`parallel` always use `phase:`**, the global `phase()` is overwritten between concurrent tasks |
+| `schema` | JSON Schema | — | structured output; see below |
+| `model` | string | from `--model`, otherwise the claude model | alias (`sonnet`, `opus`, `haiku`) or full name; preferably do not set it |
+| `effort` | `'low'\|'medium'\|'high'\|'xhigh'\|'max'` | from `--effort`, otherwise default | reasoning level |
+| `cwd` | string | run cwd (`--cwd`) | agent's working directory; relative to the run cwd; must exist |
+| `tools` | string[] | — | **a real whitelist** (`--allowedTools`, e.g. `['Read','Grep','Bash(git diff:*)']`): an agent with `tools` runs in `--permission-mode dontAsk`, so anything not on the list is rejected (including MCP tools and `Skill`; list them if they should be available). Read tools inside cwd are always allowed |
+| `disallowedTools` | string[] | — | `--disallowedTools`; **really disables** tools (e.g. `['Edit','Write','NotebookEdit']`). `Workflow` is always disabled |
+| `systemPrompt` | string | — | added AFTER the default subagent system prompt (`--append-system-prompt`) |
+| `stallMs` | number > 0 | 600 000 | silence in the output after which the agent is killed and retried |
+| `timeoutMs` | number > 0 | none | hard limit on the length of one attempt; after it, failure without retry |
+| `maxUsd` | number > 0 | — | spending cap for one agent (`--max-budget-usd`); with `--max-usd` it is limited to the remaining budget |
+| `noCache` | boolean | `false` | on resume, do not take the stored result of this call |
 
-Volby **nepodporované** (`isolation`, `agentType`) `agent()` odmítne `TypeError`em. Neznámé volby se
-ignorují s varováním v logu.
+**Unsupported** options (`isolation`, `agentType`) are rejected by `agent()` with a `TypeError`. Unknown options are
+ignored with a warning in the log.
 
-### Výchozí chování agenta
+### Default agent behavior
 
-- Spouští se jako `claude -p --output-format stream-json --verbose --no-session-persistence
-  --permission-mode bypassPermissions --disallowedTools Workflow,…` (s volbou `tools` místo toho
-  `--permission-mode dontAsk --allowedTools …`), prompt jde na stdin, v prostředí je
+- It runs as `claude -p --output-format stream-json --verbose --no-session-persistence
+  --permission-mode bypassPermissions --disallowedTools Workflow,…` (with the `tools` option instead
+  `--permission-mode dontAsk --allowedTools …`), the prompt goes to stdin, and the environment has
   `CLAUDE_CODE_DISABLE_WORKFLOWS=1`.
-- Dědí `CLAUDE.md`, skills a MCP projektu z `cwd` (nepoužívá se `--bare`).
-- Výchozí system prompt: finální zpráva se vrací skriptu, vrať jen data, nic se neptej, drž se zadaného rozsahu.
-- Pokusy: až 3 při zaseknutí (`stallMs`), přechodné chybě API (408/409/425/429/5xx, síťové chyby, přetížení)
-  nebo ukončení bez výsledku (nikoli při vyčerpání usage limitu, neplatném přihlášení či příliš dlouhém promptu);
-  prodleva `ULTRACODE_RETRY_BACKOFF_MS × pokus` (default 2 s). Při nesplněném schema jedno opakování.
-  Bez opakování: překročení `timeoutMs`, překročení `maxUsd`, vyčerpání kol, přerušení.
+- It inherits the project's `CLAUDE.md`, skills, and MCP from `cwd` (`--bare` is not used).
+- Default system prompt: the final message is returned to the script, not to a human; return only data and ask nothing; stay within the given scope.
+- Attempts: up to 3 on a stall (`stallMs`), a transient API error (408/409/425/429/5xx, network errors, overload), or exit without a result (not when the usage limit is exhausted, the login is invalid, or the prompt is too long); the delay is `ULTRACODE_RETRY_BACKOFF_MS × attempt` (default 2 s). If the schema is not met, one retry.
+  No retry: exceeded `timeoutMs`, exceeded `maxUsd`, exhausted turns, abort.
 
 ### Schema
 
-- Kořen `{ type: 'object', properties: {…} }`.
-- `required` ⊆ `properties` na každé úrovni; klíče `required` se neopakují.
-- `type` jen z `string|number|integer|boolean|object|array|null`; `enum` neprázdný.
-- `additionalProperties: false` nesmí odporovat `required`.
-- Doporučení (není vynuceno): plochá struktura, `enum` pro verdikty, krátké `description` u nejasných polí,
-  žádné `$ref`/`oneOf`, `required` jen u toho, co agent určitě ví.
-- Porušení = `TypeError` z `agent()` **před** spuštěním agenta (nic se neúčtuje).
-- Agent, který strukturovaný výstup nevrátí ani na druhý pokus, dá `null`.
+- Root `{ type: 'object', properties: {…} }`.
+- `required` ⊆ `properties` at every level; `required` keys are not repeated.
+- `type` only from `string|number|integer|boolean|object|array|null`; `enum` non-empty.
+- `additionalProperties: false` must not conflict with `required`.
+- Recommendation (not enforced): flat structure, `enum` for verdicts, short `description` on unclear fields,
+  no `$ref`/`oneOf`, `required` only for what the agent surely knows.
+- A violation = `TypeError` from `agent()` **before** the agent starts (nothing is billed).
+- An agent that does not return structured output even on the second attempt gives `null`.
 
-## 4. `parallel()` a `pipeline()`
+## 4. `parallel()` and `pipeline()`
 
-### `parallel(thunks)` — BARIÉRA
+### `parallel(thunks)` — BARRIER
 
 ```ts
 const items = ['a.ts', 'b.ts']
 const S = { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'] }
 
-const results = await parallel(items.map((it) => () => agent<{ ok: boolean }>(`Zkontroluj ${it}`, { schema: S })))
+const results = await parallel(items.map((it) => () => agent<{ ok: boolean }>(`Check ${it}`, { schema: S })))
 const ok = results.filter((r): r is { ok: boolean } => r !== null)
-log(`${ok.length}/${items.length} hotovo`)
+log(`${ok.length}/${items.length} done`)
 ```
 
-- Spustí všechny thunky souběžně a čeká na všechny. Výsledek má pořadí vstupu.
-- Thunk, který vyhodí chybu (nebo jehož `agent()` vyhodí), dá `null`; chyba se zaloguje (prvních 10).
-- Nikdy neodmítne kvůli chybě thunku; odmítne jen pro špatné použití (`TypeError` když není pole,
-  `RangeError` nad limit položek).
-- Hotový `Promise` místo thunku se tolerantně awaituje, ale thunk je správný tvar (řídí okamžik startu).
-- Počet souběžně běžících agentů je omezen globálně (viz limity), ne počtem thunků.
+- Runs all thunks concurrently and waits for all of them. The result has the order of the input.
+- A thunk that throws (or whose `agent()` throws) gives `null`; the error is logged (the first 10).
+- It never rejects because of a thunk error; it rejects only for incorrect use (`TypeError` when it is not an array,
+  `RangeError` above the item limit).
+- An already-resolved `Promise` instead of a thunk is tolerantly awaited, but the thunk is the correct form (it controls the moment of start).
+- The number of concurrently running agents is limited globally (see limits), not by the number of thunks.
 
-### `pipeline(items, stage1, stage2, …)` — výchozí volba
+### `pipeline(items, stage1, stage2, …)` — the default choice
 
 ```ts
 const files = ['a.ts', 'b.ts']
@@ -168,142 +166,142 @@ const out = await pipeline(
 )
 ```
 
-- Každá položka prochází stagemi **nezávisle**; položka A může být ve stage 3, zatímco B je ve stage 1.
-  Čas = nejpomalejší jednotlivý řetězec, ne součet nejpomalejších stagí.
-- Stage dostane `(předchozíVýsledek, původníPoložka, index)`; první stage dostane `(položka, položka, index)`.
-- **Stage, která vyhodí chybu:** položka je `null` ve výsledku a zbylé stage se pro ni přeskočí.
-- **Stage, která `null` vrátí** (typicky selhaný `agent()`): `null` se předá další stage jako `prev` →
-  ošetři (`prev ? … : null`).
-- Výsledek je pole ve stejném pořadí jako `items`; `null` na pozici = položka selhala.
-- Stage může být `async` a uvnitř volat `parallel()` (např. N skeptiků pro jeden nález).
+- Each item passes through the stages **independently**; item A may be in stage 3 while B is in stage 1.
+  Time = the slowest single chain, not the sum of the slowest stages.
+- A stage receives `(previousResult, originalItem, index)`; the first stage receives `(item, item, index)`.
+- **A stage that throws:** the item is `null` in the result and the remaining stages are skipped for it.
+- **A stage that returns `null`** (typically a failed `agent()`): `null` is passed to the next stage as `prev` →
+  handle it (`prev ? … : null`).
+- The result is an array in the same order as `items`; `null` at a position = the item failed.
+- A stage may be `async` and call `parallel()` inside (e.g. N skeptics for one finding).
 
-### Kdy bariéra, kdy pipeline
+### When a barrier, when a pipeline
 
-Bariéra (`await parallel` mezi fázemi) je správně jen když stage N potřebuje křížový kontext ze **všech**
-výsledků stage N−1: dedup přes celou množinu před drahým krokem, early-exit při nule nálezů, prompt
-odkazující na „ostatní nálezy“. Není důvod: „potřebuju zploštit/filtrovat“ (udělej uvnitř stage), „fáze
-jsou koncepčně oddělené“, „čistší kód“. Smell test: `a = await parallel(...); b = transform(a);
-c = await parallel(b.map(...))` — prostřední transformace bariéru nepotřebuje.
+A barrier (`await parallel` between phases) is correct only when stage N needs cross-context from **all**
+results of stage N−1: dedup across the whole set before an expensive step, early exit when there are zero findings, a prompt
+referring to "the other findings". It is not a reason: "I need to flatten/filter" (do it inside the stage), "the phases are conceptually
+separate", "cleaner code". Smell test: `a = await parallel(...); b = transform(a);
+c = await parallel(b.map(...))` — the middle transformation does not need a barrier.
 
 ## 5. `phase()`, `log()`, `console`
 
-- `phase(title)` — začne fázi; následující `agent()` volání bez `opts.phase` se zařadí pod ni. Titul je
-  neprázdný řetězec a má být v `meta.phases`. Fáze je per (vnořené) workflow; potomek dědí fázi rodiče, dokud sám nezavolá `phase()`.
-- `log(message)` — zpráva uživateli (stderr + `events.jsonl`). Ne-řetězce se serializují (JSON).
-- `console.log/info/debug` = `log`; `console.warn/error` přidají prefix `[warn]`/`[error]`.
+- `phase(title)` — starts a phase; the following `agent()` calls without `opts.phase` are filed under it. The title is
+  a non-empty string and should be in `meta.phases`. The phase is per (nested) workflow; a child inherits the parent's phase until it calls `phase()` itself.
+- `log(message)` — a message for the user (stderr + `events.jsonl`). Non-strings are serialized (JSON).
+- `console.log/info/debug` = `log`; `console.warn/error` add the prefix `[warn]`/`[error]`.
 
 ## 6. `args`
 
-Hodnota z `--args '<json>'` / `--args-file`, jako skutečný JSON (pole je pole, ne řetězec). `undefined`,
-pokud nebyla zadána. U `resume` se použijí uložené `args`, ledaže zadáš nové. Validuj je na začátku skriptu a
-vyhoď srozumitelnou chybu (`throw new Error('Chybí args.question')`) — běh pak selže hned a levně.
+The value from `--args '<json>'` / `--args-file`, as real JSON (an array is an array, not a string). `undefined`
+if none was given. For `resume`, the stored `args` are used unless you provide new ones. Validate them at the start of the script and
+throw a clear error (`throw new Error('Missing args.question')`) — the run then fails immediately and cheaply.
 
 ## 7. `budget`
 
 ```ts
-budget.total          // number | null   strop výstupních tokenů (--max-tokens), null = bez limitu
-budget.totalUsd       // number | null   strop v USD (--max-usd)
-budget.spent()        // výstupní tokeny utracené v běhu (včetně vnořených workflow)
-budget.remaining()    // max(0, total - spent()), bez limitu Infinity
+budget.total          // number | null   output token cap (--max-tokens), null = no limit
+budget.totalUsd       // number | null   USD cap (--max-usd)
+budget.spent()        // output tokens spent in the run (including nested workflows)
+budget.remaining()    // max(0, total - spent()), Infinity without a limit
 budget.spentUsd()
-budget.remainingUsd() // bez limitu Infinity
+budget.remainingUsd() // Infinity without a limit
 ```
 
-- Počítají se **výstupní** tokeny a `total_cost_usd` hlášené agenty. Hodnoty se aktualizují po dokončení agenta.
-- Strop je tvrdý: po jeho dosažení každé další `agent()` vyhodí chybu s `code === 'BUDGET_EXCEEDED'` a běh
-  je označen `budgetExceeded`. Už běžící agenti doběhnou (jejich `--max-budget-usd` je omezen zbytkem USD).
-- Smyčky vždy hlídej `budget.total` — bez limitu je `remaining()` `Infinity` a smyčka by běžela k limitu
-  1000 agentů: `while (budget.total && budget.remaining() > 50_000) { … }`.
+- **Output** tokens and `total_cost_usd` reported by agents are counted. Values are updated when an agent finishes.
+- The cap is hard: once reached, every further `agent()` throws an error with `code === 'BUDGET_EXCEEDED'` and the run
+  is marked `budgetExceeded`. Agents already running finish (their `--max-budget-usd` is limited by the remaining USD).
+- Always guard loops with `budget.total` — without a limit `remaining()` is `Infinity` and the loop would run up to the
+  1000-agent limit: `while (budget.total && budget.remaining() > 50_000) { … }`.
 
 ## 8. `workflow(nameOrRef, args?)`
 
 ```ts
-const sub = await workflow('review-changes', { base: 'main' })          // podle jména
-const sub2 = await workflow({ scriptPath: '/abs/cesta/x.workflow.ts' })  // podle cesty
+const sub = await workflow('review-changes', { base: 'main' })          // by name
+const sub2 = await workflow({ scriptPath: '/abs/path/x.workflow.ts' })  // by path
 ```
 
-- Spustí jiný skript inline a vrátí jeho návratovou hodnotu. Sdílí souběžnost, počítadlo agentů,
-  rozpočet i zrušení běhu.
-- `args` se stanou globálem `args` potomka. Potomek se validuje stejně jako kořen (neplatný → chyba).
-- **Vnoření jen o jednu úroveň**: `workflow()` uvnitř potomka vyhodí chybu.
-- Neznámé jméno / nečitelná cesta / syntaktická chyba potomka vyhodí chybu — zachyť `try/catch`, chceš-li běžet dál.
-- V logu a `status` jsou agenti potomka pod skupinou jeho jména.
+- Runs another script inline and returns its return value. It shares concurrency, the agent counter,
+  the budget, and run cancellation.
+- `args` become the child's `args` global. The child is validated the same way as the root (invalid → error).
+- **Nesting only one level deep**: `workflow()` inside a child throws an error.
+- An unknown name / unreadable path / syntax error in the child throws — catch with `try/catch` if you want to continue.
+- In the log and `status`, the child's agents are grouped under its name.
 
-## 9. Prostředí a determinismus
+## 9. Environment and determinism
 
-Dostupné: standardní JS (`JSON`, `Math` kromě `random`, `Array`, `Object`, `Map`, `Set`, `Promise`, `RegExp`,
-`Intl`, …), `console`, globály runtime. Nedostupné: `process`, `require`, `fetch`, `setTimeout`, FS, `eval`,
+Available: standard JS (`JSON`, `Math` except `random`, `Array`, `Object`, `Map`, `Set`, `Promise`, `RegExp`,
+`Intl`, …), `console`, the runtime globals. Not available: `process`, `require`, `fetch`, `setTimeout`, FS, `eval`,
 `new Function`.
 
-| Zakázáno | Chování |
+| Forbidden | Behavior |
 | --- | --- |
-| `Date.now()` | vyhodí `DeterminismError` (varování už při validaci) |
-| `Math.random()` | vyhodí `DeterminismError` |
-| `new Date()` bez argumentu, `Date()` | vyhodí `DeterminismError` |
-| `new Date(x)`, `Date.parse`, `Date.UTC` | povoleno |
+| `Date.now()` | throws `DeterminismError` (a warning already during validation) |
+| `Math.random()` | throws `DeterminismError` |
+| `new Date()` without an argument, `Date()` | throws `DeterminismError` |
+| `new Date(x)`, `Date.parse`, `Date.UTC` | allowed |
 
-Důvod: resume musí při stejném skriptu a vstupu dospět ke stejným voláním. Čas předej přes `args`
-(`args.today`), „náhodu“ vyrob z indexu (`variants[i % variants.length]`).
+Reason: resume must reach the same calls for the same script and input. Pass the time via `args`
+(`args.today`); make "randomness" from the index (`variants[i % variants.length]`).
 
-## 10. Limity
+## 10. Limits
 
-| Limit | Hodnota | Přepsání |
+| Limit | Value | Override |
 | --- | --- | --- |
-| souběžní agenti | `min(16, max(1, CPU − 2))` | `--concurrency`, `ULTRACODE_MAX_CONCURRENCY` |
-| agentů za běh | 1000 | `--max-agents` |
-| položek v jednom `parallel`/`pipeline` | 4096 | — (rozděl na dávky) |
-| hloubka `workflow()` | 1 | — |
-| tokeny / USD | bez limitu | `--max-tokens`, `--max-usd` |
-| pokusů na agenta | 3 (schema +1) | — |
+| concurrent agents | `min(16, max(1, CPU − 2))` | `--concurrency`, `ULTRACODE_MAX_CONCURRENCY` |
+| agents per run | 1000 | `--max-agents` |
+| items in one `parallel`/`pipeline` | 4096 | — (split into batches) |
+| `workflow()` depth | 1 | — |
+| tokens / USD | no limit | `--max-tokens`, `--max-usd` |
+| attempts per agent | 3 (schema +1) | — |
 | `stallMs` | 600 000 ms | `agent({ stallMs })` |
 
-Agenti nad souběžnost čekají ve frontě; dávka 100 položek tedy doběhne, jen ne naráz.
+Agents above the concurrency limit wait in a queue; a batch of 100 items therefore completes, just not all at once.
 
-## 11. Chybové stavy a jejich zdroj
+## 11. Error states and their source
 
-| Situace | Jak se projeví |
+| Situation | How it shows up |
 | --- | --- |
-| neplatný skript (meta, syntaxe, import…) | `ultracode validate` exit 2; `run` exit 2, běh se nezačne |
-| neznámé workflow | exit 2 (`WORKFLOW_NOT_FOUND`) |
-| neplatné schema / volba / prompt | `agent()` vyhodí `TypeError`; skript spadne, nechytne-li ho |
-| agent selhal po všech pokusech | `agent()` vrací `null`; `totals.failedAgents`++; událost `agent_done` s `error` |
-| přerušení (Ctrl+C, SIGTERM) | agenti se zabijí včetně potomků; běh `aborted`, exit 130; `agent()` vrací `null` |
-| vyčerpaný rozpočet / limit agentů | `agent()` vyhodí chybu `BUDGET_EXCEEDED`; v `parallel`/`pipeline` je z toho `null` |
-| výjimka ve skriptu | běh `failed`, exit 1, `error` v `run.json`; dokončené agenty má journal pro resume |
-| `DeterminismError` | stejné jako výjimka ve skriptu |
-| skript čeká na nikdy nevyřešený Promise | chyba „Skript uvázl“ |
-| návratová hodnota nejde do JSON | `TypeError`, běh `failed` |
+| invalid script (meta, syntax, import…) | `ultracode validate` exit 2; `run` exit 2, the run does not start |
+| unknown workflow | exit 2 (`WORKFLOW_NOT_FOUND`) |
+| invalid schema / option / prompt | `agent()` throws `TypeError`; the script crashes unless caught |
+| agent failed after all attempts | `agent()` returns `null`; `totals.failedAgents`++; event `agent_done` with `error` |
+| abort (Ctrl+C, SIGTERM) | agents are killed including their children; the run is `aborted`, exit 130; `agent()` returns `null` |
+| exhausted budget / agent limit | `agent()` throws error `BUDGET_EXCEEDED`; in `parallel`/`pipeline` it becomes `null` |
+| exception in the script | run `failed`, exit 1, `error` in `run.json`; completed agents are in the journal for resume |
+| `DeterminismError` | same as an exception in the script |
+| script waits on a Promise that is never resolved | error "Script stalled" |
+| return value cannot be serialized to JSON | `TypeError`, run `failed` |
 
-## 12. Konvence `null`
+## 12. The `null` convention
 
-`null` z `agent()` znamená „nemám výsledek“, **ne** „nic nenalezeno“. Prázdný výsledek je prázdné pole
-ve schema. Důsledky:
+`null` from `agent()` means "I have no result", **not** "nothing found". An empty result is an empty array
+in the schema. Consequences:
 
-1. Před přístupem k vlastnosti vždy test (`if (!r)`), před použitím pole `.filter(Boolean)`.
-2. `parallel` a `pipeline` mohou `null` vrátit na kterékoli pozici; stejně tak stage dostane `null` jako `prev`.
-3. Tichý `.filter(Boolean)` je ztráta informace: spočítej `failed = total - ok.length`, zaloguj a vrať.
-4. Rozhodnutí, která závisí na úplnosti (kvórum hlasů, „žádné nálezy“), musí umět rozlišit
-   „nikdo nic nenašel“ od „polovina agentů selhala“. Viz kvórum v `examples/audit-routes.workflow.ts`.
-5. Selhání je jiné než chyba skriptu; neplést `null` s výjimkou ani je neřešit `try/catch` kolem `agent()`
-   (výjimka znamená chybu skriptu, ne selhání agenta).
+1. Always test before accessing a property (`if (!r)`), and use `.filter(Boolean)` before using an array.
+2. `parallel` and `pipeline` may return `null` at any position; likewise a stage receives `null` as `prev`.
+3. A silent `.filter(Boolean)` loses information: compute `failed = total - ok.length`, log it, and return it.
+4. Decisions that depend on completeness (a quorum of votes, "no findings") must be able to distinguish
+   "nobody found anything" from "half of the agents failed". See the quorum in `examples/audit-routes.workflow.ts`.
+5. A failure is different from a script error; do not confuse `null` with an exception, nor handle it with `try/catch` around `agent()`
+   (an exception means a script error, not an agent failure).
 
-## 13. Cache a resume
+## 13. Cache and resume
 
-- Klíč volání = `sha256(prompt, schema, model, effort, cwd, tools, disallowedTools, systemPrompt)` + pořadí
-  stejného klíče v běhu. `label`, `phase`, `stallMs`, `timeoutMs`, `maxUsd` do klíče nepatří; model a effort
-  jsou efektivní hodnoty (včetně `--model`/`--effort`).
-- Do journalu se zapisují **jen úspěšní agenti**. Selhaní se při resume spustí znovu.
-- Resume: shodné volání → uložený výsledek (událost `agent_done` s `cached: true`); jinak běží živě.
-  Je odolné vůči jinému pořadí dokončení v `parallel`. Změní-li se výsledek upstream agenta, změní se
-  prompty navazujících a ti se spustí znovu.
-- `ultracode resume <runId>` použije kopii skriptu a `args` uložené v běhu; `ultracode run <jmeno> --resume <runId>`
-  použije aktuální skript (úprava kódu) a uložené `args`, ledaže zadáš nové.
-- Chceš-li výsledek konkrétního volání znovu spočítat, dej mu `noCache: true`.
-- Prompt, který obsahuje vždy jiný text (čas, náhodné ID, nesetříděný výčet), cache znehodnotí.
-  Setřiď vstupní seznamy (`.sort()`) před vložením do promptu.
+- Call key = `sha256(prompt, schema, model, effort, cwd, tools, disallowedTools, systemPrompt)` + the sequence number of
+  the same key within the run. `label`, `phase`, `stallMs`, `timeoutMs`, `maxUsd` are not part of the key; model and effort
+  are the effective values (including `--model`/`--effort`).
+- Only **successful agents** are written to the journal. Failed ones are run again on resume.
+- Resume: an identical call → stored result (event `agent_done` with `cached: true`); otherwise it runs live.
+  It is robust against a different completion order in `parallel`. If an upstream agent's result changes, the
+  prompts of downstream agents change and they are run again.
+- `ultracode resume <runId>` uses the copy of the script and `args` stored in the run; `ultracode run <name> --resume <runId>`
+  uses the current script (code edited) and the stored `args`, unless you provide new ones.
+- To recompute the result of a specific call, give it `noCache: true`.
+- A prompt that always contains different text (time, random ID, unsorted listing) invalidates the cache.
+  Sort input lists (`.sort()`) before putting them into the prompt.
 
-## 14. Co není podporováno
+## 14. What is not supported
 
-`isolation: 'worktree'`, `agentType`, vstup za běhu (agent se nemůže zeptat), pauza/restart jednoho
-agenta, TUI/web dashboard, čekání na usage limit (agent selže → `null`), stagger prompt-cache, vnoření
-`workflow()` hlouběji než o 1, přístup k souborům a shellu ze skriptu. Řešení viz `SKILL.md` sekce 10.
+`isolation: 'worktree'`, `agentType`, input during the run (an agent cannot ask), pausing/restarting a single
+agent, TUI/web dashboard, waiting for the usage limit (the agent fails → `null`), staggering of the prompt cache, nesting
+`workflow()` deeper than 1, access to files and the shell from the script. For solutions see section 10 of `SKILL.md`.

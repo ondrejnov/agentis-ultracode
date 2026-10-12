@@ -1,6 +1,6 @@
 /**
- * Vstupní bod CLI `ultracode`. `main()` nikdy nevolá `process.exit` – vrací exit kód.
- * Veškeré I/O jde přes `io` a závislosti přes `deps`, takže se dá celé testovat bez procesu.
+ * Entry point of the `ultracode` CLI. `main()` never calls `process.exit` – it returns an exit code.
+ * All I/O goes through `io` and dependencies through `deps`, so the whole thing can be tested without a process.
  */
 import { realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
@@ -62,24 +62,24 @@ export async function main(argv: string[], io: CliIO, deps: CliDeps = {}): Promi
       }
       const text = commandHelp(topic)
       if (!text) {
-        io.stderr.write(`ultracode: neznámý příkaz „${topic}“.\n\n${MAIN_HELP}`)
+        io.stderr.write(`ultracode: unknown command "${topic}".\n\n${MAIN_HELP}`)
         return 2
       }
       io.stdout.write(text)
       return 0
     }
     if (first.startsWith('-')) {
-      io.stderr.write(`ultracode: příkaz musí být první argument (dostal jsem „${first}“).\n\n${MAIN_HELP}`)
+      io.stderr.write(`ultracode: the command must be the first argument (got "${first}").\n\n${MAIN_HELP}`)
       return 2
     }
 
     const handler = COMMANDS[first]
     if (!handler || !(first in COMMAND_OPTIONS)) {
-      io.stderr.write(`ultracode: neznámý příkaz „${first}“.\n\n${MAIN_HELP}`)
+      io.stderr.write(`ultracode: unknown command "${first}".\n\n${MAIN_HELP}`)
       return 2
     }
 
-    // `--help` u příkazu: vyřeš dřív, než se začne něco validovat/spouštět.
+    // `--help` for a command: handle it before anything gets validated or run.
     if (parseCommandLine(first, rest).values.help === true) {
       io.stdout.write(commandHelp(first) ?? MAIN_HELP)
       return 0
@@ -101,14 +101,14 @@ export async function main(argv: string[], io: CliIO, deps: CliDeps = {}): Promi
       io.stderr.write(`ultracode: ${msg}\n`)
       return 130
     }
-    io.stderr.write(`ultracode: neočekávaná chyba: ${msg}\n`)
+    io.stderr.write(`ultracode: unexpected error: ${msg}\n`)
     return 1
   }
 }
 
-// ───────────────────────── přímé spuštění (`node dist/cli/cli.js …`) ─────────────────────────
+// ───────────────────────── direct run (`node dist/cli/cli.js …`) ─────────────────────────
 
-/** Je tento soubor vstupním bodem procesu (a ne jen importovaný z `bin/ultracode.mjs` nebo z testů)? */
+/** Is this file the process entry point (and not just imported from `bin/ultracode.mjs` or from tests)? */
 function isDirectEntry(): boolean {
   const entry = process.argv[1]
   if (!entry) return false
@@ -120,7 +120,7 @@ function isDirectEntry(): boolean {
 }
 
 if (isDirectEntry()) {
-  // Zavřená rourou (`| head`) nesmí shodit běh ani změnit exit kód: EPIPE/EIO se ignoruje.
+  // A pipe closed early (`| head`) must not crash the run or change the exit code: EPIPE/EIO is ignored.
   for (const stream of [process.stdout, process.stderr]) {
     stream.on('error', (e: NodeJS.ErrnoException) => {
       if (e && (e.code === 'EPIPE' || e.code === 'EIO' || e.code === 'ECONNRESET')) return
@@ -132,11 +132,11 @@ if (isDirectEntry()) {
   process.on('SIGINT', () => {
     interrupts++
     if (interrupts >= 2) process.exit(130)
-    process.stderr.write('\nultracode: přerušuji běh (dalším Ctrl+C skončím okamžitě)…\n')
+    process.stderr.write('\nultracode: interrupting run (press Ctrl+C again to exit immediately)…\n')
     controller.abort()
   })
   process.on('SIGTERM', () => controller.abort())
-  // SIGHUP (zavření terminálu, pád SSH): bez handleru by proces skončil bez úklidu a agenti by běželi osiřele.
+  // SIGHUP (terminal closed, SSH drop): without a handler the process would exit without cleanup and agents would keep running orphaned.
   process.on('SIGHUP', () => controller.abort())
   main(
     process.argv.slice(2),
@@ -152,7 +152,7 @@ if (isDirectEntry()) {
   ).then(
     (code) => {
       process.exitCode = code
-      // pojistka proti visícímu potomkovi, ale až po vyprázdnění stdout/stderr (pomalý odběratel rourou)
+      // safeguard against a hanging child, but only after stdout/stderr are flushed (a slow pipe reader)
       setTimeout(() => {
         const exit = () => process.exit(code)
         if (process.stdout.writableLength === 0 && process.stderr.writableLength === 0) exit()
@@ -160,7 +160,7 @@ if (isDirectEntry()) {
       }, 3000).unref()
     },
     (e) => {
-      process.stderr.write(`ultracode: neočekávaná chyba: ${e instanceof Error ? (e.stack ?? e.message) : String(e)}\n`)
+      process.stderr.write(`ultracode: unexpected error: ${e instanceof Error ? (e.stack ?? e.message) : String(e)}\n`)
       process.exit(1)
     },
   )

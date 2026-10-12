@@ -1,4 +1,4 @@
-/** Regresní testy: rozpočet souběžných agentů, cache po přesunu projektu, identita držitele zámku. */
+/** Regression tests: budget of concurrent agents, cache after moving the project, lock holder identity. */
 import assert from 'node:assert/strict'
 import { renameSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
@@ -7,20 +7,20 @@ import { runWorkflow } from '../../src/engine/engine.ts'
 import { lockHolderAlive, processStartTime } from '../../src/engine/proc.ts'
 import { makeProject, makeRunner, scriptDeps } from './helpers.ts'
 
-describe('rozpočet v USD u souběžných agentů', () => {
-  test('druhý agent počká na uvolnění rezervace a dostane zbytek (ne chybu, ne celý limit)', async () => {
+describe('USD budget with concurrent agents', () => {
+  test('the second agent waits for the reservation to be released and gets the remainder (not an error, not the whole limit)', async () => {
     const p = makeProject()
     try {
       const stub = makeRunner({ delayMs: 30, costUsd: 0.08 })
       const summary = await runWorkflow(
         { workflow: p.script(), cwd: p.cwd, runner: stub.runner, concurrency: 2, maxUsd: 0.1 },
-        scriptDeps(async (api) => api.parallel([() => api.agent('první'), () => api.agent('druhý')])),
+        scriptDeps(async (api) => api.parallel([() => api.agent('first'), () => api.agent('second')])),
       )
       assert.equal(summary.status, 'completed')
       assert.ok(Array.isArray(summary.result))
-      assert.ok((summary.result as unknown[]).every((r) => r !== null), 'oba agenti dostali výsledek')
+      assert.ok((summary.result as unknown[]).every((r) => r !== null), 'both agents got a result')
       assert.equal(stub.calls.length, 2)
-      // první si rezervoval celý limit, druhý dostal jen zbytek po jeho útratě
+      // the first reserved the whole limit, the second got only the remainder after its spending
       assert.ok(Math.abs((stub.calls[0].maxBudgetUsd ?? -1) - 0.1) < 1e-9)
       assert.ok(Math.abs((stub.calls[1].maxBudgetUsd ?? -1) - 0.02) < 1e-9)
     } finally {
@@ -28,7 +28,7 @@ describe('rozpočet v USD u souběžných agentů', () => {
     }
   })
 
-  test('sekvenční agenti dostanou celý zbytek (poptávka = 1), ne podíl podle počtu slotů', async () => {
+  test('sequential agents get the whole remainder (demand = 1), not a share based on the number of slots', async () => {
     const p = makeProject()
     try {
       const stub = makeRunner({ costUsd: 0.01 })
@@ -48,8 +48,8 @@ describe('rozpočet v USD u souběžných agentů', () => {
   })
 })
 
-describe('cache po přesunu projektu', () => {
-  test('klíč cache používá cestu relativně k projektu → resume z přejmenovaného adresáře je 100% cache hit', async () => {
+describe('cache after moving the project', () => {
+  test('the cache key uses the path relative to the project → resume from a renamed directory is a 100% cache hit', async () => {
     const p = makeProject()
     const moved = `${p.cwd}-moved`
     try {
@@ -69,23 +69,23 @@ describe('cache po přesunu projektu', () => {
   })
 })
 
-describe('identita držitele zámku', () => {
-  test('přepoužité PID (jiný start time) není držitel; vlastní start time ano', () => {
+describe('lock holder identity', () => {
+  test('a reused PID (different start time) is not the holder; its own start time is', () => {
     const own = processStartTime(process.pid)
-    if (own === null) return // mimo Linux (/proc) nelze identitu ověřit
+    if (own === null) return // outside Linux (/proc) the identity cannot be verified
     assert.equal(lockHolderAlive({ pid: process.pid, start: own }), true)
-    assert.equal(lockHolderAlive({ pid: process.pid, start: `${own}-jiny` }), false)
+    assert.equal(lockHolderAlive({ pid: process.pid, start: `${own}-other` }), false)
     assert.equal(lockHolderAlive({ pid: process.pid }), true)
     assert.equal(lockHolderAlive({ pid: 0 }), false)
   })
 
-  test('zámek s cizím start time (přepoužité PID) nebrání resume', async () => {
+  test('lock with a foreign start time (reused PID) does not block resume', async () => {
     const p = makeProject()
     try {
       const s1 = await runWorkflow({ workflow: p.script(), cwd: p.cwd, runner: makeRunner().runner }, scriptDeps(async (api) => api.agent('z')))
       const lock = join(s1.runDir, '.lock')
       const { writeFileSync } = await import('node:fs')
-      writeFileSync(lock, JSON.stringify({ pid: process.pid, start: 'cizi-proces', ts: new Date().toISOString() }))
+      writeFileSync(lock, JSON.stringify({ pid: process.pid, start: 'foreign-process', ts: new Date().toISOString() }))
       if (processStartTime(process.pid) === null) return
       const s2 = await runWorkflow({ workflow: '', cwd: p.cwd, runner: makeRunner().runner, resumeRunId: s1.runId }, scriptDeps(async (api) => api.agent('z')))
       assert.equal(s2.status, 'completed', s2.error)

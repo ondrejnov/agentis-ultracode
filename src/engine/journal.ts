@@ -1,9 +1,9 @@
 /**
- * Journal dokončených agentů (`journal.jsonl`) a klíče cache pro resume.
+ * Journal of completed agents (`journal.jsonl`) and cache keys for resume.
  *
- * Klíč volání je content-addressed: sha256 kanonického JSON vstupů agenta. K němu se přidává pořadové číslo
- * stejného klíče v rámci běhu (n-té volání se stejným klíčem), takže opakovaná volání se stejným promptem
- * dostanou každé vlastní uložený výsledek.
+ * The call key is content-addressed: sha256 of the agent's canonical JSON inputs. A sequence number of the
+ * same key within the run (the n-th call with the same key) is appended to it, so repeated calls with the same prompt
+ * each get their own stored result.
  */
 import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
@@ -12,17 +12,17 @@ import type { JsonSchema, TokenUsage } from '../types.ts'
 export interface CallKeyInput {
   prompt: string
   schema?: JsonSchema | null
-  /** Efektivní model (po dosazení výchozích hodnot běhu); `undefined` = default claude. */
+  /** Effective model (after applying the run defaults); `undefined` = default claude. */
   model?: string
   effort?: string
-  /** Absolutní cwd agenta. */
+  /** Absolute cwd of the agent. */
   cwd: string
   tools?: string[]
   disallowedTools?: string[]
   systemPrompt?: string
 }
 
-/** JSON s lexikograficky seřazenými klíči objektů; `undefined` vlastnosti se vynechávají (jako v JSON.stringify). */
+/** JSON with lexicographically sorted object keys; `undefined` properties are omitted (as in JSON.stringify). */
 export function canonicalJson(value: unknown): string {
   if (value === undefined || typeof value === 'function' || typeof value === 'symbol') return 'null'
   if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null'
@@ -41,7 +41,7 @@ function sortedOrNull(list: string[] | undefined): string[] | null {
   return Array.isArray(list) ? [...list].sort() : null
 }
 
-/** Klíč cache jednoho volání `agent()`. Seznamy nástrojů jsou množiny, proto se řadí. */
+/** Cache key of one `agent()` call. Tool lists are sets, so they are sorted. */
 export function computeCallKey(input: CallKeyInput): string {
   const canonical = canonicalJson({
     prompt: input.prompt,
@@ -56,20 +56,20 @@ export function computeCallKey(input: CallKeyInput): string {
   return createHash('sha256').update(canonical).digest('hex')
 }
 
-/** Jeden řádek `journal.jsonl`. Zapisují se jen úspěšné výsledky (`ok: true`). */
+/** One line of `journal.jsonl`. Only successful results (`ok: true`) are written. */
 export interface JournalEntry {
   key: string
-  /** Pořadí stejného klíče v rámci běhu (od 0). */
+  /** Sequence number of the same key within the run (from 0). */
   seq: number
   ok: boolean
   label: string
-  /** Hodnota vrácená skriptu: objekt (schema) nebo text. */
+  /** Value returned to the script: an object (schema) or text. */
   result: unknown
   usage: TokenUsage
   costUsd: number
   sessionId?: string
   ts: string
-  /** Číslo agenta (adresář agents/<id>/). */
+  /** Agent number (directory agents/<id>/). */
   id?: number
   durationMs?: number
   toolCalls?: number
@@ -79,7 +79,7 @@ function entryId(key: string, seq: number): string {
   return `${key}#${seq}`
 }
 
-/** Zpracuje obsah journal.jsonl; poškozené/useknuté řádky (např. po zabití procesu) tiše přeskočí. */
+/** Parses the contents of journal.jsonl; corrupt/truncated lines (e.g. after a killed process) are silently skipped. */
 export function parseJournal(text: string): JournalEntry[] {
   const out: JournalEntry[] = []
   for (const raw of text.split('\n')) {
@@ -91,13 +91,13 @@ export function parseJournal(text: string): JournalEntry[] {
         out.push(e as JournalEntry)
       }
     } catch {
-      // poškozený řádek ignorujeme
+      // ignore a corrupt line
     }
   }
   return out
 }
 
-/** Načtený journal původního běhu pro lookup při resume. Pozdější záznam stejného klíče+seq přepisuje dřívější. */
+/** Loaded journal of the original run, for lookup on resume. A later entry with the same key+seq overwrites an earlier one. */
 export class JournalCache {
   private readonly entries = new Map<string, JournalEntry>()
 

@@ -1,4 +1,4 @@
-/** `ultracode list`: běhy + dostupná workflow. */
+/** `ultracode list`: runs + available workflows. */
 import { resolveDiscovery, resolveStore } from '../defaults.ts'
 import { formatTable, safeJson } from '../format.ts'
 import { bool, parseCommandLine, parsePositiveInt, str } from '../options.ts'
@@ -10,7 +10,7 @@ import { errorMessage, nowMs, resolveCwd, styleFor, writeLines, jsonIndent } fro
 export async function listCommand(ctx: CommandContext, argv: string[]): Promise<number> {
   const { io } = ctx
   const parsed = parseCommandLine('list', argv)
-  if (parsed.positionals.length > 0) throw new UsageError('Příkaz list nebere žádné argumenty.')
+  if (parsed.positionals.length > 0) throw new UsageError('The list command takes no arguments.')
   const limit = parsePositiveInt('limit', str(parsed.values.limit)) ?? 20
   const cwd = resolveCwd(ctx, parsed.values)
   const store = await resolveStore(ctx.deps)
@@ -33,20 +33,20 @@ export async function listCommand(ctx: CommandContext, argv: string[]): Promise<
 
   const s = styleFor(ctx, parsed.values)
   const out: string[] = []
-  out.push(s.bold(`Běhy (${runs.length}${allRuns.length > runs.length ? ` z ${allRuns.length}` : ''}):`))
-  if (runs.length === 0) out.push(`  ${s.dim(`žádné (${store.runsRoot(cwd)})`)}`)
+  out.push(s.bold(`Runs (${runs.length}${allRuns.length > runs.length ? ` z ${allRuns.length}` : ''}):`))
+  if (runs.length === 0) out.push(`  ${s.dim(`none (${store.runsRoot(cwd)})`)}`)
   else out.push(...renderRunList(runs, nowMs(ctx), s))
 
   out.push('')
-  out.push(s.bold(`Workflow (${workflows.length}):`))
+  out.push(s.bold(`Workflows (${workflows.length}):`))
   if (discoveryError) {
-    out.push(`  ${s.red(`nelze vyhledat: ${discoveryError}`)}`)
+    out.push(`  ${s.red(`cannot discover: ${discoveryError}`)}`)
   } else if (workflows.length === 0) {
-    out.push(`  ${s.dim('žádná (vytvoř je příkazem: ultracode init)')}`)
+    out.push(`  ${s.dim('none (create them with: ultracode init)')}`)
   } else {
     const rows = workflows.map((w) => [
       w.name,
-      s.dim(w.scope === 'project' ? 'projekt' : 'uživatel'),
+      s.dim(w.scope === 'project' ? 'project' : 'user'),
       w.description ?? '',
       s.dim(w.path),
     ])

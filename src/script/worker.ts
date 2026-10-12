@@ -1,9 +1,9 @@
 /**
- * Vstupní bod worker threadu, ve kterém běží skript workflow (spouští ho host.ts).
+ * Entry point of the worker thread that runs the workflow script (started by host.ts).
  *
- * Worker nikdy nespouští `claude` ani nesahá na disk: všechno, co skript potřebuje od enginu (agent, phase, log,
- * loadWorkflow, …), jde přes `postMessage` na hlavní vlákno jako RPC s korelačním id. Díky tomu lze skript
- * při abortu bezpodmínečně utnout `worker.terminate()` i uprostřed `while (true) {}`.
+ * The worker never runs `claude` nor touches the disk: everything the script needs from the engine (agent, phase, log,
+ * loadWorkflow, …), goes through `postMessage` to the main thread as RPC with a correlation id. This lets the script
+ * be unconditionally stopped on abort by `worker.terminate()` even in the middle of `while (true) {}`.
  */
 
 import { parentPort, workerData } from 'node:worker_threads'
@@ -14,21 +14,21 @@ import type { MainToWorker, WorkerFire, WorkerInit, WorkerRpc, WorkerToMain } fr
 import { runInSandbox } from './sandbox.ts'
 
 const port = parentPort
-if (!port) throw new Error('worker.ts lze spustit jen jako worker thread (použij runScript z host.ts).')
+if (!port) throw new Error('worker.ts can only be run as a worker thread (use runScript from host.ts).')
 const send = (m: WorkerToMain): void => port.postMessage(m)
 
 const init = workerData as WorkerInit
 let finished = false
 
-// ───────── RPC na hlavní vlákno ─────────
+// ───────── RPC to the main thread ─────────
 
 let nextId = 0
 const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: unknown) => void }>()
 let idleCheck: NodeJS.Immediate | null = null
 
 /**
- * Detekce uváznutí: skript čeká na Promise, kterou už nikdo nevyřeší (žádné RPC neběží, žádný timer neexistuje,
- * mikrotasky jsou vyprázdněné). Bez toho by běh visel do nekonečna.
+ * Deadlock detection: the script waits on a Promise that nobody will ever resolve (no RPC is running, no timer exists,
+ * microtasks are drained). Without it the run would hang forever.
  */
 function scheduleIdleCheck(): void {
   if (finished || idleCheck) return
@@ -41,8 +41,8 @@ function scheduleIdleCheck(): void {
       error: {
         name: 'Error',
         message:
-          'Skript uvázl: čeká na Promise, která se nikdy nevyřeší, a přitom neběží žádný agent ani jiná operace ' +
-          '(například `await new Promise(() => {})` nebo zapomenuté resolve).',
+          'Script is stuck: it waits on a Promise that will never resolve, and no agent or other operation is running ' +
+          '(for example `await new Promise(() => {})` or a forgotten resolve).',
       },
     })
   })
@@ -80,7 +80,7 @@ const hooks: ScriptHooks = {
   workflowExit: (name: string, call: HookCall) => fire({ method: 'workflowExit', params: [name, call] }),
 }
 
-// ───────── běh skriptu ─────────
+// ───────── script run ─────────
 
 const budget = new Float64Array(init.budgetBuffer, 0, BUDGET_SLOTS)
 

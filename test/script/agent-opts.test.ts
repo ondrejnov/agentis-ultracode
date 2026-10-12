@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { validateAgentCall, validateSchema } from '../../src/script/validate.ts'
 import { makeHooks, run } from './helpers.ts'
 
-/** Spustí `agent(...)` ve skriptu; vrátí buď { ok, opts } (hook zavolán) nebo { error } (skript dostal chybu před hookem). */
+/** Runs `agent(...)` in a script; returns either { called, opts } (hook invoked) or { error } (script got an error before the hook). */
 async function viaScript(call: string): Promise<{ called: boolean; opts?: unknown; error?: string; logs: string[] }> {
   const m = makeHooks()
   const res = await run(`try { await ${call}; return null } catch (e) { return e.message }\n`, { hooks: m.hooks })
@@ -16,8 +16,8 @@ async function viaScript(call: string): Promise<{ called: boolean; opts?: unknow
   }
 }
 
-describe('agent(): validace opts (přes skript, hook se při chybě nevolá)', () => {
-  it('platné volby projdou do hooku beze změny', async () => {
+describe('agent(): opts validation (via script; hook is not called on error)', () => {
+  it('valid options reach the hook unchanged', async () => {
     const r = await viaScript(
       `agent('p', { label: 'L', phase: 'Fix', model: 'sonnet', effort: 'low', cwd: '/tmp/x', tools: ['Read', 'Bash(git diff:*)'], disallowedTools: ['Write'], systemPrompt: 'S', stallMs: 1000, timeoutMs: 5000, maxUsd: 0.5, noCache: true, schema: { type: 'object', properties: { a: { type: 'string' } }, required: ['a'] } })`,
     )
@@ -40,55 +40,55 @@ describe('agent(): validace opts (přes skript, hook se při chybě nevolá)', (
     })
   })
 
-  it('isolation → jasná česká chyba (worktree izolace není ve v1), hook se nezavolá', async () => {
+  it('isolation → clear error (worktree isolation is not in v1), hook is not called', async () => {
     const r = await viaScript("agent('p', { isolation: 'worktree' })")
     assert.equal(r.called, false)
-    assert.match(r.error ?? '', /Izolace přes git worktree/)
-    assert.match(r.error ?? '', /není ve verzi 1 podporována/)
+    assert.match(r.error ?? '', /Isolation via git worktree/)
+    assert.match(r.error ?? '', /not supported in version 1/)
   })
 
-  it('prompt musí být neprázdný řetězec', async () => {
-    assert.match((await viaScript('agent()')).error ?? '', /prompt musí být řetězec/)
-    assert.match((await viaScript('agent(42)')).error ?? '', /prompt musí být řetězec/)
-    assert.match((await viaScript("agent('   ')")).error ?? '', /prompt nesmí být prázdný/)
+  it('prompt must be a non-empty string', async () => {
+    assert.match((await viaScript('agent()')).error ?? '', /prompt must be a string/)
+    assert.match((await viaScript('agent(42)')).error ?? '', /prompt must be a string/)
+    assert.match((await viaScript("agent('   ')")).error ?? '', /prompt must not be empty/)
     assert.equal((await viaScript('agent({ a: 1 })')).called, false)
   })
 
-  it('špatné typy voleb', async () => {
+  it('wrong option types', async () => {
     assert.match((await viaScript("agent('p', { effort: 'extreme' })")).error ?? '', /effort.*low, medium, high, xhigh, max/)
-    assert.match((await viaScript("agent('p', { label: 5 })")).error ?? '', /label.*řetězec/)
-    assert.match((await viaScript("agent('p', { tools: 'Read' })")).error ?? '', /tools.*pole/)
-    assert.match((await viaScript("agent('p', { stallMs: -1 })")).error ?? '', /stallMs.*kladné číslo/)
-    assert.match((await viaScript("agent('p', { maxUsd: 'moc' })")).error ?? '', /maxUsd.*kladné číslo/)
+    assert.match((await viaScript("agent('p', { label: 5 })")).error ?? '', /label.*string/)
+    assert.match((await viaScript("agent('p', { tools: 'Read' })")).error ?? '', /tools.*array/)
+    assert.match((await viaScript("agent('p', { stallMs: -1 })")).error ?? '', /stallMs.*positive number/)
+    assert.match((await viaScript("agent('p', { maxUsd: 'moc' })")).error ?? '', /maxUsd.*positive number/)
     assert.match((await viaScript("agent('p', { noCache: 1 })")).error ?? '', /noCache.*boolean/)
-    assert.match((await viaScript("agent('p', 'text')")).error ?? '', /opts\) musí být objekt/)
+    assert.match((await viaScript("agent('p', 'text')")).error ?? '', /opts\) must be an object/)
   })
 
-  it('neznámá volba není chyba, ale upozornění v logu a nepředá se hooku', async () => {
+  it('unknown option is not an error, but a warning in the log and is not passed to the hook', async () => {
     const r = await viaScript("agent('p', { label: 'x', scheme: { type: 'object' } })")
     assert.equal(r.called, true)
     assert.deepEqual(r.opts, { label: 'x' })
-    assert.ok(r.logs.some((l) => /neznámá volba „scheme“/.test(l)))
+    assert.ok(r.logs.some((l) => /unknown option “scheme”/.test(l)))
   })
 
-  it('neserializovatelné opts (cyklus) → srozumitelná chyba', async () => {
+  it('non-serializable opts (cycle) → clear error', async () => {
     const r = await viaScript("(() => { const o = {}; o.self = o; return agent('p', o) })()")
     assert.equal(r.called, false)
-    assert.match(r.error ?? '', /nelze serializovat do JSON/)
+    assert.match(r.error ?? '', /cannot be serialized to JSON/)
   })
 })
 
-describe('agent(): validace schema', () => {
+describe('agent(): schema validation', () => {
   const bad = (schema: unknown): string => {
     try {
       validateSchema(schema)
     } catch (e) {
       return (e as Error).message
     }
-    assert.fail('očekávána chyba pro schema ' + JSON.stringify(schema))
+    assert.fail('expected an error for schema ' + JSON.stringify(schema))
   }
 
-  it('platná schemata projdou (vnořené objekty, pole, enum, anyOf, boolean podschéma)', () => {
+  it('valid schemas pass (nested objects, arrays, enum, anyOf, boolean subschema)', () => {
     validateSchema({ type: 'object' })
     validateSchema({
       type: 'object',
@@ -106,61 +106,61 @@ describe('agent(): validace schema', () => {
     })
   })
 
-  it('kořen musí být type object', () => {
-    assert.match(bad({ type: 'array', items: { type: 'string' } }), /kořen schématu musí mít type: 'object'/)
-    assert.match(bad({ properties: { a: { type: 'string' } } }), /kořen schématu musí mít type: 'object'/)
-    assert.match(bad({ type: ['object', 'null'] }), /kořen schématu musí mít type: 'object'/)
-    assert.match(bad('string'), /schema musí být objekt/)
-    assert.match(bad([]), /schema musí být objekt/)
+  it('root must be type object', () => {
+    assert.match(bad({ type: 'array', items: { type: 'string' } }), /the schema root must have type: 'object'/)
+    assert.match(bad({ properties: { a: { type: 'string' } } }), /the schema root must have type: 'object'/)
+    assert.match(bad({ type: ['object', 'null'] }), /the schema root must have type: 'object'/)
+    assert.match(bad('string'), /schema must be a JSON Schema object/)
+    assert.match(bad([]), /schema must be a JSON Schema object/)
   })
 
-  it('required musí být podmnožina properties', () => {
+  it('required must be a subset of properties', () => {
     assert.match(
       bad({ type: 'object', properties: { a: { type: 'string' } }, required: ['a', 'b'] }),
-      /schema\.required: klíč „b“ není v properties/,
+      /schema\.required: key “b” is not in properties/,
     )
-    assert.match(bad({ type: 'object', required: ['a'] }), /klíč „a“ není v properties/)
+    assert.match(bad({ type: 'object', required: ['a'] }), /key “a” is not in properties/)
   })
 
-  it('additionalProperties:false + required klíč mimo properties = protimluv', () => {
+  it('additionalProperties:false + required key outside properties = contradiction', () => {
     assert.match(
       bad({ type: 'object', properties: { a: { type: 'string' } }, required: ['a', 'zz'], additionalProperties: false }),
-      /protimluvné schema.*„zz“.*additionalProperties: false/,
+      /contradictory schema.*“zz”.*additionalProperties: false/,
     )
   })
 
-  it('stejné kontroly platí ve vnořených objektech a v items', () => {
+  it('the same checks apply in nested objects and items', () => {
     assert.match(
       bad({ type: 'object', properties: { s: { type: 'object', properties: { a: { type: 'string' } }, required: ['q'] } } }),
-      /schema\.properties\.s\.required: klíč „q“/,
+      /schema\.properties\.s\.required: key “q”/,
     )
     assert.match(
       bad({
         type: 'object',
         properties: { list: { type: 'array', items: { type: 'object', properties: {}, required: ['id'], additionalProperties: false } } },
       }),
-      /protimluvné.*schema\.properties\.list\.items/,
+      /contradictory.*schema\.properties\.list\.items/,
     )
   })
 
-  it('neznámý typ, špatné required/enum/properties', () => {
-    assert.match(bad({ type: 'object', properties: { a: { type: 'str' } } }), /„str“ není typ JSON Schema/)
-    assert.match(bad({ type: 'object', required: 'a' }), /required: musí být pole řetězců/)
-    assert.match(bad({ type: 'object', properties: { a: {} }, required: ['a', 'a'] }), /víckrát/)
-    assert.match(bad({ type: 'object', properties: { a: { enum: [] } } }), /enum: musí být neprázdné pole/)
-    assert.match(bad({ type: 'object', properties: [] }), /properties: musí být objekt/)
-    assert.match(bad({ type: 'object', properties: { a: 5 } }), /podschéma musí být objekt/)
+  it('unknown type, bad required/enum/properties', () => {
+    assert.match(bad({ type: 'object', properties: { a: { type: 'str' } } }), /“str” is not a JSON Schema type/)
+    assert.match(bad({ type: 'object', required: 'a' }), /required: must be an array of strings/)
+    assert.match(bad({ type: 'object', properties: { a: {} }, required: ['a', 'a'] }), /listed more than once/)
+    assert.match(bad({ type: 'object', properties: { a: { enum: [] } } }), /enum: must be a non-empty array/)
+    assert.match(bad({ type: 'object', properties: [] }), /properties: must be an object/)
+    assert.match(bad({ type: 'object', properties: { a: 5 } }), /subschema must be an object/)
   })
 
-  it('přes skript: neplatné schema shodí skript před startem agenta', async () => {
+  it('via script: invalid schema fails the script before the agent starts', async () => {
     const r = await viaScript("agent('p', { schema: { type: 'object', properties: { a: { type: 'string' } }, required: ['b'] } })")
     assert.equal(r.called, false)
-    assert.match(r.error ?? '', /klíč „b“ není v properties/)
+    assert.match(r.error ?? '', /key “b” is not in properties/)
   })
 })
 
-describe('validateAgentCall (přímo)', () => {
-  it('null/undefined opts → prázdné; nezmění vstupní objekt', () => {
+describe('validateAgentCall (direct)', () => {
+  it('null/undefined opts → empty; does not change the input object', () => {
     assert.deepEqual(validateAgentCall('x', undefined), { prompt: 'x', opts: {}, warnings: [] })
     assert.deepEqual(validateAgentCall('x', null), { prompt: 'x', opts: {}, warnings: [] })
     const input = { label: 'a', unknown: 1 }
@@ -170,7 +170,7 @@ describe('validateAgentCall (přímo)', () => {
     assert.equal(out.warnings.length, 1)
   })
 
-  it('agentType je ve v1 odmítnut stejně jako isolation', () => {
+  it('agentType is rejected in v1 just like isolation', () => {
     assert.throws(() => validateAgentCall('x', { agentType: 'Explore' }), /agentType/)
   })
 })

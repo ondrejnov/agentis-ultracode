@@ -1,5 +1,5 @@
 /**
- * Zprávy mezi hlavním vláknem (host.ts) a workerem (worker.ts) + (de)serializace chyb.
+ * Messages between the main thread (host.ts) and the worker (worker.ts) + error (de)serialization.
  */
 
 import { fileURLToPath } from 'node:url'
@@ -48,7 +48,7 @@ export type { LoadedScript }
 
 const THIS_DIR = fileURLToPath(new URL('.', import.meta.url))
 
-/** Odstraní z stacku interní rámce (runtime, node:internal, tento adresář), ať zůstanou řádky skriptu. */
+/** Removes internal frames (runtime, node:internal, this directory) from the stack so that script lines remain. */
 export function cleanStack(stack: string): string {
   return stack
     .split('\n')
@@ -79,7 +79,7 @@ function safeString(v: unknown): string {
   try {
     return String(v)
   } catch {
-    return '[nelze zobrazit]'
+    return '[cannot display]'
   }
 }
 
@@ -92,7 +92,7 @@ const NATIVE_ERRORS: Record<string, ErrorConstructor | undefined> = {
   URIError,
 }
 
-/** Znovu vytvoří chybu na hlavním vlákně; známé typy (`code`) dostanou své třídy z src/errors.ts. */
+/** Recreates the error on the main thread; known types (`code`) get their classes from src/errors.ts. */
 export function reviveError(s: SerializedError): Error {
   let err: Error
   switch (s.code) {

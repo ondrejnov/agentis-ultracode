@@ -4,11 +4,11 @@ import { AbortedError } from '../../src/errors.ts'
 import { deferred, makeHooks, run, runWithMeta, waitFor } from './helpers.ts'
 
 describe('abort', () => {
-  it('abort uprostřed čekání na agenta → AbortedError, skript se nedokončí', async () => {
+  it('abort while waiting for an agent → AbortedError, the script does not finish', async () => {
     const m = makeHooks({ agent: () => new Promise(() => {}) })
     const ac = new AbortController()
     const t0 = Date.now()
-    const p = run("log('před')\nawait agent('visí navždy')\nlog('PO – nesmí se stát')\n", { hooks: m.hooks, signal: ac.signal })
+    const p = run("log('before')\nawait agent('hangs forever')\nlog('AFTER – must not happen')\n", { hooks: m.hooks, signal: ac.signal })
     await waitFor(() => m.prompts().length === 1)
     ac.abort()
     await assert.rejects(p, (e: unknown) => {
@@ -18,22 +18,22 @@ describe('abort', () => {
     })
     assert.ok(Date.now() - t0 < 3000)
     await new Promise((r) => setTimeout(r, 50))
-    assert.deepEqual(m.logs(), ['před'])
+    assert.deepEqual(m.logs(), ['before'])
   })
 
-  it('abort přeruší i nekonečnou synchronní smyčku while(true){}', async () => {
+  it('abort also interrupts an infinite synchronous while(true){} loop', async () => {
     const m = makeHooks()
     const ac = new AbortController()
     const t0 = Date.now()
     const p = run("log('start')\nwhile (true) {}\n", { hooks: m.hooks, signal: ac.signal })
     await waitFor(() => m.logs().length === 1)
-    await new Promise((r) => setTimeout(r, 50)) // ať smyčka opravdu točí
+    await new Promise((r) => setTimeout(r, 50)) // let the loop really spin
     ac.abort()
     await assert.rejects(p, AbortedError)
-    assert.ok(Date.now() - t0 < 3000, 'abort musí zabrat okamžitě, ne po dokončení smyčky')
+    assert.ok(Date.now() - t0 < 3000, 'abort must take effect immediately, not after the loop finishes')
   })
 
-  it('abort přeruší nekonečnou smyčku s mikrotasky (await v cyklu)', async () => {
+  it('abort interrupts an infinite loop with microtasks (await in the loop)', async () => {
     const m = makeHooks()
     const ac = new AbortController()
     const p = run("log('start')\nlet i = 0\nwhile (true) { i++; await Promise.resolve() }\n", { hooks: m.hooks, signal: ac.signal })
@@ -42,7 +42,7 @@ describe('abort', () => {
     await assert.rejects(p, AbortedError)
   })
 
-  it('už přerušený signál: odmítne hned a nespustí nic', async () => {
+  it('already aborted signal: rejects immediately and runs nothing', async () => {
     const m = makeHooks()
     const ac = new AbortController()
     ac.abort()
@@ -50,15 +50,15 @@ describe('abort', () => {
     assert.equal(m.events.length, 0)
   })
 
-  it('abort po dokončení nic nezmění; signál se po běhu odpojí', async () => {
+  it('abort after completion changes nothing; the signal is detached after the run', async () => {
     const ac = new AbortController()
     const res = await run('return 1\n', { signal: ac.signal })
     assert.equal(res.value, 1)
-    ac.abort() // nesmí vyhodit ani způsobit nezachycenou rejection
+    ac.abort() // must neither throw nor cause an unhandled rejection
     await new Promise((r) => setTimeout(r, 20))
   })
 
-  it('abort při čekání na loadWorkflow i uvnitř potomka', async () => {
+  it('abort while waiting for loadWorkflow and inside a child', async () => {
     const gate = deferred<never>()
     const m = makeHooks({ loadWorkflow: () => gate.promise })
     const ac = new AbortController()
@@ -77,7 +77,7 @@ describe('abort', () => {
     await assert.rejects(p2, AbortedError)
   })
 
-  it('po abortu hooky, které doběhnou později, nic nerozbijí (žádná nezachycená chyba)', async () => {
+  it('hooks that finish later after an abort break nothing (no unhandled error)', async () => {
     const late = deferred<string>()
     const m = makeHooks({ agent: () => late.promise })
     const ac = new AbortController()
@@ -85,11 +85,11 @@ describe('abort', () => {
     await waitFor(() => m.prompts().length === 1)
     ac.abort()
     await assert.rejects(p, AbortedError)
-    late.resolve('pozdě') // hook dokončí po terminaci workeru
+    late.resolve('late') // hook finishes after the worker was terminated
     await new Promise((r) => setTimeout(r, 50))
   })
 
-  it('opakované běhy po abortu fungují (žádný sdílený stav)', async () => {
+  it('repeated runs after abort work (no shared state)', async () => {
     for (let i = 0; i < 3; i++) {
       const ac = new AbortController()
       const p = runWithMeta("export const meta = { name: 'loop', description: 'd' }\nwhile (true) {}\n", { signal: ac.signal })

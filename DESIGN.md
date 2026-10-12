@@ -1,104 +1,102 @@
-# agentis-ultracode — návrh
+# agentis-ultracode — design
 
-Vlastní implementace dynamických workflow jako v Claude Code (`/workflows`, nástroj `Workflow`):
-agent (Claude) vygeneruje **TypeScriptový skript**, ten se spustí příkazem `ultracode run` a na pozadí
-orchestruje mnoho agentů, každého jako samostatný proces `claude -p`.
+Own implementation of dynamic workflows as in Claude Code (`/workflows`, tool `Workflow`):
+an agent (Claude) generates a **TypeScript script**; the script is started with the `ultracode run` command and orchestrates many agents in the background, each as a separate `claude -p` process.
 
-Inspirace: <https://code.claude.com/docs/en/workflows>, <https://github.com/ekil1100/pi-ultracode>,
-ukázkový běh `php8-upgrade-wf_003aa2c5-8ce.js` (21 agentů, `agent → pipeline(fix → review)`).
+Inspiration: <https://code.claude.com/docs/en/workflows>, <https://github.com/ekil1100/pi-ultracode>,
+example run `php8-upgrade-wf_003aa2c5-8ce.js` (21 agents, `agent → pipeline(fix → review)`).
 
-## Rozhodnutí (potvrzená uživatelem)
+## Decisions (confirmed by the user)
 
-| Téma | Rozhodnutí |
+| Topic | Decision |
 | --- | --- |
-| Model skriptu | **Globály + `.d.ts`**: skript nemá importy; `agent/parallel/pipeline/phase/log/args/budget/workflow` jsou injektované. Skripty z Claude Code jsou použitelné skoro 1:1 (jen TS místo JS). |
-| Oprávnění agentů | **Vždy `--permission-mode bypassPermissions`** (běží bez dozoru, paralelně). Ověřeno, že funguje i jako root. Doporučeno pouštět v kontejneru/VM. |
-| Integrace | **Samostatný CLI `ultracode`**. Agentis adapter ho později zavolá z bash kroku (stdout = JSON výsledek, exit code, `.ultracode/runs/<id>/`). |
-| Pozorování | **Plain log (stderr) + `events.jsonl` + `journal.jsonl`** na disku; `status`/`list`/`logs` čtou z disku. Žádné TUI/web. |
-| Runtime | **Node ≥ 22.18 (cíl 24) + TypeScript**, `vm` + `worker_threads`. Za běhu **0 závislostí**. Skripty se překládají `module.stripTypeScriptTypes`. |
-| Název | balíček `agentis-ultracode`, CLI `ultracode`, skripty `*.workflow.ts` ve `.ultracode/workflows/`. |
-| Worktree | **Ne ve v1.** Kolize řeší skript rozdělením cest (partitions) jako v php8-upgrade. Pole `isolation` runtime odmítne s jasnou chybou. |
-| Jazyk | **Vše česky**: README, DESIGN, authoring skill, CLI hlášky, výchozí system prompt agentů. Identifikátory v kódu anglicky. |
+| Script model | **Globals + `.d.ts`**: the script has no imports; `agent/parallel/pipeline/phase/log/args/budget/workflow` are injected. Scripts from Claude Code are usable almost 1:1 (only TS instead of JS). |
+| Agent permissions | **Always `--permission-mode bypassPermissions`** (runs unattended, in parallel). Verified to work as root too. Recommended to run in a container/VM. |
+| Integration | **Standalone CLI `ultracode`**. The Agentis adapter will later call it from a bash step (stdout = JSON result, exit code, `.ultracode/runs/<id>/`). |
+| Observation | **Plain log (stderr) + `events.jsonl` + `journal.jsonl`** on disk; `status`/`list`/`logs` read from disk. No TUI/web. |
+| Runtime | **Node ≥ 22.18 (target 24) + TypeScript**, `vm` + `worker_threads`. At run time **0 dependencies**. Scripts are transpiled via `module.stripTypeScriptTypes`. |
+| Name | package `agentis-ultracode`, CLI `ultracode`, scripts `*.workflow.ts` in `.ultracode/workflows/`. |
+| Worktree | **Not in v1.** Collisions are handled by the script splitting work by paths (partitions), as in php8-upgrade. The `isolation` field is rejected by the runtime with a clear error. |
+| Language | **Everything in Czech**: README, DESIGN, authoring skill, CLI messages, the default agent system prompt. Identifiers in code in English. |
 
-## Rozhodnutí, která jsem udělal sám (dá se změnit)
+## Decisions I made myself (can be changed)
 
-1. **Resume je content-addressed**, ne prefix-replay: klíč volání = `sha256(prompt + schema + model + effort + cwd + tools + systemPrompt)`
-   + pořadové číslo stejného klíče. Shodné volání vrátí uložený výsledek, jinak běží znovu — odolné vůči
-   nedeterministickému pořadí v `parallel()`. Změní-li se výstup upstream agenta, změní se prompt downstream
-   agentů a ti se spustí znovu automaticky (stejný efekt jako v Claude Code).
-2. **`agent()` vrací `null`** při terminálním selhání (po retry/stall restartech) i při přerušení, stejně jako v Claude Code;
-   skript musí `null` ošetřit. Chyby skriptu (neplatné schema, překročený rozpočet) vyhazují.
-3. **Rozpočet** = výstupní tokeny (`--max-tokens`) a/nebo USD (`--max-usd`), tvrdý strop: po dosažení další `agent()` vyhodí `BudgetExceededError`
-   (v `parallel`/`pipeline` se promění v `null`, běh doběhne s částečným výsledkem a `budgetExceeded: true`).
-4. **Subagenti mají zakázané workflow** (`CLAUDE_CODE_DISABLE_WORKFLOWS=1` + `--disallowedTools Workflow`), jinak by globální
-   `ultracode` setting uživatele spouštěl rekurzivní workflow z dětí.
-5. **Subagenti dědí CLAUDE.md, skills a MCP** z projektu (nepoužíváme `--bare`); `--no-session-persistence`, ať se nezaplní `/resume` picker.
-   Vlastní záznam každého agenta je v `agents/<id>/`.
-6. **Souběžnost** `min(16, CPU-2)` (min 1), přepis `--concurrency` / `ULTRACODE_MAX_CONCURRENCY`; 1000 agentů/běh; 4096 položek/`parallel`/`pipeline`.
-7. **Procesní skupina**: každý `claude` startuje jako vedoucí vlastní skupiny a při abortu/stallu/ukončení se zabíjí celá skupina (žádní sirotci).
-8. **Whitelist nástrojů** (oprava faktu po integraci): `--allowedTools` v `bypassPermissions` NIC neomezuje (ověřeno reálným claude).
-   Agent se zadaným `tools` proto běží v `--permission-mode dontAsk` (vše mimo seznam se odmítne); bez `tools` zůstává `bypassPermissions`.
-9. **Stdout CLI = JSON výsledek skriptu**, stderr = lidský log. Exit kódy: 0 ok, 1 běh selhal, 2 chybné použití/neplatný skript, 130 přerušeno.
+1. **Resume is content-addressed**, not prefix-replay: the call key = `sha256(prompt + schema + model + effort + cwd + tools + systemPrompt)`
+   + the sequence number of the same key. An identical call returns the stored result, otherwise it runs again — robust against the nondeterministic order in `parallel()`.
+   If an upstream agent's output changes, the prompt of downstream agents changes and they run again automatically (same effect as in Claude Code).
+2. **`agent()` returns `null`** on a terminal failure (after retry/stall restarts) and on abort, just like in Claude Code;
+   the script must handle `null`. Script errors (invalid schema, exceeded budget) throw.
+3. **Budget** = output tokens (`--max-tokens`) and/or USD (`--max-usd`), a hard cap: once reached, the next `agent()` throws `BudgetExceededError`
+   (inside `parallel`/`pipeline` it turns into `null`, the run finishes with a partial result and `budgetExceeded: true`).
+4. **Subagents have workflows disabled** (`CLAUDE_CODE_DISABLE_WORKFLOWS=1` + `--disallowedTools Workflow`), otherwise the user's global
+   `ultracode` setting would run recursive workflows from the children.
+5. **Subagents inherit CLAUDE.md, skills, and MCP** from the project (we do not use `--bare`); `--no-session-persistence`, so the `/resume` picker does not fill up.
+   Each agent's own record is in `agents/<id>/`.
+6. **Concurrency** `min(16, CPU-2)` (min 1), override with `--concurrency` / `ULTRACODE_MAX_CONCURRENCY`; 1000 agents per run; 4096 items per `parallel`/`pipeline`.
+7. **Process group**: each `claude` starts as the leader of its own group, and on abort/stall/exit the whole group is killed (no orphans).
+8. **Tool whitelist** (a fact correction after integration): `--allowedTools` does NOTHING to restrict in `bypassPermissions` (verified with a real claude).
+   An agent with the `tools` option therefore runs in `--permission-mode dontAsk` (everything outside the list is rejected); without `tools` it stays on `bypassPermissions`.
+9. **CLI stdout = JSON result of the script**, stderr = human log. Exit codes: 0 ok, 1 run failed, 2 incorrect usage/invalid script, 130 aborted.
 
-## Architektura
+## Architecture
 
 ```
-bin/ultracode.mjs            tenký shim → dist/cli/cli.js (fallback na src/cli/cli.ts přes type-stripping, vynutitelný ULTRACODE_FORCE_SRC=1)
+bin/ultracode.mjs            thin shim → dist/cli/cli.js (fallback to src/cli/cli.ts via type-stripping, forceable with ULTRACODE_FORCE_SRC=1)
 src/
-  types.ts, errors.ts        KONTRAKTY (sdílené)
-  runner/claude.ts           [modul 1] spuštění jednoho agenta: spawn claude -p, stream-json, retry, stall, abort
-  script/                    [modul 2] načtení a běh skriptu
-    parse.ts                   extrakce meta (čistý literál), validace, TS strip, obalení do async funkce
-    worker.ts                  vm kontext s globály (agent/parallel/pipeline…), determinism guardy
-    host.ts                    runScript(): worker ↔ hlavní vlákno (RPC), abort, SAB budget
-  engine/                    [modul 3] orchestrace běhu
-    engine.ts                  runWorkflow(): semafor, journal, resume, rozpočet, eventy, run dir
-    journal.ts, store.ts       zápis/čtení runs/<id>/*, klíče cache
-    discovery.ts               hledání workflow podle jména
-  cli/                       [modul 4] CLI
+  types.ts, errors.ts        CONTRACTS (shared)
+  runner/claude.ts           [module 1] running one agent: spawn claude -p, stream-json, retry, stall, abort
+  script/                    [module 2] loading and running a script
+    parse.ts                   extract meta (pure literal), validation, TS strip, wrapping into an async function
+    worker.ts                  vm context with the globals (agent/parallel/pipeline…), determinism guards
+    host.ts                    runScript(): worker ↔ main thread (RPC), abort, SAB budget
+  engine/                    [module 3] run orchestration
+    engine.ts                  runWorkflow(): semaphore, journal, resume, budget, events, run dir
+    journal.ts, store.ts       writing/reading runs/<id>/*, cache keys
+    discovery.ts               finding a workflow by name
+  cli/                       [module 4] CLI
     cli.ts, render.ts, commands/*  run | resume | status | list | logs | validate | types | skill install | init
-skills/ultracode-workflow/   [modul 5] authoring skill pro Claude (SKILL.md + references)
-examples/*.workflow.ts       [modul 5] reálné příklady
-types/workflow.d.ts          veřejný kontrakt API pro skripty
-test/                        node:test; fake `claude` v test/fixtures/fake-claude.mjs
+skills/ultracode-workflow/   [module 5] authoring skill for Claude (SKILL.md + references)
+examples/*.workflow.ts       [module 5] real examples
+types/workflow.d.ts          public API contract for scripts
+test/                        node:test; fake `claude` in test/fixtures/fake-claude.mjs
 ```
 
-### Tok jednoho běhu
+### Flow of one run
 
-1. CLI → `runWorkflow(opts)`; engine najde skript, `parseScript()` (meta + diagnostika), založí `runs/<runId>/`.
-2. `runScript()` spustí worker; ve vm kontextu poběží tělo skriptu se globály. `agent()` ve workeru → RPC `ScriptHooks.agent` na hlavním vlákně.
-3. Engine: cache lookup (resume) → semafor → `runClaude()` → journal + events → výsledek zpět do workeru.
-4. `parallel`/`pipeline`/`phase`/`log`/`workflow` žijí ve workeru (čistý JS nad `agent()`), `budget` čte SAB.
-5. Konec: `result.json`, `run.json`, `run_end` event; CLI vypíše JSON na stdout.
+1. CLI → `runWorkflow(opts)`; the engine finds the script, `parseScript()` (meta + diagnostics), creates `runs/<runId>/`.
+2. `runScript()` starts the worker; in the vm context the script body runs with the globals. `agent()` in the worker → RPC `ScriptHooks.agent` on the main thread.
+3. Engine: cache lookup (resume) → semaphore → `runClaude()` → journal + events → result back to the worker.
+4. `parallel`/`pipeline`/`phase`/`log`/`workflow` live in the worker (plain JS on top of `agent()`), `budget` reads the SAB.
+5. End: `result.json`, `run.json`, `run_end` event; the CLI prints JSON to stdout.
 
-### Adresář běhu `<cwd>/.ultracode/runs/<runId>/`
+### Run directory `<cwd>/.ultracode/runs/<runId>/`
 
 ```
-run.json            metadata + stav + totals (aktualizuje se průběžně, atomický zápis)
-script.ts           kopie spuštěného skriptu
-args.json           vstup
-options.json        volby běhu (model, effort, limity…) — `resume` je zdědí, protože model/effort jsou v klíči cache
-events.jsonl        append-only RunEvent (viz types.ts)
-journal.jsonl       jeden řádek za DOKONČENÉHO agenta: {key, seq, ok, label, result, usage, costUsd, sessionId, ts}
-result.json         návratová hodnota skriptu
-.lock               jen za běhu: {pid, ts}; zámek proti souběžnému `resume` (zámek mrtvého pid se přepíše)
-agents/<id>/        prompt.txt, stream.jsonl, stderr.txt, result.json   (id = pořadí startu, 1..N)
+run.json            metadata + state + totals (updated continuously, atomic write)
+script.ts           copy of the executed script
+args.json           input
+options.json        run options (model, effort, limits…) — `resume` inherits them, because model/effort are in the cache key
+events.jsonl        append-only RunEvent (see types.ts)
+journal.jsonl       one line per COMPLETED agent: {key, seq, ok, label, result, usage, costUsd, sessionId, ts}
+result.json         return value of the script
+.lock               only while running: {pid, ts}; a lock against a concurrent `resume` (the lock of a dead pid is overwritten)
+agents/<id>/        prompt.txt, stream.jsonl, stderr.txt, result.json   (id = start order, 1..N)
 ```
 
-`runId` = `wf_<8 hex>-<3 hex>` (jako v Claude Code).
+`runId` = `wf_<8 hex>-<3 hex>` (as in Claude Code).
 
-### `claude -p` volání (jeden agent)
+### `claude -p` call (one agent)
 
 ```
 claude -p --output-format stream-json --verbose --no-session-persistence
        --permission-mode bypassPermissions --disallowedTools Workflow[,…]
        [--model M] [--effort E] [--json-schema '<schema>'] [--allowedTools …]
-       [--append-system-prompt '<výchozí+vlastní>'] [--max-budget-usd X]
-prompt na stdin;  env: CLAUDE_CODE_DISABLE_WORKFLOWS=1
+       [--append-system-prompt '<default+custom>'] [--max-budget-usd X]
+prompt on stdin;  env: CLAUDE_CODE_DISABLE_WORKFLOWS=1
 ```
-Výsledek = poslední event `type:"result"` (`result`, `structured_output`, `usage`, `total_cost_usd`, `session_id`, `num_turns`, `is_error`, `subtype`).
+The result = the last event `type:"result"` (`result`, `structured_output`, `usage`, `total_cost_usd`, `session_id`, `num_turns`, `is_error`, `subtype`).
 
-## Rozsah v1 / mimo rozsah
+## Scope of v1 / out of scope
 
-V1: vše výše. **Mimo v1** (v dokumentu `README.md` sekce „Další kroky“): worktree izolace, pauza/restart jednotlivého agenta,
-TUI/web dashboard, stagger prompt-cache, čekání na usage limit, Agentis YAML integrace, `agentType` (vlastní subagenti).
+V1: everything above. **Out of v1** (in the "Next steps" section of `README.md`): worktree isolation, pause/restart of an individual agent,
+TUI/web dashboard, prompt-cache staggering, waiting for the usage limit, Agentis YAML integration, `agentType` (custom subagents).

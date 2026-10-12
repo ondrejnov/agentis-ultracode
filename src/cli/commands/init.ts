@@ -11,7 +11,7 @@ import { writeTypes } from './types.ts'
 export async function initCommand(ctx: CommandContext, argv: string[]): Promise<number> {
   const { io } = ctx
   const parsed = parseCommandLine('init', argv)
-  if (parsed.positionals.length > 0) throw new UsageError('Příkaz init nebere žádné argumenty.')
+  if (parsed.positionals.length > 0) throw new UsageError('The init command takes no arguments.')
   const force = bool(parsed.values.force)
   const cwd = resolveCwd(ctx, parsed.values)
   const root = join(cwd, '.ultracode')
@@ -23,25 +23,25 @@ export async function initCommand(ctx: CommandContext, argv: string[]): Promise<
 
     const hello = join(workflowsDir, 'hello.workflow.ts')
     if (existsSync(hello) && !force) {
-      lines.push(`Ponechán (už existuje): ${hello}`)
+      lines.push(`Kept (already exists): ${hello}`)
     } else {
       writeFileSync(hello, HELLO_WORKFLOW, 'utf8')
-      lines.push(`Vytvořen: ${hello}`)
+      lines.push(`Created: ${hello}`)
     }
 
     const ignore = join(root, '.gitignore')
     if (!existsSync(ignore)) {
       writeFileSync(ignore, ULTRACODE_GITIGNORE, 'utf8')
-      lines.push(`Vytvořen: ${ignore}`)
+      lines.push(`Created: ${ignore}`)
     }
 
     const types = writeTypes(ctx.packageRoot, cwd, root)
-    lines.push(`Typy zapsány: ${types.file}`)
+    lines.push(`Types written: ${types.file}`)
 
-    io.stdout.write(`${lines.join('\n')}\n\nVyzkoušej:\n  ultracode validate .ultracode/workflows/hello.workflow.ts\n  ultracode run hello --args '{"name":"světe"}'\n`)
+    io.stdout.write(`${lines.join('\n')}\n\nTry it:\n  ultracode validate .ultracode/workflows/hello.workflow.ts\n  ultracode run hello --args '{"name":"world"}'\n`)
     return 0
   } catch (e) {
-    errorLine(ctx, `Inicializace selhala: ${errorMessage(e)}`)
+    errorLine(ctx, `Initialization failed: ${errorMessage(e)}`)
     return 1
   }
 }

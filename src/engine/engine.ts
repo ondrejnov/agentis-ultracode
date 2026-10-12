@@ -1,10 +1,10 @@
 /**
- * Orchestrace jednoho běhu workflow: najde a ověří skript, založí adresář běhu, implementuje `ScriptHooks`
- * (limity, rozpočet, cache z journalu, semafor souběžnosti, runner), zapisuje události/journal/run.json
- * a na konci vrací `RunSummary`.
+ * Orchestrates one workflow run: finds and validates the script, creates the run directory, implements `ScriptHooks`
+ * (limits, budget, journal cache, concurrency semaphore, runner), writes events/journal/run.json
+ * and returns a `RunSummary` at the end.
  *
- * `runWorkflow` NEHÁZÍ pro selhání skriptu ani agentů (vrací summary se stavem `failed`/`aborted`);
- * hází jen pro chybné použití: neexistující workflow/běh, neplatný skript (ScriptValidationError).
+ * `runWorkflow` does NOT throw for script or agent failures (it returns a summary with status `failed`/`aborted`);
+ * it throws only for misuse: a nonexistent workflow/run or an invalid script (ScriptValidationError).
  */
 import { randomBytes, randomInt } from 'node:crypto'
 import { existsSync, linkSync, readdirSync, readFileSync, renameSync, rmSync, statSync } from 'node:fs'
@@ -48,9 +48,9 @@ import { currentLockHolder, lockHolderAlive, type LockHolder } from './proc.ts'
 import { Semaphore } from './semaphore.ts'
 import { emptyTotals, isSafeRunId, readEvents, runDirOf, runsRoot } from './store.ts'
 
-// ───────────────────────── veřejné typy ─────────────────────────
+// ───────────────────────── public types ─────────────────────────
 
-/** Strukturální podoba výsledku `parseScript` (src/script/parse.ts) — záměrně bez importu typu. */
+/** Structural shape of the `parseScript` result (src/script/parse.ts) — intentionally without importing the type. */
 export interface ParsedScriptLike {
   ok: boolean
   meta: WorkflowMeta | null
@@ -59,11 +59,11 @@ export interface ParsedScriptLike {
 }
 
 export interface EngineDeps {
-  /** Injektovaný host skriptu (default `runScript` ze src/script/host.ts). */
+  /** Injected script host (default `runScript` from src/script/host.ts). */
   runScript?: (req: RunScriptRequest) => Promise<RunScriptResult>
-  /** Injektovaný parser (default `parseScript` ze src/script/parse.ts). */
+  /** Injected parser (default `parseScript` from src/script/parse.ts). */
   parseScript?: (source: string, filename: string) => ParsedScriptLike
-  /** Jak dlouho po přerušení čekat na doběhnutí skriptu/agentů, než se běh uzavře (default 10 000 ms). */
+  /** How long to wait after an abort for the script/agents to finish before the run is closed (default 10 000 ms). */
   abortGraceMs?: number
 }
 
@@ -71,14 +71,14 @@ export const DEFAULT_MAX_AGENTS = 1000
 const DEFAULT_ABORT_GRACE_MS = 10_000
 const SCRIPT_EXTENSIONS = ['.ts', '.js', '.mjs', '.mts', '.cjs', '.cts']
 
-// ───────────────────────── pomocné funkce ─────────────────────────
+// ───────────────────────── helper functions ─────────────────────────
 
-/** `wf_<8 hex>-<3 hex>` jako v Claude Code. */
+/** `wf_<8 hex>-<3 hex>` as in Claude Code. */
 export function generateRunId(): string {
   return `wf_${randomBytes(4).toString('hex')}-${randomInt(0x1000).toString(16).padStart(3, '0')}`
 }
 
-/** Souběžnost: `opts.concurrency` > env `ULTRACODE_MAX_CONCURRENCY` > `min(16, max(1, cpus-2))`. */
+/** Concurrency: `opts.concurrency` > env `ULTRACODE_MAX_CONCURRENCY` > `min(16, max(1, cpus-2))`. */
 export function resolveConcurrency(requested?: number, env: NodeJS.ProcessEnv = process.env): number {
   if (typeof requested === 'number' && Number.isFinite(requested) && requested >= 1) return Math.floor(requested)
   const fromEnv = Number.parseInt(env.ULTRACODE_MAX_CONCURRENCY ?? '', 10)
@@ -120,7 +120,7 @@ function cloneTotals(t: RunTotals): RunTotals {
   return { ...t, usage: { ...t.usage } }
 }
 
-/** Čitelný popis chyby včetně (zkráceného) stacku; zvládne i chyby serializované přes worker (prosté objekty). */
+/** Human-readable error description including a (shortened) stack; also handles errors serialized through the worker (plain objects). */
 function describeError(err: unknown): string {
   if (err && typeof err === 'object') {
     const e = err as { name?: unknown; message?: unknown; stack?: unknown }
@@ -181,20 +181,20 @@ function readStoredArgs(runDir: string): unknown {
   }
 }
 
-/** Nalezne zdrojový soubor skriptu pro `opts.workflow` (cesta nebo jméno). */
+/** Finds the source file of the script for `opts.workflow` (a path or a name). */
 function resolveScriptFile(ref: string, cwd: string): string {
   if (looksLikePath(ref)) {
     const direct = resolve(cwd, ref)
     try {
       if (statSync(direct).isFile()) return direct
     } catch {
-      // zkusíme ještě jako jméno (např. `team/foo`)
+      // try it as a name too (e.g. `team/foo`)
     }
   }
   return findWorkflow(ref, cwd)
 }
 
-/** Volby běhu, které se ukládají do `options.json`, aby je `resume` zdědil (model/effort jsou součástí klíče cache). */
+/** Run options saved to `options.json` so that `resume` inherits them (model/effort are part of the cache key). */
 interface StoredRunOptions {
   model?: string
   effort?: EffortLevel
@@ -214,7 +214,7 @@ function readStoredOptions(runDir: string): StoredRunOptions {
   }
 }
 
-/** Explicitně zadané volby mají přednost, chybějící se doplní z uložených (jen při resume). */
+/** Explicitly given options take precedence; missing ones are filled in from the stored options (only on resume). */
 function mergeOptions(opts: RunOptions, stored: StoredRunOptions): StoredRunOptions {
   const out: StoredRunOptions = { ...stored }
   if (opts.model !== undefined) out.model = opts.model
@@ -231,13 +231,13 @@ function pathKey(path: string[]): string {
   return path.join('\u0000')
 }
 
-// ───────────────────────── hlavní funkce ─────────────────────────
+// ───────────────────────── main functions ─────────────────────────
 
-/** Je proces s daným pid naživu? (EPERM = existuje, jen nemáme právo mu signalizovat.) */
+/** Is the process with the given pid alive? (EPERM = it exists, we just lack the permission to signal it.) */
 
 /**
- * Zámek adresáře běhu proti souběžnému `resume` (dva procesy by si přepisovaly run.json a artefakty agentů).
- * Zámek s mrtvým pid (zabitý proces) se přepíše. Vrací funkci pro uvolnění.
+ * Lock on the run directory against a concurrent `resume` (two processes would overwrite each other's run.json and agent artifacts).
+ * A lock held by a dead pid (killed process) is overwritten. Returns a release function.
  */
 async function acquireRunLock(runDir: string, runId: string): Promise<() => void> {
   const file = join(runDir, '.lock')
@@ -249,7 +249,7 @@ async function acquireRunLock(runDir: string, runId: string): Promise<() => void
         try {
           rmSync(file, { force: true })
         } catch {
-          // úklid zámku není kritický
+          // lock cleanup is not critical
         }
       }
     } catch (err) {
@@ -259,7 +259,7 @@ async function acquireRunLock(runDir: string, runId: string): Promise<() => void
     try {
       raw = readFileSync(file, 'utf8')
     } catch {
-      continue // zámek mezitím zmizel → zkus znovu
+      continue // the lock disappeared meanwhile → retry
     }
     let holder: LockHolder | null = null
     try {
@@ -267,13 +267,13 @@ async function acquireRunLock(runDir: string, runId: string): Promise<() => void
       const pid = Number(parsed.pid)
       if (Number.isInteger(pid) && pid > 0) holder = { pid, ...(typeof parsed.start === 'string' ? { start: parsed.start } : {}) }
     } catch {
-      // poškozený/prázdný zámek: bereme jako opuštěný
+      // corrupt/empty lock: treat it as abandoned
     }
     if (holder && lockHolderAlive(holder)) {
-      throw new UltracodeError('RUN_LOCKED', `Běh „${runId}“ právě používá jiný proces (pid ${holder.pid}). Počkej na jeho dokončení nebo ho ukonči.`)
+      throw new UltracodeError('RUN_LOCKED', `Run “${runId}” is currently in use by another process (pid ${holder.pid}). Wait for it to finish or stop it.`)
     }
-    // Opuštěný zámek NEMAŽEME přímo: dva procesy by si smazaly zámek jeden druhého (TOCTOU).
-    // Přejmenujeme ho na unikátní jméno – přejmenovat jde jen jednou – a ověříme, že jsme přesunuli právě ten opuštěný.
+    // We do NOT delete the abandoned lock directly: two processes would delete each other's lock (TOCTOU).
+    // We rename it to a unique name (a rename succeeds only once) and verify that we moved exactly the abandoned lock.
     const parked = `${file}.stale-${process.pid}-${randomBytes(6).toString('hex')}`
     try {
       renameSync(file, parked)
@@ -291,16 +291,16 @@ async function acquireRunLock(runDir: string, runId: string): Promise<() => void
       rmSync(parked, { force: true })
       continue
     }
-    // Mezitím někdo zamkl čerstvě a přesunuli jsme jeho zámek: vrátíme ho zpět (link selže, pokud už jiný zámek existuje).
+    // Meanwhile someone locked freshly and we moved their lock: put it back (the link fails if another lock already exists).
     try {
       linkSync(parked, file)
     } catch {
       // ignoruj
     }
     rmSync(parked, { force: true })
-    throw new UltracodeError('RUN_LOCKED', `Běh „${runId}“ právě zamkl jiný proces. Zkus to znovu za chvíli.`)
+    throw new UltracodeError('RUN_LOCKED', `Run “${runId}” was just locked by another process. Try again in a moment.`)
   }
-  throw new UltracodeError('RUN_LOCKED', `Běh „${runId}“ se nepodařilo zamknout.`)
+  throw new UltracodeError('RUN_LOCKED', `Failed to lock run “${runId}”.`)
 }
 
 export async function runWorkflow(opts: RunOptions, deps: EngineDeps = {}): Promise<RunSummary> {
@@ -317,22 +317,22 @@ async function runWorkflowImpl(opts: RunOptions, deps: EngineDeps, lock: { relea
   const userSignal = opts.signal
   const abortGraceMs = deps.abortGraceMs ?? DEFAULT_ABORT_GRACE_MS
 
-  // ── 1) kontrola použití: resume, skript, argumenty (před jakýmkoli zápisem na disk) ──
+  // ── 1) usage check: resume, script, arguments (before any write to disk) ──
   const resumed = opts.resumeRunId !== undefined
   let runId: string
   let runDir: string
   if (resumed) {
     runId = String(opts.resumeRunId)
-    if (!isSafeRunId(runId)) throw new UltracodeError('RUN_NOT_FOUND', `Neplatné ID běhu „${runId}“.`)
+    if (!isSafeRunId(runId)) throw new UltracodeError('RUN_NOT_FOUND', `Invalid run ID “${runId}”.`)
     runDir = runDirOf(cwd, runId)
     if (!isDirectory(runDir) || !(existsSync(join(runDir, 'run.json')) || existsSync(join(runDir, 'journal.jsonl')) || existsSync(join(runDir, 'events.jsonl')))) {
-      throw new UltracodeError('RUN_NOT_FOUND', `Běh „${runId}“ nenalezen v ${runsRoot(cwd)}.`)
+      throw new UltracodeError('RUN_NOT_FOUND', `Run “${runId}” not found in ${runsRoot(cwd)}.`)
     }
   } else {
     runId = ''
     runDir = ''
     if (opts.runId !== undefined && !isSafeRunId(opts.runId)) {
-      throw new UltracodeError('INVALID_RUN_ID', `Neplatné ID běhu „${opts.runId}“ (povolena písmena, číslice, „.“, „_“, „-“).`)
+      throw new UltracodeError('INVALID_RUN_ID', `Invalid run ID “${opts.runId}” (allowed: letters, digits, “.”, “_”, “-”).`)
     }
   }
 
@@ -343,11 +343,11 @@ async function runWorkflowImpl(opts: RunOptions, deps: EngineDeps, lock: { relea
     scriptPath = resolveScriptFile(ref, cwd)
   } else if (resumed) {
     const stored = findStoredScript(runDir)
-    if (!stored) throw new UltracodeError('SCRIPT_MISSING', `Běh „${runId}“ nemá uloženou kopii skriptu; zadej workflow explicitně.`)
+    if (!stored) throw new UltracodeError('SCRIPT_MISSING', `Run “${runId}” has no stored copy of the script; specify the workflow explicitly.`)
     scriptPath = stored
     usingStoredCopy = true
   } else {
-    throw new UltracodeError('USAGE', 'Není zadáno workflow (cesta ke skriptu ani jméno).')
+    throw new UltracodeError('USAGE', 'No workflow specified (neither a script path nor a name).')
   }
 
   let source: string
@@ -364,8 +364,8 @@ async function runWorkflowImpl(opts: RunOptions, deps: EngineDeps, lock: { relea
   const parsed = parse(source, scriptPath)
   if (!parsed.ok) {
     const errors = parsed.diagnostics.filter((d) => d.level === 'error')
-    const lines = (errors.length > 0 ? errors : parsed.diagnostics).map((d) => (d.line !== undefined ? `řádek ${d.line}: ${d.message}` : d.message))
-    throw new ScriptValidationError(`Neplatný skript ${basename(scriptPath)}: ${lines[0] ?? 'neznámá chyba'}`, lines)
+    const lines = (errors.length > 0 ? errors : parsed.diagnostics).map((d) => (d.line !== undefined ? `line ${d.line}: ${d.message}` : d.message))
+    throw new ScriptValidationError(`Invalid script ${basename(scriptPath)}: ${lines[0] ?? 'unknown error'}`, lines)
   }
   const meta: WorkflowMeta = parsed.meta ?? { name: basename(scriptPath).replace(/(\.workflow)?\.[cm]?[jt]s$/, ''), description: '' }
   const warnings = parsed.diagnostics.filter((d) => d.level === 'warning')
@@ -373,7 +373,7 @@ async function runWorkflowImpl(opts: RunOptions, deps: EngineDeps, lock: { relea
   const runScriptFn = deps.runScript ?? (await loadRunScript())
   const runner: ClaudeRunner = opts.runner ?? (await loadRunner())
 
-  // ── 3) adresář běhu ──
+  // ── 3) run directory ──
   if (!resumed) {
     await mkdir(runsRoot(cwd), { recursive: true })
     for (let attempt = 0; ; attempt++) {
@@ -385,7 +385,7 @@ async function runWorkflowImpl(opts: RunOptions, deps: EngineDeps, lock: { relea
         break
       } catch (err) {
         if (errorCode(err) === 'EEXIST') {
-          if (opts.runId !== undefined) throw new UltracodeError('RUN_EXISTS', `Běh „${candidate}“ už existuje.`)
+          if (opts.runId !== undefined) throw new UltracodeError('RUN_EXISTS', `Run “${candidate}” already exists.`)
           if (attempt < 10) continue
         }
         throw err
@@ -393,14 +393,14 @@ async function runWorkflowImpl(opts: RunOptions, deps: EngineDeps, lock: { relea
     }
   }
 
-  // zámek proti souběžnému použití stejného běhu (resume ve dvou procesech)
+  // lock against concurrent use of the same run (resume in two processes)
   lock.release = await acquireRunLock(runDir, runId)
 
   const startedAtMs = Date.now()
   const startedAt = new Date(startedAtMs).toISOString()
   const effectiveScriptPath = scriptPath
 
-  // kopie skriptu + args (u resume s uloženou kopií se nepřepisují)
+  // copy of the script + args (not overwritten on resume when a stored copy exists)
   if (!usingStoredCopy) {
     const ext = SCRIPT_EXTENSIONS.includes(extname(scriptPath)) ? extname(scriptPath) : '.ts'
     const copyName = `script${ext}`
@@ -409,24 +409,24 @@ async function runWorkflowImpl(opts: RunOptions, deps: EngineDeps, lock: { relea
         if (/^script\.[a-z]+$/.test(f) && f !== copyName) await rm(join(runDir, f), { force: true })
       }
     } catch {
-      // úklid starých kopií není kritický
+      // cleanup of old copies is not critical
     }
     await writeFile(join(runDir, copyName), source, 'utf8')
   }
-  // args.json: nový běh vždy; resume jen při explicitních args (nebo když soubor chybí)
+  // args.json: always written for a new run; on resume only with explicit args (or when the file is missing)
   if (!resumed || opts.args !== undefined || !existsSync(join(runDir, 'args.json'))) {
     await writeFileAtomic(join(runDir, 'args.json'), JSON.stringify(args === undefined ? null : args, null, 2) + '\n')
   }
 
-  // volby běhu: při resume se chybějící zdědí z options.json (model/effort jsou v klíči cache, jinak by resume běžel znovu)
+  // run options: on resume, missing ones are inherited from options.json (model/effort are in the cache key, otherwise resume would run again)
   const eff = mergeOptions(opts, resumed ? readStoredOptions(runDir) : {})
   try {
     await writeFileAtomic(join(runDir, 'options.json'), JSON.stringify(eff, null, 2) + '\n')
   } catch {
-    // ukládání voleb není kritické
+    // saving options is not critical
   }
 
-  // ── 4) stav běhu ──
+  // ── 4) run state ──
   const totals: RunTotals = emptyTotals()
   let budgetExceeded = false
   let status: RunStatus = 'running'
@@ -452,25 +452,25 @@ async function runWorkflowImpl(opts: RunOptions, deps: EngineDeps, lock: { relea
   const onWriteError = (what: string) => (err: unknown) => {
     if (warnedWriteErrors.has(what)) return
     warnedWriteErrors.add(what)
-    safeCallback({ t: 'log', ts: nowIso(), message: `Varování: zápis souboru ${what} selhal (${(err as Error)?.message ?? err}).`, workflowPath: [meta.name] })
+    safeCallback({ t: 'log', ts: nowIso(), message: `Warning: writing file ${what} failed (${(err as Error)?.message ?? err}).`, workflowPath: [meta.name] })
   }
   const safeCallback = (e: RunEvent) => {
     try {
       opts.onEvent?.(e)
     } catch {
-      // chyba v onEvent nesmí ovlivnit běh
+      // an error in onEvent must not affect the run
     }
   }
 
   if (resumed) {
-    // useknutý poslední řádek po zabitém procesu nesmí slepit další záznam
+    // a truncated last line after a killed process must not be glued to the next record
     await ensureTrailingNewline(join(runDir, 'journal.jsonl')).catch(() => {})
     await ensureTrailingNewline(join(runDir, 'events.jsonl')).catch(() => {})
   }
   const events = new JsonlAppender(join(runDir, 'events.jsonl'), onWriteError('events.jsonl'))
   const journalWriter = new JsonlAppender(join(runDir, 'journal.jsonl'), onWriteError('journal.jsonl'))
-  // po uzavření běhu (run_end) se už nic nezapisuje — opožděná volání visícího skriptu/agenta nesmí
-  // přidat události za run_end ani přepsat finální run.json
+  // after the run is closed (run_end) nothing more is written — delayed calls from a hanging script/agent must not
+  // add events after run_end or overwrite the final run.json
   let closed = false
   const emit = (e: RunEvent): void => {
     if (closed) return
@@ -498,10 +498,10 @@ async function runWorkflowImpl(opts: RunOptions, deps: EngineDeps, lock: { relea
   }
   const runJson = new StateFileWriter(join(runDir, 'run.json'), currentSummary, onWriteError('run.json'))
 
-  // cache z journalu původního běhu (pouze při resume); načíst PŘED přidáním nových záznamů
+  // cache from the journal of the original run (resume only); load it BEFORE adding new records
   const cache = resumed ? await JournalCache.load(join(runDir, 'journal.jsonl')) : new JournalCache()
 
-  // ids agentů navazují na dřívější běhy (events.jsonl + adresáře agents/<n>/), aby resume nepřepsal artefakty
+  // agent ids continue from earlier runs (events.jsonl + agents/<n>/ directories), so that resume does not overwrite artifacts
   let agentSeq = 0
   if (resumed) {
     for (const e of readEvents(cwd, runId)) {
@@ -513,7 +513,7 @@ async function runWorkflowImpl(opts: RunOptions, deps: EngineDeps, lock: { relea
         if (Number.isInteger(n) && n > agentSeq) agentSeq = n
       }
     } catch {
-      // žádné agents/ → nic dalšího
+      // no agents/ → nothing more to do
     }
   }
 
@@ -522,10 +522,10 @@ async function runWorkflowImpl(opts: RunOptions, deps: EngineDeps, lock: { relea
   const runSignal: AbortSignal = userSignal ? AbortSignal.any([userSignal, internalAbort.signal]) : internalAbort.signal
   const concurrencyLimit = resolveConcurrency(eff.concurrency)
   const semaphore = new Semaphore(concurrencyLimit)
-  // Rozpočet v USD: součet stropů přidělených běžícím agentům (rezervace), aby souběžní agenti nečerpali každý celý zbytek.
+  // USD budget: sum of the caps allocated to running agents (reservations), so that concurrent agents do not each draw the whole remainder.
   let reservedUsd = 0
   let runningAgents = 0
-  // agenti čekající na uvolnění rezervace (když zbytek rozpočtu není rozdělitelný, počkají, místo aby selhali)
+  // agents waiting for a reservation to be released (if the remaining budget cannot be split, they wait instead of failing)
   const budgetWaiters: Array<() => void> = []
   const inflight = new Set<Promise<unknown>>()
   const seqByKey = new Map<string, number>()
@@ -543,17 +543,17 @@ async function runWorkflowImpl(opts: RunOptions, deps: EngineDeps, lock: { relea
   const budgetError = (message: string, call: HookCall): BudgetExceededError => {
     if (!budgetExceeded) {
       budgetExceeded = true
-      emit({ t: 'log', ts: nowIso(), message: `Překročen limit: ${message}`, workflowPath: call.workflowPath })
+      emit({ t: 'log', ts: nowIso(), message: `Limit exceeded: ${message}`, workflowPath: call.workflowPath })
     }
     return new BudgetExceededError(message)
   }
 
   const checkBudget = (call: HookCall): void => {
     if (limitTokens !== null && spentTokens >= limitTokens) {
-      throw budgetError(`Vyčerpán rozpočet výstupních tokenů (${spentTokens} z ${limitTokens}).`, call)
+      throw budgetError(`Output token budget exhausted (${spentTokens} of ${limitTokens}).`, call)
     }
     if (limitUsd !== null && spentUsd >= limitUsd) {
-      throw budgetError(`Vyčerpán rozpočet v USD (${spentUsd.toFixed(4)} z ${limitUsd}).`, call)
+      throw budgetError(`USD budget exhausted (${spentUsd.toFixed(4)} of ${limitUsd}).`, call)
     }
   }
 
@@ -565,21 +565,21 @@ async function runWorkflowImpl(opts: RunOptions, deps: EngineDeps, lock: { relea
 
   const runAgent = async (prompt: string, aopts: AgentOptions, call: HookCall): Promise<unknown> => {
     if (typeof prompt !== 'string' || prompt.trim() === '') {
-      throw new UltracodeError('INVALID_PROMPT', 'agent(): prompt musí být neprázdný řetězec.')
+      throw new UltracodeError('INVALID_PROMPT', 'agent(): prompt must be a non-empty string.')
     }
     if (runSignal.aborted) return null
     if ((aopts as { isolation?: unknown }).isolation !== undefined) {
-      throw new UltracodeError('UNSUPPORTED_OPTION', 'agent(): volba `isolation` (worktree) není ve v1 podporována; rozděl práci mezi agenty po cestách (partitions).')
+      throw new UltracodeError('UNSUPPORTED_OPTION', 'agent(): the `isolation` option (worktree) is not supported in v1; split the work between agents by path (partitions).')
     }
 
-    // (1) limit agentů a rozpočet
+    // (1) agent limit and budget
     if (agentCalls >= maxAgents) {
-      throw budgetError(`Překročen limit ${maxAgents} agentů na běh.`, call)
+      throw budgetError(`Agent limit of ${maxAgents} per run exceeded.`, call)
     }
     agentCalls++
-    // rozpočet se kontroluje až před skutečným spuštěním (za cache): už zaplacený výsledek nesmí shodit resume
+    // the budget is checked only just before the real start (after the cache): an already paid result must not break resume
 
-    // efektivní hodnoty
+    // effective values
     const model = aopts.model ?? eff.model
     const effort = aopts.effort ?? eff.effort
     const agentCwd = aopts.cwd ? resolve(cwd, aopts.cwd) : cwd
@@ -592,7 +592,7 @@ async function runWorkflowImpl(opts: RunOptions, deps: EngineDeps, lock: { relea
       schema: aopts.schema ?? null,
       model,
       effort,
-      // relativně k projektu: přesunutí/přejmenování projektu nesmí zneplatnit cache
+      // relative to the project: moving/renaming the project must not invalidate the cache
       cwd: relative(cwd, agentCwd) || '.',
       tools: aopts.tools,
       disallowedTools: aopts.disallowedTools,
@@ -622,21 +622,21 @@ async function runWorkflowImpl(opts: RunOptions, deps: EngineDeps, lock: { relea
       }
     }
 
-    // (3) semafor souběžnosti
+    // (3) concurrency semaphore
     let release: () => void
     try {
       release = await semaphore.acquire(runSignal)
     } catch {
-      return null // přerušeno během čekání
+      return null // aborted while waiting
     }
     runningAgents++
     let myCap = 0
     try {
       if (runSignal.aborted) return null
-      // během čekání se mohl rozpočet vyčerpat → znovu (hlídání souběžně startujících)
+      // the budget may have been exhausted while waiting → check again (guards agents starting concurrently)
       checkBudget(call)
 
-      // (4) spuštění agenta
+      // (4) start the agent
       const id = ++agentSeq
       emit({ t: 'agent_start', ts: nowIso(), id, label, phase, workflowPath: call.workflowPath, ...(model !== undefined ? { model } : {}), promptPreview: previewOf(prompt) })
 
@@ -644,14 +644,14 @@ async function runWorkflowImpl(opts: RunOptions, deps: EngineDeps, lock: { relea
       if (limitUsd !== null) {
         let avail = limitUsd - spentUsd - reservedUsd
         while (avail <= 0) {
-          // nic není k rozdělení: buď čekáme na běžící agenty (vrátí rezervaci), nebo je rozpočet opravdu vyčerpán
-          if (reservedUsd <= 0 || runSignal.aborted) throw budgetError(`Vyčerpán rozpočet v USD (${spentUsd.toFixed(4)} z ${limitUsd}).`, call)
+          // nothing to split: either we wait for running agents (they return their reservation), or the budget is really exhausted
+          if (reservedUsd <= 0 || runSignal.aborted) throw budgetError(`USD budget exhausted (${spentUsd.toFixed(4)} of ${limitUsd}).`, call)
           await new Promise<void>((resolveWait) => budgetWaiters.push(resolveWait))
           if (runSignal.aborted) return null
           checkBudget(call)
           avail = limitUsd - spentUsd - reservedUsd
         }
-        // podíl podle skutečné poptávky (běžící + čekající agenti); součet přidělených stropů nepřekročí zbývající rozpočet
+        // share based on actual demand (running + waiting agents); the sum of allocated caps will not exceed the remaining budget
         const share = avail / Math.max(1, runningAgents + semaphore.waiting)
         maxBudgetUsd = maxBudgetUsd === undefined ? share : Math.min(maxBudgetUsd, share)
         myCap = maxBudgetUsd
@@ -674,9 +674,9 @@ async function runWorkflowImpl(opts: RunOptions, deps: EngineDeps, lock: { relea
       if (aopts.systemPrompt !== undefined) req.appendSystemPrompt = aopts.systemPrompt
       if (aopts.tools !== undefined) req.allowedTools = aopts.tools
       if (aopts.disallowedTools !== undefined) req.disallowedTools = aopts.disallowedTools
-      // `--allowedTools` v bypassPermissions nic neomezuje (ověřeno). Zadá-li skript `tools`, chceme skutečný whitelist,
-      // proto agent běží v `dontAsk` (cokoli mimo seznam se odmítne bez dotazu), pokud režim výslovně nevolil volající.
-      // I prázdný seznam `tools: []` je explicitní volba → dontAsk (jinak by agent dostal všechny nástroje).
+      // `--allowedTools` restricts nothing under bypassPermissions (verified). If the script gives `tools`, we want a real whitelist,
+      // so the agent runs in `dontAsk` (anything outside the list is rejected without asking), unless the caller explicitly chose a mode.
+      // Even an empty list `tools: []` is an explicit choice → dontAsk (otherwise the agent would get all tools).
       if (eff.permissionMode !== undefined) req.permissionMode = eff.permissionMode
       else if (aopts.tools !== undefined) req.permissionMode = 'dontAsk'
       if (maxBudgetUsd !== undefined) req.maxBudgetUsd = maxBudgetUsd
@@ -702,7 +702,7 @@ async function runWorkflowImpl(opts: RunOptions, deps: EngineDeps, lock: { relea
         }
       }
 
-      if (closed) return null // běh už byl uzavřen (např. po grace době při abortu)
+      if (closed) return null // the run is already closed (e.g. after the grace period on abort)
 
       const usage = sanitizeUsage(r.usage)
       const costUsd = num(r.costUsd)
@@ -714,7 +714,7 @@ async function runWorkflowImpl(opts: RunOptions, deps: EngineDeps, lock: { relea
         if (aopts.schema !== undefined) {
           if (r.structured === undefined || r.structured === null) {
             ok = false
-            errorText = 'schema: agent nevrátil strukturovaný výstup.'
+            errorText = 'schema: agent did not return structured output.'
           } else {
             value = r.structured
           }
@@ -722,10 +722,10 @@ async function runWorkflowImpl(opts: RunOptions, deps: EngineDeps, lock: { relea
           value = r.text ?? ''
         }
       } else {
-        errorText = r.error ? `${r.error.kind}: ${r.error.message}` : 'agent selhal'
+        errorText = r.error ? `${r.error.kind}: ${r.error.message}` : 'agent failed'
       }
 
-      // (5) journal (jen ok), totals, rozpočet, události
+      // (5) journal (ok only), totals, budget, events
       if (ok) {
         const entry: JournalEntry = {
           key,
@@ -816,7 +816,7 @@ async function runWorkflowImpl(opts: RunOptions, deps: EngineDeps, lock: { relea
 
   // ── 6) start ──
   const phases: PhaseMeta[] = Array.isArray(meta.phases) ? meta.phases : []
-  await runJson.request() // run.json (status running) existuje dřív než první agent
+  await runJson.request() // run.json (status running) exists before the first agent
   emit({
     t: 'run_start',
     ts: startedAt,
@@ -830,7 +830,7 @@ async function runWorkflowImpl(opts: RunOptions, deps: EngineDeps, lock: { relea
     phases,
   })
   for (const w of warnings) {
-    emit({ t: 'log', ts: nowIso(), message: `Varování skriptu${w.line !== undefined ? ` (řádek ${w.line})` : ''}: ${w.message}`, workflowPath: [meta.name] })
+    emit({ t: 'log', ts: nowIso(), message: `Script warning${w.line !== undefined ? ` (line ${w.line})` : ''}: ${w.message}`, workflowPath: [meta.name] })
   }
 
   let scriptError: unknown
@@ -849,7 +849,7 @@ async function runWorkflowImpl(opts: RunOptions, deps: EngineDeps, lock: { relea
 
   try {
     if (userSignal?.aborted) {
-      // přerušeno ještě před startem skriptu
+      // aborted before the script started
     } else {
       const req: RunScriptRequest = { source, filename: scriptPath, args, hooks, budgetBuffer, signal: runSignal }
       const scriptPromise = Promise.resolve().then(() => runScriptFn(req))
@@ -859,7 +859,7 @@ async function runWorkflowImpl(opts: RunOptions, deps: EngineDeps, lock: { relea
         scriptPromise.then(resolveG, rejectG)
         if (userSignal) {
           onAbort = () => {
-            graceTimer = setTimeout(() => rejectG(new AbortedError(`Skript se po přerušení neukončil do ${abortGraceMs} ms.`)), abortGraceMs)
+            graceTimer = setTimeout(() => rejectG(new AbortedError(`Script did not finish within ${abortGraceMs} ms after the abort.`)), abortGraceMs)
           }
           if (userSignal.aborted) onAbort()
           else userSignal.addEventListener('abort', onAbort, { once: true })
@@ -878,17 +878,17 @@ async function runWorkflowImpl(opts: RunOptions, deps: EngineDeps, lock: { relea
     scriptError = err
   }
 
-  // uklidit zbylé agenty (nečekané/nedoawaitované) a počkat, až skončí procesy
+  // clean up remaining agents (unexpected/not awaited) and wait until their processes end
   internalAbort.abort()
   if (inflight.size > 0) {
     await raceWithTimeout(Promise.allSettled([...inflight]), abortGraceMs)
   }
 
-  // ── 7) uzavření běhu ──
+  // ── 7) close the run ──
   const aborted = userSignal?.aborted === true
   if (aborted) {
     status = 'aborted'
-    runError = 'Běh byl přerušen.'
+    runError = 'Run was aborted.'
   } else if (scriptFailed) {
     status = 'failed'
     runError = describeError(scriptError)
@@ -913,13 +913,13 @@ async function runWorkflowImpl(opts: RunOptions, deps: EngineDeps, lock: { relea
   await journalWriter.flush()
   await runJson.request()
 
-  // Neplatný skript před prvním agentem je chyba použití; objeví-li se až u vnořeného workflow po utracení agentů,
-  // běh skončí jako failed se svým výsledkem (jinak by se útrata ztratila a výstup nevznikl).
+  // An invalid script before the first agent is a usage error; if it only surfaces in a nested workflow after agents have spent budget,
+  // the run ends as failed with its result (otherwise the spending would be lost and no output produced).
   if (scriptFailed && scriptError instanceof ScriptValidationError && agentCalls === 0) throw scriptError
   return currentSummary()
 }
 
-// ───────────────────────── líné načtení závislostí ─────────────────────────
+// ───────────────────────── lazy dependency loading ─────────────────────────
 
 async function loadParseScript(): Promise<(source: string, filename: string) => ParsedScriptLike> {
   const mod = (await import('../script/parse.ts')) as { parseScript: (source: string, filename: string) => ParsedScriptLike }

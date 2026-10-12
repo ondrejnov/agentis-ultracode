@@ -1,6 +1,6 @@
 /**
- * Integrace enginu se skutečným parserem/hostem skriptu (modul SCRIPT) a runnerem (modul RUNNER)
- * nad falešným `claude` (test/fixtures/fake-claude.mjs).
+ * Engine integration with the real script parser/host (SCRIPT module) and runner (RUNNER module)
+ * on top of a fake `claude` (test/fixtures/fake-claude.mjs).
  */
 import assert from 'node:assert/strict'
 import { readFileSync, existsSync } from 'node:fs'
@@ -14,21 +14,21 @@ import { makeProject, readJsonFile, sleep, waitFor } from './helpers.ts'
 const FAKE = fileURLToPath(new URL('../fixtures/fake-claude.mjs', import.meta.url))
 
 const SCRIPT = `export const meta = {
-  name: 'integrace',
-  description: 'Fan-out přes pipeline s fake claude',
-  phases: [{ title: 'Hledání' }, { title: 'Oprava' }],
+  name: 'integration',
+  description: 'Fan-out via pipeline with fake claude',
+  phases: [{ title: 'Search' }, { title: 'Fix' }],
 }
-phase('Hledání')
+phase('Search')
 const items = args.items
 const results = await pipeline(
   items,
-  (item) => agent('Najdi chyby v ' + item + ' [[fake:json {"item":"' + item + '","found":2}]] [[fake:tokens 50]]', {
+  (item) => agent('Find errors in ' + item + ' [[fake:json {"item":"' + item + '","found":2}]] [[fake:tokens 50]]', {
     label: 'find ' + item,
     schema: { type: 'object', properties: { item: { type: 'string' }, found: { type: 'number' } }, required: ['item', 'found'] },
   }),
-  (found, item) => agent('Oprav ' + item + ' (' + found.found + ') [[fake:text opraveno-' + item + ']]', { label: 'fix ' + item, phase: 'Oprava' }),
+  (found, item) => agent('Fix ' + item + ' (' + found.found + ') [[fake:text fixed-' + item + ']]', { label: 'fix ' + item, phase: 'Fix' }),
 )
-log('hotovo: ' + results.filter(Boolean).length)
+log('done: ' + results.filter(Boolean).length)
 return { results, spent: budget.spent() }
 `
 
@@ -54,8 +54,8 @@ function readLog(path: string): Array<{ startedAt: number | string; endedAt: num
     .map((l) => JSON.parse(l))
 }
 
-describe('integrace s reálným host/parse a fake-claude', () => {
-  test('pipeline přes skutečný skript, resume = 100 % cache, claudeBin nemění process.env', async () => {
+describe('integration with real host/parse and fake-claude', () => {
+  test('pipeline via real script, resume = 100% cache, claudeBin does not change process.env', async () => {
     const p = makeProject()
     const logFile = join(p.cwd, 'fake.log')
     try {
@@ -67,7 +67,7 @@ describe('integrace s reálným host/parse a fake-claude', () => {
       assert.equal(process.env.ULTRACODE_CLAUDE_BIN, before)
       assert.equal(s1.status, 'completed', s1.error)
       const result = s1.result as { results: string[]; spent: number }
-      assert.deepEqual(result.results, ['opraveno-a.php', 'opraveno-b.php', 'opraveno-c.php'])
+      assert.deepEqual(result.results, ['fixed-a.php', 'fixed-b.php', 'fixed-c.php'])
       assert.equal(s1.totals.agents, 6)
       assert.equal(s1.totals.failedAgents, 0)
       assert.equal(s1.totals.usage.outputTokens, result.spent)
@@ -75,25 +75,25 @@ describe('integrace s reálným host/parse a fake-claude', () => {
 
       const calls = readLog(logFile)
       assert.equal(calls.length, 6)
-      // souběžnost 2 platí i pro skutečné procesy
+      // concurrency 2 also holds for real processes
       const iv = calls.map((c) => [Number(new Date(c.startedAt)), Number(new Date(c.endedAt))] as const)
       let peak = 0
       for (const [s] of iv) peak = Math.max(peak, iv.filter(([a, b]) => a <= s && s < b).length)
-      assert.ok(peak <= 2, `souběžnost ${peak} > 2`)
+      assert.ok(peak <= 2, `concurrency ${peak} > 2`)
 
       const events = readEvents(p.cwd, s1.runId)
       const phases = events.filter((e) => e.t === 'agent_start').map((e) => (e.t === 'agent_start' ? e.phase : null))
-      assert.equal(phases.filter((x) => x === 'Hledání').length, 3)
-      assert.equal(phases.filter((x) => x === 'Oprava').length, 3)
+      assert.equal(phases.filter((x) => x === 'Search').length, 3)
+      assert.equal(phases.filter((x) => x === 'Fix').length, 3)
       assert.ok(existsSync(join(s1.runDir, 'agents', '1', 'prompt.txt')))
 
-      // resume: nic se nespustí
+      // resume: nothing is started
       const s2 = await withEnv({ FAKE_CLAUDE_LOG: logFile, FAKE_CLAUDE_STATE_DIR: join(p.cwd, 'state') }, () =>
         runWorkflow({ workflow: file, cwd: p.cwd, claudeBin: FAKE, resumeRunId: s1.runId }),
       )
       assert.equal(s2.status, 'completed', s2.error)
       assert.equal(s2.totals.cachedAgents, 6)
-      // přehrané výsledky z cache nesou svou původní cenu; nový FAKE běh nic nestál
+      // replayed results from cache carry their original cost; the new FAKE run cost nothing
       assert.equal(s2.totals.costUsd, s1.totals.costUsd)
       assert.deepEqual((s2.result as any).results, result.results)
       assert.equal(readLog(logFile).length, 6)
@@ -103,14 +103,14 @@ describe('integrace s reálným host/parse a fake-claude', () => {
     }
   })
 
-  test('abort: skutečné procesy fake-claude jsou zabity a běh skončí aborted', async () => {
+  test('abort: real fake-claude processes are killed and the run ends as aborted', async () => {
     const p = makeProject()
     const logFile = join(p.cwd, 'fake.log')
     try {
       const file = p.script(
         'slow.workflow.ts',
-        `export const meta = { name: 'slow', description: 'pomalé' }
-const r = await parallel([1, 2, 3].map((i) => () => agent('pomalý ' + i + ' [[fake:sleep 20000]]')))
+        `export const meta = { name: 'slow', description: 'slow' }
+const r = await parallel([1, 2, 3].map((i) => () => agent('slow ' + i + ' [[fake:sleep 20000]]')))
 return r`,
       )
       const ac = new AbortController()
@@ -140,15 +140,15 @@ return r`,
     }
   })
 
-  test('chyba skriptu z hostu (throw) → failed; neplatný skript → ScriptValidationError před založením běhu', async () => {
+  test('script error from host (throw) → failed; invalid script → ScriptValidationError before the run is created', async () => {
     const p = makeProject()
     try {
-      const bad = p.script('bad.workflow.ts', `export const meta = { name: 'bad', description: 'x' }\nthrow new Error('ze skriptu')\n`)
+      const bad = p.script('bad.workflow.ts', `export const meta = { name: 'bad', description: 'x' }\nthrow new Error('from script')\n`)
       const s = await runWorkflow({ workflow: bad, cwd: p.cwd, claudeBin: FAKE })
       assert.equal(s.status, 'failed')
-      assert.match(s.error ?? '', /ze skriptu/)
+      assert.match(s.error ?? '', /from script/)
 
-      const invalid = p.script('invalid.workflow.ts', `const x = 1\nreturn x\n`) // chybí meta
+      const invalid = p.script('invalid.workflow.ts', `const x = 1\nreturn x\n`) // missing meta
       await assert.rejects(runWorkflow({ workflow: invalid, cwd: p.cwd, claudeBin: FAKE }), (e: any) => e.code === 'SCRIPT_INVALID' && Array.isArray(e.diagnostics))
     } finally {
       p.cleanup()

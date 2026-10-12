@@ -1,30 +1,30 @@
 /**
- * Runner jednoho agenta: spuštění `claude -p` (stream-json), sledování výstupu, stall watchdog,
- * retry, abort a úklid celé skupiny procesů.
+ * Runner for a single agent: spawns `claude -p` (stream-json), monitors output, stall watchdog,
+ * retry, abort and cleanup of the whole process group.
  *
- * ── Empiricky zjištěný formát `claude -p --output-format stream-json --verbose` (claude 2.1.x) ──
- *  - stdout = JSONL. Typy řádků: `system` (subtype `init`, `hook_started`, `hook_response`,
- *    `thinking_tokens`, `api_retry`), `assistant`, `user`, `rate_limit_event`, nakonec `result`.
- *  - `assistant` event nese právě JEDEN content blok (thinking | text | tool_use) a stejné `message.id`
- *    se opakuje napříč bloky jedné zprávy → tool_use deduplikujeme podle `content[].id`.
- *    `message.usage.output_tokens` je jen průběžný snímek (podhodnocený); autoritativní je `result.usage`.
- *    Vstupní/cache pole průběžných snímků sedí přesně se součtem ve `result.usage`.
- *  - Schema (`--json-schema`): claude interně přidá nástroj `StructuredOutput`; jeho `tool_use` NEPOČÍTÁME
- *    jako tool call. Výsledek je v `result.structured_output` (a `result` je jeho JSON text). Když model
- *    nástroj nezavolá (např. protimluvné schema), `result` event je `is_error:false` a `structured_output`
- *    chybí → to je naše selhání `schema`. Neplatné schema odmítne CLI hned: exit 1, stderr
- *    „--json-schema is not a valid JSON Schema…“, žádný stdout JSON.
- *  - Chyby API: `result` s `is_error:true`, exit 1. `subtype` bývá i tak `success`; rozlišuje `api_error_status`
- *    (HTTP kód nebo null při síťové chybě) a `terminal_reason: "api_error"`; text chyby je v `result`.
- *    Překročený rozpočet: `subtype:"error_max_budget_usd"`, `errors:[…]`, `terminal_reason:"budget_exhausted"`.
- *  - claude samo opakuje API volání (až 10×, `system/api_retry`) – ty počítáme jako aktivitu (neresetuje se
- *    kvůli nim stall) a náš retry je až druhá vrstva.
- *  - Chybné argumenty: exit 1, zpráva na stderr, žádný stdout JSON (kromě hooků).
- *  - `total_cost_usd` je jen v `result` eventu → u zabitých pokusů je cena neznámá (počítá se 0),
- *    tokeny se ale započítají z průběžných snímků.
+ * ── Empirically observed format `claude -p --output-format stream-json --verbose` (claude 2.1.x) ──
+ *  - stdout = JSONL. Line types: `system` (subtype `init`, `hook_started`, `hook_response`,
+ *    `thinking_tokens`, `api_retry`), `assistant`, `user`, `rate_limit_event`, finally `result`.
+ *  - `assistant` event carries exactly ONE content block (thinking | text | tool_use) and the same `message.id`
+ *    repeats across blocks of one message → we deduplicate tool_use by `content[].id`.
+ *    `message.usage.output_tokens` is only a running snapshot (underestimated); `result.usage` is authoritative.
+ *    Input/cache fields of the running snapshots match exactly the sum in `result.usage`.
+ *  - Schema (`--json-schema`): claude internally adds a `StructuredOutput` tool; we do NOT count its `tool_use`
+ *    as a tool call. The result is in `result.structured_output` (and `result` is its JSON text). When the model
+ *    does not call the tool (e.g. a contradictory schema), the `result` event is `is_error:false` and `structured_output`
+ *    is missing → that is our `schema` failure. An invalid schema is rejected by the CLI immediately: exit 1, stderr
+ *    "--json-schema is not a valid JSON Schema…", no stdout JSON.
+ *  - API errors: `result` with `is_error:true`, exit 1. `subtype` is often still `success`; `api_error_status` tells them apart
+ *    (HTTP code or null on a network error) and `terminal_reason: "api_error"`; the error text is in `result`.
+ *    Exceeded budget: `subtype:"error_max_budget_usd"`, `errors:[…]`, `terminal_reason:"budget_exhausted"`.
+ *  - claude itself repeats API calls (up to 10×, `system/api_retry`) – we count these as activity (they do not reset
+ *    the stall watchdog) and our retry is the second layer.
+ *  - Invalid arguments: exit 1, message on stderr, no stdout JSON (except hooks).
+ *  - `total_cost_usd` is only in the `result` event → for killed attempts the cost is unknown (counted as 0),
+ *    but tokens are still counted from the running snapshots.
  *
- * Pozn. k oprávněním: `--allowedTools` v režimu `bypassPermissions` NIC neomezuje (ověřeno). Whitelist nástrojů
- * se vynutí až v `dontAsk`; zákaz nástrojů (`--disallowedTools`) funguje ve všech režimech.
+ * Note on permissions: `--allowedTools` in `bypassPermissions` mode restricts NOTHING (verified). The tool whitelist
+ * is only enforced in `dontAsk`; tool bans (`--disallowedTools`) work in all modes.
  */
 
 import { spawn } from 'node:child_process'
@@ -41,46 +41,46 @@ import type {
   TokenUsage,
 } from '../types.ts'
 
-// ───────────────────────── konstanty ─────────────────────────
+// ───────────────────────── constants ─────────────────────────
 
 export const DEFAULT_SUBAGENT_SYSTEM_PROMPT = [
-  'Jsi subagent v automatizovaném workflow. Tvoje finální zpráva se vrací skriptu, ne člověku.',
-  'Vrať pouze požadovaná data, bez úvodu, shrnutí a omluv.',
-  'Neptej se na nic, nikdo ti neodpoví. Pokud něco není jasné, udělej rozumný předpoklad a pokračuj.',
-  'Drž se zadaného rozsahu práce a nesahej na soubory mimo něj.',
+  'You are a subagent in an automated workflow. Your final message is returned to a script, not to a human.',
+  'Return only the requested data, without introduction, summary or apologies.',
+  'Do not ask anything, nobody will answer. If something is unclear, make a reasonable assumption and continue.',
+  'Stay within the assigned scope of work and do not touch files outside it.',
 ].join('\n')
 
 const DEFAULT_STALL_MS = 600_000
-/** Nejdelší interval, který `setTimeout` snese (vyšší hodnota by se vykonala okamžitě). */
+/** Longest interval `setTimeout` can handle (a higher value would fire immediately). */
 const MAX_TIMER_MS = 2_147_483_647
 const DEFAULT_MAX_ATTEMPTS = 3
 const MAX_ATTEMPTS_CAP = 6
 const DEFAULT_BACKOFF_MS = 2000
-/** Po SIGTERM tolik ms počkáme na ukončení, pak SIGKILL celé skupiny. */
+/** After SIGTERM we wait this many ms for exit, then SIGKILL the whole group. */
 const DEFAULT_KILL_GRACE_MS = 3000
-/** Po SIGKILL tolik ms počkáme na 'close', pak to vzdáme a uvolníme roury (potomek mimo skupinu). */
+/** After SIGKILL we wait this many ms for 'close', then give up and release the pipes (child outside the group). */
 const FORCE_SETTLE_MS = 3000
-/** Po `result` eventu tolik ms necháme proces doběhnout, než ho zabijeme. */
+/** After the `result` event we let the process run this many ms before killing it. */
 const DEFAULT_RESULT_GRACE_MS = 5000
-/** Po 'exit' vedoucího procesu tolik ms čekáme na dočtení rour (potomci mimo skupinu je mohou držet). */
+/** After the leader's 'exit' we wait this many ms for the pipes to drain (children outside the group may hold them). */
 const DEFAULT_EXIT_DRAIN_MS = 2000
-/** Řádek stdoutu větší než tohle zahodíme (ochrana paměti); surový záznam v stream.jsonl to nezachrání. */
+/** Stdout lines larger than this are discarded (memory protection); the raw record in stream.jsonl does not save them. */
 const MAX_LINE_CHARS = 64 * 1024 * 1024
 const STDERR_TAIL_CHARS = 8192
 const INTERNAL_TOOLS = new Set(['StructuredOutput'])
 
-// ───────────────────────── veřejné pomocné funkce ─────────────────────────
+// ───────────────────────── public helper functions ─────────────────────────
 
-/** Spustitelný soubor `claude`: env `ULTRACODE_CLAUDE_BIN`, jinak `claude` z PATH. */
+/** Executable for `claude`: env `ULTRACODE_CLAUDE_BIN`, otherwise `claude` from PATH. */
 export function resolveClaudeBin(): string {
   const fromEnv = process.env['ULTRACODE_CLAUDE_BIN']
   return fromEnv && fromEnv.trim() ? fromEnv.trim() : 'claude'
 }
 
 /**
- * Sestaví argv pro `claude` (bez prompt – ten jde na stdin). Čistá funkce.
- * Nástroje se předávají jako JEDEN argument oddělený čárkou (variadic volby by jinak mohly pohltit další argumenty;
- * specifikace s mezerou typu `Bash(git diff:*)` takto ověřeně fungují).
+ * Builds the argv for `claude` (without the prompt – that goes to stdin). Pure function.
+ * Tools are passed as ONE comma-separated argument (variadic options could otherwise swallow further arguments;
+ * specs with a space such as `Bash(git diff:*)` are verified to work this way).
  */
 export function buildClaudeArgs(req: ClaudeRunRequest): string[] {
   const args: string[] = [
@@ -92,7 +92,7 @@ export function buildClaudeArgs(req: ClaudeRunRequest): string[] {
     '--permission-mode',
     req.permissionMode ?? 'bypassPermissions',
   ]
-  // Workflow zakazujeme vždy (kromě env CLAUDE_CODE_DISABLE_WORKFLOWS), ať se děti nerozběhnou rekurzivně.
+  // We always disable Workflow (except via env CLAUDE_CODE_DISABLE_WORKFLOWS), so child agents do not start recursively.
   const disallowed = ['Workflow', ...(req.disallowedTools ?? [])]
   args.push('--disallowedTools', uniqueNonEmpty(disallowed).join(','))
   const allowed = uniqueNonEmpty(req.allowedTools ?? [])
@@ -120,7 +120,7 @@ function uniqueNonEmpty(items: string[]): string[] {
   return out
 }
 
-// ───────────────────────── interní typy ─────────────────────────
+// ───────────────────────── internal types ─────────────────────────
 
 type Json = Record<string, any>
 
@@ -136,7 +136,7 @@ interface Outcome {
   numTurns: number
   toolCalls: number
   error?: { kind: ClaudeErrorKind; message: string }
-  /** Smí se pokus zopakovat? */
+  /** May the attempt be retried? */
   retryable: boolean
 }
 
@@ -149,12 +149,12 @@ interface Tunables {
   backoffMs: number
 }
 
-// ───────────────────────── evidence běžících agentů ─────────────────────────
+// ───────────────────────── registry of running agents ─────────────────────────
 
 /**
- * Skupiny procesů běžících agentů. Potomci jsou `detached` (vlastní skupina), takže je neposlal SIGINT
- * z terminálu ani je neukončí smrt rodiče → při ukončení procesu (i `process.exit`) je v 'exit' hooku
- * zabijeme synchronně. (SIGINT/SIGTERM musí zachytit volající – CLI – a přerušit přes AbortSignal.)
+ * Process groups of running agents. Children are `detached` (own group), so a SIGINT from the terminal
+ * does not reach them and the parent's death does not end them → on process exit (including `process.exit`) they are killed in the 'exit' hook
+ * killed synchronously. (SIGINT/SIGTERM must be caught by the caller – the CLI – and abort via AbortSignal.)
  */
 const activeGroups = new Set<number>()
 let exitHookInstalled = false
@@ -184,7 +184,7 @@ export async function runClaude(req: ClaudeRunRequest): Promise<ClaudeRunResult>
     try {
       req.onProgress(e)
     } catch {
-      // chyba v posluchači nesmí shodit runner
+      // an error in the listener must not crash the runner
     }
   }
   const finish = (
@@ -210,7 +210,7 @@ export async function runClaude(req: ClaudeRunRequest): Promise<ClaudeRunResult>
     return result
   }
 
-  // artefakty
+  // artifacts
   try {
     mkdirSync(req.outDir, { recursive: true })
     writeFileSync(join(req.outDir, 'prompt.txt'), req.prompt)
@@ -225,20 +225,20 @@ export async function runClaude(req: ClaudeRunRequest): Promise<ClaudeRunResult>
       toolCalls: 0,
       durationMs: Date.now() - startedAt,
       attempts: 0,
-      error: { kind: 'spawn', message: `Nelze vytvořit adresář agenta ${req.outDir}: ${errMsg(err)}` },
+      error: { kind: 'spawn', message: `Cannot create agent directory ${req.outDir}: ${errMsg(err)}` },
     }
   }
 
   if (typeof req.prompt !== 'string' || req.prompt.trim() === '') {
-    return finish(false, 0, {}, { kind: 'spawn', message: 'Prompt agenta je prázdný.' })
+    return finish(false, 0, {}, { kind: 'spawn', message: 'Agent prompt is empty.' })
   }
   if (!isDirectory(req.cwd)) {
-    return finish(false, 0, {}, { kind: 'spawn', message: `Pracovní adresář agenta neexistuje: ${req.cwd}` })
+    return finish(false, 0, {}, { kind: 'spawn', message: `Agent working directory does not exist: ${req.cwd}` })
   }
 
   const maxAttempts = clampInt(req.maxAttempts, DEFAULT_MAX_ATTEMPTS, 1, MAX_ATTEMPTS_CAP)
   const tun: Tunables = {
-    // NaN / záporné / nulové hodnoty nesmí tiše vypnout watchdog → spadnou na výchozí; příliš velké se ořežou na limit setTimeout.
+    // NaN / negative / zero values must not silently disable the watchdog → they fall back to the default; overly large values are clamped to the setTimeout limit.
     stallMs: req.stallMs === undefined || !(req.stallMs > 0) ? DEFAULT_STALL_MS : Math.min(req.stallMs, MAX_TIMER_MS),
     timeoutMs: req.timeoutMs && req.timeoutMs > 0 ? Math.min(req.timeoutMs, MAX_TIMER_MS) : undefined,
     killGraceMs: envInt('ULTRACODE_KILL_GRACE_MS', DEFAULT_KILL_GRACE_MS),
@@ -250,7 +250,7 @@ export async function runClaude(req: ClaudeRunRequest): Promise<ClaudeRunResult>
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     ...(req.env ?? {}),
-    // Subagenti nesmí spouštět další workflow (globální setting uživatele by jinak rekurzoval).
+    // Subagents must not start other workflows (the user's global setting would otherwise recurse).
     CLAUDE_CODE_DISABLE_WORKFLOWS: '1',
   }
 
@@ -260,16 +260,16 @@ export async function runClaude(req: ClaudeRunRequest): Promise<ClaudeRunResult>
 
   while (attempt < maxAttempts) {
     if (req.signal?.aborted) {
-      return finish(false, attempt, last ?? {}, { kind: 'aborted', message: 'Běh agenta byl přerušen.' })
+      return finish(false, attempt, last ?? {}, { kind: 'aborted', message: 'Agent run was aborted.' })
     }
     attempt++
     rotateAttemptFiles(req.outDir, attempt)
 
-    // Rozpočet je kumulativní přes všechny pokusy: každý další pokus dostane jen to, co zbylo.
-    // Bez toho by `--max-budget-usd` nechalo agenta utratit až maxAttempts-násobek limitu.
+    // The budget is cumulative across all attempts: each further attempt gets only what is left.
+    // Without this, `--max-budget-usd` would let the agent spend up to maxAttempts times the limit.
     const budgetLeft = req.maxBudgetUsd === undefined ? undefined : req.maxBudgetUsd - total.costUsd
     if (budgetLeft !== undefined && !(budgetLeft > 0)) {
-      return finish(false, attempt - 1, last ?? {}, { kind: 'api', message: `Vyčerpán rozpočet agenta (--max-budget-usd ${req.maxBudgetUsd}).` })
+      return finish(false, attempt - 1, last ?? {}, { kind: 'api', message: `Agent budget exhausted (--max-budget-usd ${req.maxBudgetUsd}).` })
     }
     const args = buildClaudeArgs({ ...req, maxBudgetUsd: budgetLeft })
 
@@ -293,14 +293,14 @@ export async function runClaude(req: ClaudeRunRequest): Promise<ClaudeRunResult>
 
     if (outcome.ok) return finish(true, attempt, outcome)
 
-    const err = outcome.error ?? { kind: 'exit' as const, message: 'Neznámá chyba agenta.' }
+    const err = outcome.error ?? { kind: 'exit' as const, message: 'Unknown agent error.' }
     if (err.kind === 'aborted' || req.signal?.aborted) {
-      return finish(false, attempt, outcome, { kind: 'aborted', message: 'Běh agenta byl přerušen.' })
+      return finish(false, attempt, outcome, { kind: 'aborted', message: 'Agent run was aborted.' })
     }
     let retryable = outcome.retryable
     if (err.kind === 'schema' && retryable) {
-      // Schema: claude už samo interně vynucuje StructuredOutput (několik kol). Pokud po tom výstup chybí,
-      // je to ve většině případů deterministické (protimluvné/nesplnitelné schema), proto max 1 další pokus.
+      // Schema: claude already enforces StructuredOutput internally (several rounds). If the output is still missing after that,
+      // it is mostly deterministic (contradictory/unsatisfiable schema), hence at most 1 more attempt.
       if (schemaRetries >= 1) retryable = false
       else schemaRetries++
     }
@@ -310,14 +310,14 @@ export async function runClaude(req: ClaudeRunRequest): Promise<ClaudeRunResult>
 
     emit({ kind: 'retry', attempt: attempt + 1, reason: `${err.kind}: ${err.message}` })
     const aborted = await sleepAbortable(tun.backoffMs * attempt, req.signal)
-    if (aborted) return finish(false, attempt, outcome, { kind: 'aborted', message: 'Běh agenta byl přerušen.' })
+    if (aborted) return finish(false, attempt, outcome, { kind: 'aborted', message: 'Agent run was aborted.' })
   }
 
-  // sem se dostaneme jen při maxAttempts < 1, což clampInt vylučuje
-  return finish(false, attempt, last ?? {}, { kind: 'exit', message: 'Agent nebyl spuštěn.' })
+  // we only get here when maxAttempts < 1, which clampInt rules out
+  return finish(false, attempt, last ?? {}, { kind: 'exit', message: 'Agent was not started.' })
 }
 
-// ───────────────────────── jeden pokus ─────────────────────────
+// ───────────────────────── single attempt ─────────────────────────
 
 interface AttemptContext {
   req: ClaudeRunRequest
@@ -341,17 +341,17 @@ function runAttempt(ctx: AttemptContext): Promise<Outcome> {
       child = spawn(ctx.bin, ctx.args, {
         cwd: req.cwd,
         env: ctx.env,
-        detached: true, // vedoucí vlastní skupiny → process.kill(-pid) zabije i potomky
+        detached: true, // leader gets its own group → process.kill(-pid) also kills children
         stdio: ['pipe', 'pipe', 'pipe'],
       })
     } catch (err) {
-      resolve(failOutcome('spawn', `Nelze spustit „${ctx.bin}“: ${errMsg(err)}`, false))
+      resolve(failOutcome('spawn', `Cannot start "${ctx.bin}": ${errMsg(err)}`, false))
       return
     }
     const pid = child.pid
     if (pid !== undefined) trackGroup(pid)
 
-    // ── stav pokusu ──
+    // ── attempt state ──
     let settled = false
     let spawnError: Error | null = null
     let killReason: KillReason | null = null
@@ -386,7 +386,7 @@ function runAttempt(ctx: AttemptContext): Promise<Outcome> {
       return u
     }
 
-    // ── události ze streamu ──
+    // ── stream events ──
     const handleEvent = (o: Json): void => {
       if (typeof o.session_id === 'string') sessionId = o.session_id
       switch (o.type) {
@@ -423,12 +423,12 @@ function runAttempt(ctx: AttemptContext): Promise<Outcome> {
           return
         }
         case 'result': {
-          if (resultEvent) return // bereme první result
+          if (resultEvent) return // we take the first result
           resultEvent = o
           clearTimeout(stallTimer)
           clearTimeout(timeoutTimer)
           if (o.usage) ctx.emit({ kind: 'usage', usage: addUsage(ctx.baseUsage, toUsage(o.usage)) })
-          // proces by měl skončit sám; kdyby visel, po grace periodě ho ukončíme
+          // the process should exit on its own; if it hangs, we kill it after the grace period
           if (!exited && Number.isFinite(tun.resultGraceMs)) {
             resultTimer = setTimeout(() => terminate('done'), tun.resultGraceMs)
           }
@@ -447,24 +447,24 @@ function runAttempt(ctx: AttemptContext): Promise<Outcome> {
       try {
         parsed = JSON.parse(line)
       } catch {
-        return // nevalidní/nekompletní JSON řádek ignorujeme (je ale v stream.jsonl)
+        return // invalid/incomplete JSON line is ignored (but it is in stream.jsonl)
       }
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
         try {
           handleEvent(parsed as Json)
         } catch {
-          // chyba při zpracování jednoho eventu nesmí shodit pokus
+          // an error while processing one event must not crash the attempt
         }
       }
     }
 
     const flushStdout = (): void => {
       outBuf += outDecoder.end()
-      if (outBuf.length > 0 && !lineOverflow) handleLine(outBuf) // poslední řádek bez \n
+      if (outBuf.length > 0 && !lineOverflow) handleLine(outBuf) // last line without \n
       outBuf = ''
     }
 
-    // ── ukončování ──
+    // ── termination ──
     const clearAll = (): void => {
       clearTimeout(stallTimer)
       clearTimeout(timeoutTimer)
@@ -479,7 +479,7 @@ function runAttempt(ctx: AttemptContext): Promise<Outcome> {
       settled = true
       clearAll()
       req.signal?.removeEventListener('abort', onAbort)
-      // poslední úklid: nic z naší skupiny nesmí přežít
+      // final cleanup: nothing from our group may survive
       if (pid !== undefined) {
         killGroup(pid, 'SIGKILL')
         activeGroups.delete(pid)
@@ -487,7 +487,7 @@ function runAttempt(ctx: AttemptContext): Promise<Outcome> {
       try {
         flushStdout()
       } catch {
-        // ignoruj
+        // ignore
       }
       try {
         child.stdout?.destroy()
@@ -495,7 +495,7 @@ function runAttempt(ctx: AttemptContext): Promise<Outcome> {
         child.stdin?.destroy()
         child.unref()
       } catch {
-        // ignoruj
+        // ignore
       }
       resolve(buildOutcome())
     }
@@ -516,13 +516,13 @@ function runAttempt(ctx: AttemptContext): Promise<Outcome> {
 
     const onAbort = (): void => terminate('aborted')
 
-    // ── výsledek pokusu ──
+    // ── attempt result ──
     const buildOutcome = (): Outcome => {
       const stderrText = stderrTail.trim()
       const tail = stderrText ? ` | stderr: ${truncate(stderrText, 500)}` : ''
       const running = runningUsage()
       const res = resultEvent as Json | null
-      // Chybový result event často nese usage nulové – tokeny už ale byly utraceny, vezmi průběžný snímek.
+      // An error result event often carries zero usage – but the tokens were already spent, so take the running snapshot.
       const resUsage = res?.usage ? toUsage(res.usage) : null
       const usage = resUsage && resUsage.inputTokens + resUsage.outputTokens + resUsage.cacheReadTokens + resUsage.cacheCreationTokens > 0 ? resUsage : running
       const costUsd = res && typeof res.total_cost_usd === 'number' ? res.total_cost_usd : 0
@@ -539,8 +539,8 @@ function runAttempt(ctx: AttemptContext): Promise<Outcome> {
 
       if (spawnError) {
         const code = (spawnError as NodeJS.ErrnoException).code
-        const hint = code === 'ENOENT' ? ' (soubor neexistuje nebo není v PATH)' : code === 'EACCES' ? ' (chybí právo ke spuštění)' : ''
-        return fail('spawn', `Nelze spustit „${ctx.bin}“${hint}: ${spawnError.message}`, false)
+        const hint = code === 'ENOENT' ? ' (file does not exist or is not in PATH)' : code === 'EACCES' ? ' (missing execute permission)' : ''
+        return fail('spawn', `Cannot start "${ctx.bin}"${hint}: ${spawnError.message}`, false)
       }
 
       const cleanSuccess =
@@ -558,64 +558,64 @@ function runAttempt(ctx: AttemptContext): Promise<Outcome> {
         }
       }
 
-      // kill z naší strany má přednost před nečistým výsledkem
-      if (killReason === 'aborted') return fail('aborted', 'Běh agenta byl přerušen.', false)
+      // a kill from our side takes precedence over an unclean result
+      if (killReason === 'aborted') return fail('aborted', 'Agent run was aborted.', false)
       if (killReason === 'timeout') {
-        return fail('timeout', `Agent překročil tvrdý limit ${tun.timeoutMs} ms a byl ukončen.${tail}`, false)
+        return fail('timeout', `Agent exceeded the hard limit of ${tun.timeoutMs} ms and was terminated.${tail}`, false)
       }
       if (killReason === 'stall') {
         return fail(
           'stall',
-          `Agent nevydal žádný výstup po dobu ${tun.stallMs} ms (zaseknutý) a byl ukončen.${tail}`,
+          `Agent produced no output for ${tun.stallMs} ms (stalled) and was terminated.${tail}`,
           true,
         )
       }
 
       if (res) {
         if (res.is_error !== true) {
-          // úspěšný result, ale chybí structured_output
+          // successful result, but structured_output is missing
           return fail(
             'schema',
-            'Agent nevrátil strukturovaný výstup odpovídající schématu (chybí structured_output).',
+            'Agent did not return structured output matching the schema (structured_output missing).',
             true,
           )
         }
         const text = describeResultError(res)
         const subtype = typeof res.subtype === 'string' ? res.subtype : ''
         if (subtype === 'error_max_structured_output_retries') {
-          return fail('schema', `Agent nedokázal vrátit výstup validní vůči schématu: ${text}`, true)
+          return fail('schema', `Agent could not return output valid against the schema: ${text}`, true)
         }
         if (subtype === 'error_max_budget_usd') {
-          return fail('api', `Agent překročil svůj rozpočet (--max-budget-usd): ${text}`, false)
+          return fail('api', `Agent exceeded its budget (--max-budget-usd): ${text}`, false)
         }
         if (subtype === 'error_max_turns') {
-          return fail('api', `Agent vyčerpal maximální počet kol: ${text}`, false)
+          return fail('api', `Agent exhausted the maximum number of turns: ${text}`, false)
         }
         const status = typeof res.api_error_status === 'number' ? res.api_error_status : null
         const transient = isTransientApiError(status, text)
-        return fail('api', `Chyba API${status ? ` (HTTP ${status})` : ''}: ${truncate(text, 600)}`, transient)
+        return fail('api', `API error${status ? ` (HTTP ${status})` : ''}: ${truncate(text, 600)}`, transient)
       }
 
-      // žádný result event
-      const how = exitSignal ? `signálem ${exitSignal}` : `s kódem ${exitCode}`
+      // no result event
+      const how = exitSignal ? `by signal ${exitSignal}` : `with code ${exitCode}`
       if (/is not a valid JSON Schema/i.test(stderrText)) {
-        return fail('schema', `claude odmítlo schéma: ${truncate(stderrText, 600)}`, false)
+        return fail('schema', `claude rejected the schema: ${truncate(stderrText, 600)}`, false)
       }
       if (/unknown option|is invalid\. Allowed choices|Input must be provided|required option .* not specified/i.test(stderrText)) {
-        return fail('exit', `claude odmítlo argumenty (${how}): ${truncate(stderrText, 600)}`, false)
+        return fail('exit', `claude rejected the arguments (${how}): ${truncate(stderrText, 600)}`, false)
       }
       if (exitCode === 0 && !exitSignal) {
-        return fail('exit', `claude skončilo bez výsledku (chybí event result).${tail}`, true)
+        return fail('exit', `claude ended without a result (missing result event).${tail}`, true)
       }
-      return fail('exit', `claude skončilo ${how} bez výsledku.${tail}`, true)
+      return fail('exit', `claude ended ${how} without a result.${tail}`, true)
     }
 
-    // ── obsluha procesu ──
+    // ── process handling ──
     child.on('error', (err) => {
-      // 'error' po úspěšném spawnu (pid existuje) neřešíme – proces dál běží a skončí přes 'exit'/'close'.
+      // 'error' after a successful spawn (pid exists) is not handled – the process keeps running and ends via 'exit'/'close'.
       if (pid !== undefined) return
       spawnError = err
-      exited = true // po chybě spawnu 'exit' nepřijde
+      exited = true // no 'exit' comes after a spawn error
       settle()
     })
 
@@ -627,9 +627,9 @@ function runAttempt(ctx: AttemptContext): Promise<Outcome> {
       clearTimeout(resultTimer)
       clearTimeout(stallTimer)
       clearTimeout(timeoutTimer)
-      // zbytek skupiny (potomci, které claude/nástroje po sobě nechaly) končí s ním
+      // the rest of the group (children left behind by claude/tools) ends with it
       if (pid !== undefined) killGroup(pid, 'SIGKILL')
-      // roury může držet potomek mimo naši skupinu → po krátké době nečekáme dál
+      // a child outside our group may hold the pipes → after a short time we stop waiting
       drainTimer = setTimeout(settle, tun.exitDrainMs)
     })
 
@@ -646,7 +646,7 @@ function runAttempt(ctx: AttemptContext): Promise<Outcome> {
       while (idx >= 0) {
         const line = outBuf.slice(0, idx)
         outBuf = outBuf.slice(idx + 1)
-        if (lineOverflow) lineOverflow = false // konec přetékajícího řádku
+        if (lineOverflow) lineOverflow = false // end of the overflowing line
         else handleLine(line)
         idx = outBuf.indexOf('\n')
       }
@@ -668,14 +668,14 @@ function runAttempt(ctx: AttemptContext): Promise<Outcome> {
     })
     child.stderr?.on('error', () => {})
 
-    child.stdin?.on('error', () => {}) // EPIPE, když proces skončí dřív, než přečte prompt
+    child.stdin?.on('error', () => {}) // EPIPE when the process exits before reading the prompt
     try {
       child.stdin?.end(req.prompt)
     } catch {
-      // ignoruj
+      // ignore
     }
 
-    // ── watchdogy ──
+    // ── watchdogs ──
     if (Number.isFinite(tun.stallMs)) {
       const check = (): void => {
         if (settled || killReason !== null || resultEvent) return
@@ -697,20 +697,20 @@ function runAttempt(ctx: AttemptContext): Promise<Outcome> {
   })
 }
 
-// ───────────────────────── klasifikace chyb ─────────────────────────
+// ───────────────────────── error classification ─────────────────────────
 
-/** Text chyby z `result` eventu (is_error:true). */
+/** Error text from a `result` event (is_error:true). */
 function describeResultError(res: Json): string {
   if (typeof res.result === 'string' && res.result.trim()) return res.result.trim()
   if (Array.isArray(res.errors) && res.errors.length > 0) return res.errors.map(String).join('; ')
   if (typeof res.subtype === 'string') return res.subtype
-  return 'neznámá chyba'
+  return 'unknown error'
 }
 
 /**
- * Je chyba API přechodná (má smysl zkusit znovu)?
- * Trvalé: 400/401/403/404 (špatný klíč, neexistující model…), vyčerpaný limit/kredit.
- * Přechodné: 408/409/425/429/5xx (včetně 529 overloaded), nebo bez HTTP kódu síťové chyby/timeouty.
+ * Is the API error transient (is it worth retrying)?
+ * Permanent: 400/401/403/404 (bad key, nonexistent model…), exhausted limit/credit.
+ * Transient: 408/409/425/429/5xx (including 529 overloaded), or without an HTTP code, network errors/timeouts.
  */
 export function isTransientApiError(status: number | null, text: string): boolean {
   if (
@@ -740,9 +740,9 @@ function failOutcome(kind: ClaudeErrorKind, message: string, retryable: boolean)
   }
 }
 
-// ───────────────────────── pomocné ─────────────────────────
+// ───────────────────────── helpers ─────────────────────────
 
-/** Zabije celou skupinu procesů (vedoucí = pid). Vrací, zda se signál podařilo doručit. */
+/** Kills the whole process group (leader = pid). Returns whether the signal was delivered. */
 function killGroup(pid: number, signal: NodeJS.Signals): boolean {
   try {
     process.kill(-pid, signal)
@@ -819,7 +819,7 @@ function writeArtifact(file: string, data: string): void {
   try {
     writeFileSync(file, data)
   } catch {
-    // artefakty jsou pomocné; selhání zápisu neshazuje agenta
+    // artifacts are auxiliary; a write failure does not crash the agent
   }
 }
 
@@ -827,13 +827,13 @@ function writeArtifactAppend(file: string, data: string): void {
   try {
     appendFileSync(file, data)
   } catch {
-    // viz výše
+    // see above
   }
 }
 
 /**
- * Před pokusem N>1 odsune záznam předchozího pokusu (stream.attempt-<N-1>.jsonl, stderr.attempt-<N-1>.txt)
- * a založí prázdné stream.jsonl/stderr.txt, aby tyto dva soubory vždy odpovídaly POSLEDNÍMU pokusu.
+ * Before attempt N>1 moves the record of the previous attempt aside (stream.attempt-<N-1>.jsonl, stderr.attempt-<N-1>.txt)
+ * and creates empty stream.jsonl/stderr.txt so these two files always match the LAST attempt.
  */
 function rotateAttemptFiles(outDir: string, attempt: number): void {
   const stream = join(outDir, 'stream.jsonl')
@@ -842,19 +842,19 @@ function rotateAttemptFiles(outDir: string, attempt: number): void {
     try {
       renameSync(stream, join(outDir, `stream.attempt-${attempt - 1}.jsonl`))
     } catch {
-      // nemusí existovat
+      // may not exist
     }
     try {
       renameSync(stderr, join(outDir, `stderr.attempt-${attempt - 1}.txt`))
     } catch {
-      // nemusí existovat
+      // may not exist
     }
   }
   writeArtifact(stream, '')
   writeArtifact(stderr, '')
 }
 
-/** Spánek přerušitelný signálem. Vrací true, pokud byl přerušen abortem. */
+/** Sleep interruptible by a signal. Returns true if interrupted by an abort. */
 function sleepAbortable(ms: number, signal?: AbortSignal): Promise<boolean> {
   if (signal?.aborted) return Promise.resolve(true)
   if (ms <= 0) return Promise.resolve(false)

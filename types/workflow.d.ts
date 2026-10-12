@@ -1,17 +1,17 @@
 /**
- * Ambientní typy pro skripty workflow (`*.workflow.ts`) spouštěné přes `ultracode run`.
+ * Ambient types for workflow scripts (`*.workflow.ts`) run via `ultracode run`.
  *
- * Použití na začátku skriptu:
+ * Usage at the top of a script:
  *   /// <reference path="../../types/workflow.d.ts" />
- * (nebo `ultracode types --out .ultracode/` a odkaz na vygenerovaný soubor).
+ * (or `ultracode types --out .ultracode/` and a reference to the generated file).
  *
- * Skript NEMÁ importy; všechno níže jsou globály injektované runtime. Tělo skriptu je
- * asynchronní kontext: používej top-level `await` a nakonec `return` výsledek (JSON).
+ * A script has NO imports; everything below is a global injected by the runtime. The script body is
+ * an async context: use top-level `await` and finally `return` result (JSON).
  */
 
 type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
-/** JSON Schema; kořen MUSÍ být `{ type: 'object', properties: {...} }` a `required ⊆ properties`. */
+/** JSON Schema; the root MUST be `{ type: 'object', properties: {...} }` a `required ⊆ properties`. */
 interface WorkflowJsonSchema {
   type?: string | string[]
   properties?: Record<string, WorkflowJsonSchema>
@@ -24,13 +24,13 @@ interface WorkflowJsonSchema {
 }
 
 interface WorkflowPhaseMeta {
-  /** Musí přesně odpovídat titulu v `phase('…')`. */
+  /** Must exactly match the title in `phase('…')`. */
   title: string
   detail?: string
   model?: string
 }
 
-/** `export const meta` – čistý literál: žádné proměnné, volání funkcí, spread ani šablony s ${}. */
+/** `export const meta` – a plain literal: no variables, function calls, spread or templates with ${}. */
 interface WorkflowMeta {
   name: string
   description: string
@@ -39,58 +39,58 @@ interface WorkflowMeta {
 }
 
 interface AgentOptions {
-  /** Popisek agenta v logu a eventech. */
+  /** Agent label in the log and events. */
   label?: string
-  /** Explicitní fáze – použij uvnitř `pipeline()`/`parallel()` místo globálního `phase()`. */
+  /** Explicit phase – use inside `pipeline()`/`parallel()` instead of the global `phase()`. */
   phase?: string
-  /** Vynutí strukturovaný výstup; `agent()` pak vrací validovaný objekt. */
+  /** Forces structured output; `agent()` then returns a validated object. */
   schema?: WorkflowJsonSchema
-  /** Alias modelu (`sonnet`, `opus`, `haiku`, …) nebo celé jméno. Default: dědí z běhu. Raději vynechej. */
+  /** Model alias (`sonnet`, `opus`, `haiku`, …) or full name. Default: inherited from the run. Preferably omit. */
   model?: string
-  /** Úroveň uvažování. Default: dědí z běhu. `low` pro mechanické kroky. */
+  /** Reasoning effort level. Default: inherited from the run. `low` for mechanical steps. */
   effort?: EffortLevel
-  /** Pracovní adresář agenta (default: cwd běhu). */
+  /** Agent working directory (default: the run's cwd). */
   cwd?: string
   /**
-   * Whitelist nástrojů (`--allowedTools`), např. `['Read','Grep','Bash(git diff:*)']`. Agent se zadaným `tools`
-   * běží v režimu `dontAsk`: cokoli mimo seznam se odmítne. Bez `tools` platí `bypassPermissions`.
+   * Tool allowlist (`--allowedTools`), e.g. `['Read','Grep','Bash(git diff:*)']`. An agent with `tools`
+   * runs in `dontAsk`: anything outside the list is rejected. Without `tools` applies `bypassPermissions`.
    */
   tools?: string[]
   disallowedTools?: string[]
-  /** Přidá se k výchozímu system promptu agenta. */
+  /** Appended to the agent's default system prompt. */
   systemPrompt?: string
-  /** Ticho na výstupu v ms, po kterém se agent považuje za zaseknutý a restartuje (default 600000). */
+  /** Output silence in ms after which the agent is considered stuck and restarted (default 600000). */
   stallMs?: number
-  /** Tvrdý limit jednoho POKUSU agenta v ms (stall-restart začíná nový pokus a limit se znovu uplatní). */
+  /** Hard limit for one agent ATTEMPT in ms (a stall restart starts a new attempt and the limit applies again). */
   timeoutMs?: number
-  /** Strop útrat agenta v USD; kumulativně přes restarty (zbytek se předá dalšímu pokusu). Útrata zabitých pokusů bez výsledku se nepočítá (cena není známa). */
+  /** Agent spend cap in USD; cumulative across restarts (the remainder is passed to the next attempt). Spend of killed attempts without a result is not counted (cost is unknown). */
   maxUsd?: number
-  /** Při resume nepoužít uložený výsledek tohoto volání. */
+  /** On resume, do not use the stored result of this call. */
   noCache?: boolean
 }
 
 type AgentOptionsWithSchema = AgentOptions & { schema: WorkflowJsonSchema }
 
 /**
- * Spustí jednoho agenta (`claude -p`). Bez `schema` vrací finální text, se `schema` validovaný objekt.
- * Vrací `null`, když agent terminálně selže (po retry/stall restartech) nebo je přerušen – VŽDY před
- * použitím filtruj `.filter(Boolean)` / ošetři `null`.
- * Vyhodí chybu jen při chybě skriptu (neplatné schema, překročený rozpočet, …).
+ * Runs one agent (`claude -p`). Without `schema` returns the final text; with `schema` a validated object.
+ * Returns `null` when the agent fails terminally (after retry/stall restarts) or is aborted – ALWAYS before
+ * use, filter with `.filter(Boolean)` / handle `null`.
+ * Throws only on a script error (invalid schema, exceeded budget, …).
  */
 declare function agent<T = any>(prompt: string, opts: AgentOptionsWithSchema): Promise<T | null>
 declare function agent<T = string>(prompt: string, opts?: AgentOptions): Promise<T | null>
 
 /**
- * Spustí thunky souběžně a čeká na všechny (BARIÉRA). Thunk, který vyhodí chybu, dá `null`.
- * Funkce nikdy neodmítne. Max 4096 položek.
+ * Runs thunks concurrently and waits for all of them (BARRIER). A thunk that throws yields `null`.
+ * The function never rejects. Max 4096 items.
  */
 declare function parallel<T>(thunks: Array<() => Promise<T>>): Promise<Array<T | null>>
 
 /**
- * Pošle každou položku nezávisle všemi stage (BEZ bariéry mezi stagemi) – výchozí volba pro vícekrokovou práci.
- * Každá stage dostane `(předchozíVýsledek, původníPoložka, index)`. Stage, která vyhodí chybu, dá položce
- * `null` a zbylé stage se pro ni přeskočí. Výsledek je pole ve stejném pořadí jako `items`.
- * Max 4096 položek.
+ * Sends each item independently through all stages (WITHOUT a barrier between stages) – the default choice for multi-step work.
+ * Each stage receives `(previousResult, originalItem, index)`. A stage that throws gives the item
+ * `null` and the remaining stages are skipped for it. The result is an array in the same order as `items`.
+ * Max 4096 items.
  */
 declare function pipeline<I, A>(items: I[], s1: (item: I, original: I, index: number) => Promise<A> | A): Promise<Array<A | null>>
 declare function pipeline<I, A, B>(items: I[], s1: (item: I, original: I, index: number) => Promise<A> | A, s2: (prev: A, original: I, index: number) => Promise<B> | B): Promise<Array<B | null>>
@@ -98,34 +98,34 @@ declare function pipeline<I, A, B, C>(items: I[], s1: (item: I, original: I, ind
 declare function pipeline<I, A, B, C, D>(items: I[], s1: (item: I, original: I, index: number) => Promise<A> | A, s2: (prev: A, original: I, index: number) => Promise<B> | B, s3: (prev: B, original: I, index: number) => Promise<C> | C, s4: (prev: C, original: I, index: number) => Promise<D> | D): Promise<Array<D | null>>
 declare function pipeline(items: any[], ...stages: Array<(prev: any, original: any, index: number) => any>): Promise<any[]>
 
-/** Začne novou fázi; následující `agent()` volání se seskupí pod titul. Titul musí být v `meta.phases`. */
+/** Starts a new phase; the following `agent()` calls are grouped under the title. The title must be in `meta.phases`. */
 declare function phase(title: string): void
 
-/** Vypíše průběžnou zprávu uživateli (stderr + events.jsonl). */
+/** Prints a progress message to the user (stderr + events.jsonl). */
 declare function log(message: string): void
 
-/** Vstup workflow (`--args '<json>'`); `undefined`, když nebyl zadán. Pole/objekty jsou skutečné JSON hodnoty. */
+/** Workflow input (`--args '<json>'`); `undefined` when not given. Arrays/objects are real JSON values. */
 declare const args: any
 
 /**
- * Rozpočet běhu (z `--max-tokens` / `--max-usd`). `total` je `null`, když limit není nastaven.
- * Limit je tvrdý strop: po jeho dosažení další `agent()` volání vyhodí chybu.
+ * Run budget (from `--max-tokens` / `--max-usd`). `total` is `null` when no limit is set.
+ * The limit is a hard cap: once reached, further `agent()` calls throw an error.
  */
 declare const budget: {
-  /** Strop výstupních tokenů nebo `null`. */
+  /** Output token cap or `null`. */
   total: number | null
-  /** Strop v USD nebo `null`. */
+  /** USD spend cap or `null`. */
   totalUsd: number | null
-  /** Utracené výstupní tokeny (celý běh včetně vnořených workflow). */
+  /** Spent output tokens (whole run including nested workflows). */
   spent(): number
-  /** `max(0, total - spent())`, bez limitu `Infinity`. */
+  /** `max(0, total - spent())`, or `Infinity` without a limit. */
   remaining(): number
   spentUsd(): number
   remainingUsd(): number
 }
 
 /**
- * Spustí jiný workflow inline a vrátí jeho návratovou hodnotu. Sdílí limity, počítadlo agentů a rozpočet.
- * Vnoření jen o jednu úroveň (workflow() uvnitř potomka vyhodí chybu).
+ * Runs another workflow inline and returns its return value. Shares limits, the agent counter and the budget.
+ * Nesting is limited to one level (workflow() inside a child throws an error).
  */
 declare function workflow(nameOrRef: string | { scriptPath: string }, args?: any): Promise<any>

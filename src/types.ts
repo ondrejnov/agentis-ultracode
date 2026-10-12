@@ -1,21 +1,21 @@
 /**
- * Sdílené typy a kontrakty mezi moduly runtime.
+ * Shared types and contracts between runtime modules.
  *
- * Pravidla pro celý `src/`:
- *  - pouze „erasable“ TypeScript (žádné `enum`, `namespace`, parameter properties, `import x = require`),
- *    aby kód šel spustit přímo přes Node type-stripping (testy) i zkompilovat přes `tsc` (dist);
- *  - relativní importy s příponou `.ts` (`import { x } from './y.ts'`);
- *  - `import type` pro čistě typové importy (verbatimModuleSyntax).
+ * Rules for all of `src/`:
+ *  - only “erasable” TypeScript (no `enum`, `namespace`, parameter properties, `import x = require`),
+ *    so that the code can run directly via Node type-stripping (tests) and also be compiled with `tsc` (dist);
+ *  - relative imports with the `.ts` extension (`import { x } from './y.ts'`);
+ *  - `import type` for type-only imports (verbatimModuleSyntax).
  *
- * Tento soubor je KONTRAKT. Moduly ho nesmí měnit bez dohody — když něco chybí, přidej to
- * do svého modulu a vyjmenuj v závěrečném reportu, ať to integrátor promítne sem.
+ * This file is the CONTRACT. Modules must not change it without agreement — when something is missing, add it
+ * in your own module and list it in the final report so the integrator can carry it over here.
  */
 
-// ───────────────────────── základní ─────────────────────────
+// ───────────────────────── basic ─────────────────────────
 
 export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
-/** JSON Schema (podmnožina, kterou umí `claude --json-schema`). Kořen musí být `type: 'object'`. */
+/** JSON Schema (the subset supported by `claude --json-schema`). The root must be `type: 'object'`. */
 export interface JsonSchema {
   type?: string | string[]
   properties?: Record<string, JsonSchema>
@@ -42,7 +42,7 @@ export const EMPTY_USAGE: TokenUsage = Object.freeze({
 
 export type PermissionMode = 'bypassPermissions' | 'acceptEdits' | 'auto' | 'dontAsk' | 'plan' | 'manual'
 
-// ───────────────────────── skript workflow ─────────────────────────
+// ───────────────────────── workflow script ─────────────────────────
 
 export interface PhaseMeta {
   title: string
@@ -50,7 +50,7 @@ export interface PhaseMeta {
   model?: string
 }
 
-/** `export const meta = {...}` ve skriptu. MUSÍ být čistý literál (žádné proměnné/volání/spread/šablony s ${}). */
+/** `export const meta = {...}` in a script. MUST be a pure literal (no variables/calls/spread/templates with ${}). */
 export interface WorkflowMeta {
   name: string
   description: string
@@ -58,42 +58,42 @@ export interface WorkflowMeta {
   phases?: PhaseMeta[]
 }
 
-/** Volby jednoho `agent(prompt, opts)` volání ve skriptu (veřejné API – viz types/workflow.d.ts). */
+/** Options of one `agent(prompt, opts)` call in a script (public API — see types/workflow.d.ts). */
 export interface AgentOptions {
-  /** Zobrazovaný popisek v logu/eventech. */
+  /** Display label in the log/events. */
   label?: string
-  /** Explicitní přiřazení k fázi (uvnitř pipeline/parallel, aby nezávodilo s globálním phase()). */
+  /** Explicit assignment to a phase (inside pipeline/parallel, so it does not race with the global phase()). */
   phase?: string
-  /** JSON Schema → agent vrací validovaný objekt místo textu. */
+  /** JSON Schema → the agent returns a validated object instead of text. */
   schema?: JsonSchema
   model?: string
   effort?: EffortLevel
-  /** Pracovní adresář agenta; default = cwd běhu. */
+  /** Agent working directory; default = the run cwd. */
   cwd?: string
-  /** Whitelist nástrojů (`--allowedTools`), např. ['Read','Grep','Bash(git diff:*)']; engine pak pustí agenta v `dontAsk`. */
+  /** Tool whitelist (`--allowedTools`), e.g. ['Read','Grep','Bash(git diff:*)']; the engine then runs the agent in `dontAsk`. */
   tools?: string[]
   disallowedTools?: string[]
-  /** Přidá se za výchozí system prompt agenta (`--append-system-prompt`). */
+  /** Appended after the agent's default system prompt (`--append-system-prompt`). */
   systemPrompt?: string
-  /** Kolik ms ticha na výstupu se považuje za zaseknutí (default 600 000). */
+  /** How many ms of output silence count as a stall (default 600 000). */
   stallMs?: number
-  /** Tvrdý limit délky jednoho agenta v ms (default žádný). */
+  /** Hard limit on the length of one agent in ms (default none). */
   timeoutMs?: number
-  /** Strop útrat jednoho agenta (`--max-budget-usd`). */
+  /** Spending cap of one agent (`--max-budget-usd`). */
   maxUsd?: number
-  /** Vypne použití cache z předchozího běhu (resume) pro tohle volání. */
+  /** Disables use of the cache from a previous run (resume) for this call. */
   noCache?: boolean
 }
 
-// ───────────────────────── claude runner (modul 1) ─────────────────────────
+// ───────────────────────── claude runner (module 1) ─────────────────────────
 
-/** Překročený rozpočet agenta (`--max-budget-usd`) a HTTP chyby se hlásí jako `api`, chybné argumenty CLI jako `exit`. */
+/** An exceeded agent budget (`--max-budget-usd`) and HTTP errors are reported as `api`, invalid CLI arguments as `exit`. */
 export type ClaudeErrorKind = 'stall' | 'timeout' | 'exit' | 'api' | 'schema' | 'aborted' | 'spawn'
 
 export interface ClaudeRunRequest {
   prompt: string
   cwd: string
-  /** Adresář pro artefakty tohoto agenta: prompt.txt, stream.jsonl, stderr.txt, result.json. Runner ho vytvoří. */
+  /** Directory for this agent's artifacts: prompt.txt, stream.jsonl, stderr.txt, result.json. The runner creates it. */
   outDir: string
   model?: string
   effort?: EffortLevel
@@ -104,16 +104,16 @@ export interface ClaudeRunRequest {
   /** Default `bypassPermissions`. */
   permissionMode?: PermissionMode
   maxBudgetUsd?: number
-  /** Další surové argumenty pro `claude`. */
+  /** Additional raw arguments for `claude`. */
   extraArgs?: string[]
-  /** Spustitelný soubor `claude`; default env `ULTRACODE_CLAUDE_BIN`, jinak `claude` z PATH. */
+  /** Executable `claude`; default from env `ULTRACODE_CLAUDE_BIN`, otherwise `claude` from PATH. */
   bin?: string
-  /** Doplňuje (nepřepisuje celé) prostředí potomka. */
+  /** Adds to (does not replace) the child process environment. */
   env?: Record<string, string>
   /** Default 600_000. */
   stallMs?: number
   timeoutMs?: number
-  /** Kolik pokusů celkem při stall / přechodné chybě (default 3, max 6). */
+  /** Total number of attempts on a stall / transient error (default 3, max 6). */
   maxAttempts?: number
   signal?: AbortSignal
   onProgress?: (e: ClaudeProgress) => void
@@ -123,16 +123,16 @@ export type ClaudeProgress =
   | { kind: 'start'; attempt: number; pid?: number }
   | { kind: 'tool'; name: string }
   | { kind: 'text'; chars: number }
-  /** KUMULATIVNÍ spotřeba za celé volání `runClaude` (včetně předchozích pokusů); průběžné outputTokens jsou jen odhad. */
+  /** CUMULATIVE usage for the whole `runClaude` call (including previous attempts); intermediate outputTokens are only an estimate. */
   | { kind: 'usage'; usage: TokenUsage }
-  /** `attempt` je číslo NADCHÁZEJÍCÍHO pokusu. */
+  /** `attempt` is the number of the UPCOMING attempt. */
   | { kind: 'retry'; attempt: number; reason: string }
 
 export interface ClaudeRunResult {
   ok: boolean
-  /** Finální text agenta (pole `result` z výstupu `claude`). */
+  /** The agent's final text (the `result` field of the `claude` output). */
   text: string | null
-  /** Validovaný objekt, pokud byl zadán schema (`structured_output`); `null` při neúspěchu nebo bez schema. */
+  /** Validated object if a schema was given (`structured_output`); `null` on failure or without a schema. */
   structured: unknown
   sessionId?: string
   usage: TokenUsage
@@ -140,67 +140,67 @@ export interface ClaudeRunResult {
   numTurns: number
   toolCalls: number
   durationMs: number
-  /** Kolikátý pokus byl úspěšný / poslední; 0, když se `claude` vůbec nespustil. `runClaude` nikdy nehází. */
+  /** Which attempt succeeded / was the last one; 0 when `claude` was not started at all. `runClaude` never throws. */
   attempts: number
   error?: { kind: ClaudeErrorKind; message: string }
 }
 
-/** Signatura funkce, kterou exportuje `src/runner/claude.ts` (jako `runClaude`). Injektovatelná kvůli testům. */
+/** Signature of the function exported by `src/runner/claude.ts` (as `runClaude`). Injectable for tests. */
 export type ClaudeRunner = (req: ClaudeRunRequest) => Promise<ClaudeRunResult>
 
-// ───────────────────────── script host (modul 2) ─────────────────────────
+// ───────────────────────── script host (module 2) ─────────────────────────
 
 export interface LoadedScript {
   source: string
-  /** Cesta/jméno pro chybové hlášky a stack trace. */
+  /** Path/name for error messages and stack traces. */
   filename: string
 }
 
-/** Kontext volání, aby engine uměl seskupit agenty a události podle (vnořeného) workflow. */
+/** Call context, so the engine can group agents and events by (nested) workflow. */
 export interface HookCall {
-  /** ['php8-upgrade'] nebo ['php8-upgrade', 'child-name'] u vnořeného workflow(). */
+  /** ['php8-upgrade'] or ['php8-upgrade', 'child-name'] for a nested workflow(). */
   workflowPath: string[]
 }
 
 /**
- * Co script host (běží ve workeru) volá zpět na hlavním vlákně. Implementuje engine.
- * Všechny hodnoty musí být JSON-serializovatelné (přecházejí přes postMessage).
+ * What the script host (running in a worker) calls back on the main thread. Implemented by the engine.
+ * All values must be JSON-serializable (they cross postMessage).
  */
 export interface ScriptHooks {
-  /** Vrací výsledek agenta (objekt při schema, jinak string) nebo `null` při terminálním selhání/přeskočení. */
+  /** Returns the agent result (an object when a schema is given, otherwise a string) or `null` on a terminal failure/skip. */
   agent(prompt: string, opts: AgentOptions, call: HookCall): Promise<unknown>
   phase(title: string, call: HookCall): void
   log(message: string, call: HookCall): void
-  /** Najde skript vnořeného workflow podle jména nebo `{scriptPath}`. Vyhodí chybu, když neexistuje. */
+  /** Finds the script of a nested workflow by name or `{scriptPath}`. Throws an error when it does not exist. */
   loadWorkflow(ref: string | { scriptPath: string }, call: HookCall): Promise<LoadedScript>
-  /** Vnořené workflow začalo / skončilo (pro seskupení v eventech). */
+  /** A nested workflow started / ended (for grouping in events). */
   workflowEnter(name: string, call: HookCall): void
   workflowExit(name: string, call: HookCall): void
 }
 
 /**
- * Rozložení SharedArrayBuffer (Float64Array) pro `budget` – synchronní čtení ve skriptu:
- *   [0] spentOutputTokens   [1] totalOutputTokens (-1 = bez limitu)
- *   [2] spentUsd            [3] totalUsd          (-1 = bez limitu)
- * Zapisuje pouze engine (hlavní vlákno).
+ * Layout of the SharedArrayBuffer (Float64Array) for `budget` — synchronous reads in the script:
+ *   [0] spentOutputTokens   [1] totalOutputTokens (-1 = no limit)
+ *   [2] spentUsd            [3] totalUsd          (-1 = no limit)
+ * Only the engine (main thread) writes to it.
  */
 export const BUDGET_SLOTS = 4
 
 export interface RunScriptRequest {
   source: string
   filename: string
-  /** Hodnota globálu `args` (JSON). `undefined` → ve skriptu `undefined`. */
+  /** Value of the global `args` (JSON). `undefined` → `undefined` in the script. */
   args: unknown
   hooks: ScriptHooks
   budgetBuffer: SharedArrayBuffer
   signal?: AbortSignal
-  /** Strop položek v jednom parallel()/pipeline() (default 4096). */
+  /** Cap on items in one parallel()/pipeline() (default 4096). */
   maxItems?: number
 }
 
 export interface RunScriptResult {
   meta: WorkflowMeta
-  /** To, co skript `return`nul (JSON-serializovatelné; undefined → null). */
+  /** What the script `return`ed (JSON-serializable; undefined → null). */
   value: unknown
 }
 
@@ -209,25 +209,25 @@ export interface RunScriptResult {
 export type RunStatus = 'running' | 'completed' | 'failed' | 'aborted'
 
 export interface RunOptions {
-  /** Cesta ke skriptu (.ts/.js) NEBO jméno workflow k nalezení v adresářích s workflow. */
+  /** Path to the script (.ts/.js) OR the name of a workflow to find in the workflow directories. */
   workflow: string
   args?: unknown
-  /** Projektový adresář: cwd agentů + kořen `.ultracode/` (runs, workflows). Default process.cwd(). */
+  /** Project directory: agents' cwd + root of `.ultracode/` (runs, workflows). Default process.cwd(). */
   cwd?: string
-  /** Pokračovat v existujícím běhu (cache z journalu). */
+  /** Continue an existing run (cache from the journal). */
   resumeRunId?: string
   runId?: string
   concurrency?: number
-  /** Celkem agentů za běh (default 1000). */
+  /** Total agents per run (default 1000). */
   maxAgents?: number
   maxOutputTokens?: number
   maxUsd?: number
-  /** Výchozí model/effort pro agenty, kteří je nespecifikují. */
+  /** Default model/effort for agents that do not specify them. */
   model?: string
   effort?: EffortLevel
   permissionMode?: PermissionMode
   claudeBin?: string
-  /** Injektovaný runner (testy). Default `runClaude` z `src/runner/claude.ts`. */
+  /** Injected runner (tests). Default `runClaude` from `src/runner/claude.ts`. */
   runner?: ClaudeRunner
   signal?: AbortSignal
   onEvent?: (e: RunEvent) => void
@@ -247,12 +247,12 @@ export interface RunSummary {
   name: string
   status: RunStatus
   startedAt: string
-  /** ISO čas konce; prázdný řetězec `''`, dokud běh neskončil (`status: 'running'`). */
+  /** ISO end time; empty string `''` until the run ends (`status: 'running'`). */
   endedAt: string
   durationMs: number
   runDir: string
   scriptPath: string
-  /** Návratová hodnota skriptu (u `completed`). */
+  /** Return value of the script (for `completed`). */
   result?: unknown
   error?: string
   totals: RunTotals
