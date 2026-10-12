@@ -1,0 +1,32 @@
+{
+  "name": "agentis-ultracode",
+  "version": "0.1.0",
+  "description": "Vlastní runtime dynamických workflow (jako Claude Code /workflows): TypeScript skript orchestruje mnoho agentů spouštěných přes `claude -p`.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "private": true,
+  "bin": {
+    "ultracode": "bin/ultracode.mjs"
+  },
+  "engines": {
+    "node": ">=22.18"
+  },
+  "files": [
+    "bin",
+    "dist",
+    "types",
+    "skills",
+    "examples",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test \"test/**/*.test.ts\"",
+    "ultracode": "node bin/ultracode.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}
