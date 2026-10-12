@@ -157,6 +157,7 @@ max. 1000 agentů za běh a 4096 položek v jednom `parallel`/`pipeline`.
 | `ultracode logs <runId> [--follow] [--agent <n>]` | události; prompt a výsledek agenta |
 | `ultracode list` | běhy a dostupná workflow |
 | `ultracode validate <cesta…>` | statická kontrola skriptů (exit 2 při chybě) |
+| `ultracode meta <workflow\|cesta>` | vypíše `meta` workflow jako JSON |
 | `ultracode types [--out <dir>]` | zapíše `workflow.d.ts` |
 | `ultracode init` | založí `.ultracode/` s ukázkou |
 | `ultracode skill install [--user\|--project] [--force]` | nainstaluje authoring skill |

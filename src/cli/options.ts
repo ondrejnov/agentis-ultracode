@@ -41,6 +41,7 @@ export const COMMAND_OPTIONS: Record<string, Record<string, OptDef>> = {
   list: { ...COMMON, json: { type: 'boolean' }, limit: { type: 'string' } },
   logs: { ...COMMON, follow: { type: 'boolean', short: 'f' }, agent: { type: 'string' }, json: { type: 'boolean' } },
   validate: { ...COMMON, json: { type: 'boolean' } },
+  meta: { ...COMMON },
   types: { ...COMMON, out: { type: 'string' } },
   skill: { ...COMMON, user: { type: 'boolean' }, project: { type: 'boolean' }, force: { type: 'boolean' } },
   init: { ...COMMON, force: { type: 'boolean' } },

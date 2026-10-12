@@ -8,6 +8,7 @@ import { COMMAND_HELP, MAIN_HELP } from './help.ts'
 import { initCommand } from './commands/init.ts'
 import { listCommand } from './commands/list.ts'
 import { logsCommand } from './commands/logs.ts'
+import { metaCommand } from './commands/meta.ts'
 import { runCommand } from './commands/run.ts'
 import { skillCommand } from './commands/skill.ts'
 import { statusCommand } from './commands/status.ts'
@@ -27,6 +28,7 @@ const COMMANDS: Record<string, (ctx: CommandContext, argv: string[]) => Promise<
   list: listCommand,
   logs: logsCommand,
   validate: validateCommand,
+  meta: metaCommand,
   types: typesCommand,
   skill: skillCommand,
   init: initCommand,

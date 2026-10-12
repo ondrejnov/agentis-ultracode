@@ -63,7 +63,7 @@ export async function validateCommand(ctx: CommandContext, argv: string[]): Prom
   return reports.every((r) => r.ok) ? 0 : 2
 }
 
-async function validateOne(
+export async function validateOne(
   ctx: CommandContext,
   ref: string,
   cwd: string,

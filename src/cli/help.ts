@@ -12,6 +12,7 @@ Commands:
   list                     lists runs and available workflows
   logs <runId>             run events; --follow watches, --agent <n> shows the agent's prompt and result
   validate <path...>       checks workflow scripts (exit 2 on error)
+  meta <workflow|path>     prints the workflow's meta as JSON
   types                    writes types/workflow.d.ts for writing scripts
   skill install            installs the authoring skill for Claude into ~/.claude/skills/ or the project
   init                     creates .ultracode/workflows/ with a sample workflow and types
@@ -76,6 +77,11 @@ Prints run events in a readable form. --follow follows the run until it ends.
   validate: `Usage: ultracode validate <path...> [--json]
 
 Checks scripts (meta, syntax, forbidden constructs). Exit 2 if any script is invalid.
+`,
+  meta: `Usage: ultracode meta <workflow|path> [--cwd dir]
+
+Prints the \`meta\` of a workflow (name, description, whenToUse, phases) as JSON on stdout.
+The argument is a script path or a workflow name. Exit 2 if the script is invalid or cannot be found.
 `,
   types: `Usage: ultracode types [--out dir] [--cwd dir]
 

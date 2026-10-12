@@ -2,3 +2,5 @@ node_modules/
 dist/
 .ultracode/runs/
 *.tsbuildinfo
+.ultracode
+.agentis
