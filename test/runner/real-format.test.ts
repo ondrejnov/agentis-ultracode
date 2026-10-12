@@ -1,5 +1,6 @@
 /**
- * Verifies that the runner understands the REAL format of `claude -p --output-format stream-json`.
+ * Verifies that the runner understands the REAL format of `agentiscode --json` (wrapping `claude -p`). The samples were
+ * recorded from a real claude 2.1.x and normalized by agentiscode's own translator.
  * Instead of claude, the saved streams are replayed (test/fixtures/sample-stream-*.jsonl) via replay-claude.mjs.
  */
 import { afterEach, describe, it } from 'node:test'

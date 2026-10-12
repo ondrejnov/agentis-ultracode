@@ -1,7 +1,8 @@
 # agentis-ultracode
 
 Vlastní implementace **dynamických workflow** ve stylu Claude Code (`/workflows`): TypeScriptový skript
-orchestruje desítky až stovky agentů a každý agent je samostatný proces `claude -p`. Skript je
+orchestruje desítky až stovky agentů a každý agent je samostatný proces `agentiscode --adapter claude`
+(wrapper nad `claude -p` se sjednoceným JSON výstupem). Skript je
 deterministický řídicí kód (smyčky, fan-out, verifikace), agenti dělají nedeterministickou práci.
 
 - **Skript bez importů** — `agent`, `parallel`, `pipeline`, `phase`, `log`, `args`, `budget`, `workflow` jsou globály.
@@ -9,7 +10,10 @@ deterministický řídicí kód (smyčky, fan-out, verifikace), agenti dělají 
   zvaliduje a spustí vlastní workflow.
 - **Bezobslužný běh** — události a výsledky agentů na disku, `resume` po pádu bez opakování hotové práce,
   tvrdé limity tokenů/USD/agentů.
-- **Nula runtime závislostí** — jen Node.js ≥ 22.18 a nainstalovaný `claude`.
+- **Nula runtime závislostí** — jen Node.js ≥ 22.18 a nainstalované `agentiscode` (Python, `/var/www/agentiscode-cli`)
+  a `claude`.
+- **JSON stream pro Agentis** — `ultracode run --json` streamuje na stdout události běhu i kompletní log každého
+  subagenta (JSON Lines), připravené k vizualizaci v Agentisu.
 
 ## Instalace
 
@@ -131,7 +135,7 @@ na `../workflow.d.ts` (vytvoří ho `ultracode init` nebo `ultracode types`).
 
 | Globál | Co dělá |
 | --- | --- |
-| `agent(prompt, opts?)` | spustí `claude -p`; bez `schema` vrací text, se `schema` ověřený objekt, při selhání **`null`** |
+| `agent(prompt, opts?)` | spustí agenta (`agentiscode` → `claude -p`); bez `schema` vrací text, se `schema` ověřený objekt, při selhání **`null`** |
 | `parallel(thunks)` | souběžně, **bariéra**; thunk s chybou → `null` |
 | `pipeline(items, s1, s2, …)` | každá položka stagemi nezávisle, **bez bariéry**; výchozí volba |
 | `phase(title)` / `log(msg)` | fáze a zprávy do průběhu a `events.jsonl` |
@@ -165,9 +169,25 @@ max. 1000 agentů za běh a 4096 položek v jednom `parallel`/`pipeline`.
 Volby `run`/`resume`: `--cwd`, `--concurrency`, `--max-agents`, `--max-tokens`, `--max-usd`, `--model`,
 `--effort`, `--run-id`, `--quiet`, `--verbose`, `--json`, `--no-color`.
 
-**Výstup:** stdout je JSON návratové hodnoty skriptu (s `--json` celé shrnutí běhu, i u selhání),
-stderr je průběh pro člověka. **Exit kódy:** `0` dokončeno, `1` běh selhal, `2` chybné použití / neplatný
+**Výstup:** stdout je JSON návratové hodnoty skriptu, stderr je průběh pro člověka. S `--json` je stdout
+živý proud JSON Lines (viz níže).  **Exit kódy:** `0` dokončeno, `1` běh selhal, `2` chybné použití / neplatný
 skript / neznámé workflow, `130` přerušeno.
+
+### `run --json` — stream pro Agentis
+
+Každý řádek je jeden JSON objekt s polem `t`:
+
+- události běhu jako v `events.jsonl`: `run_start`, `phase`, `log`, `workflow_enter`/`_exit`, `agent_start`,
+  `agent_tool`, `agent_retry`, `agent_done`, `budget`, `run_end`;
+- `agent_event` — `{t, ts, id, label, attempt, event}`: jedna událost z vlastního logu subagenta ve formátu
+  `agentiscode --json` (`session`, `text`, `reasoning`, `tool` running→completed/error, `step` s usage, `api_retry`,
+  `stderr`, `error`, `result`). `id` odpovídá `agent_start.id`. Do `events.jsonl` se nezapisují (na disku jsou v
+  `agents/<id>/stream.jsonl`);
+- poslední řádek `{"t":"summary","ts":…,"summary":{…RunSummary}}` (i u selhání).
+
+```bash
+ultracode run audit --json --quiet | agentis-ingest     # stdout = jen JSON Lines
+```
 
 Workflow se hledá podle jména (`<jméno>.workflow.ts`, `.workflow.js`, `.ts`, `.js`) v
 `<cwd>/.ultracode/workflows/` a ve stejných podadresářích rodičů, poté v `~/.ultracode/workflows` a v
@@ -195,7 +215,8 @@ agents/<n>/      prompt.txt, stream.jsonl, stderr.txt, result.json  (n = pořad�
 
 | Proměnná | Význam | Default |
 | --- | --- | --- |
-| `ULTRACODE_CLAUDE_BIN` | spustitelný soubor `claude` (hodí se pro testy: `test/fixtures/fake-claude.mjs`) | `claude` z `PATH` |
+| `ULTRACODE_AGENT_BIN` | spustitelný soubor agenta (`agentiscode`); starší alias `ULTRACODE_CLAUDE_BIN` (pro testy: `test/fixtures/fake-claude.mjs`) | `agentiscode` z `PATH` |
+| `ULTRACODE_AGENT_ADAPTER` | hodnota `agentiscode --adapter` (`claude`, `claude-p`) | `claude` |
 | `ULTRACODE_MAX_CONCURRENCY` | max. souběžných agentů (`--concurrency` má přednost) | `min(16, CPU−2)` |
 | `ULTRACODE_WORKFLOWS_DIR` | další adresáře s workflow (více cest odděl `:`) | — |
 | `ULTRACODE_RETRY_BACKOFF_MS` | základ prodlevy mezi pokusy agenta (`× číslo pokusu`) | `2000` |
@@ -231,12 +252,12 @@ Subagenti dostávají `CLAUDE_CODE_DISABLE_WORKFLOWS=1`, aby z nich nevznikala r
 | `null` z `agent()`, `parallel`/`pipeline` semantika | ano | **stejné** |
 | Determinismus (`Date.now`, `Math.random`) | vyhazuje | **stejné** |
 | Limity (souběžnost, 1000 agentů, 4096 položek, vnoření o 1) | ano | **stejné** |
-| Spuštění | nástroj `Workflow` v session | samostatné CLI, každý agent je `claude -p`, výsledek JSON na stdout |
+| Spuštění | nástroj `Workflow` v session | samostatné CLI, každý agent je `agentiscode` → `claude -p`, výsledek JSON na stdout |
 | Oprávnění agentů | podle session | vždy `bypassPermissions` (spouštět v kontejneru/VM) |
 | Resume | nezměněný prefix volání | podle obsahu: klíč = prompt + schema + model + effort + cwd + nástroje; odolné vůči pořadí v `parallel` |
 | Rozpočet | tokeny turnu (`+500k`) | `--max-tokens` i `--max-usd` |
 | Volby `agent()` navíc | — | `cwd`, `tools`, `disallowedTools`, `systemPrompt`, `stallMs`, `timeoutMs`, `maxUsd`, `noCache` |
-| Pozorování | integrované UI `/workflows` | `stderr`, `events.jsonl`, `status`, `logs --follow` |
+| Pozorování | integrované UI `/workflows` | `stderr`, `events.jsonl`, `status`, `logs --follow`, `run --json` (stream pro Agentis) |
 | `isolation: 'worktree'` | ano | **ne** (volba je odmítnuta; partitions po cestách) |
 | `agentType` | ano | **ne** |
 | Zastavení/restart jednoho agenta, TUI | ano | **ne** (`Ctrl+C` zruší běh, `resume`) |
@@ -254,8 +275,8 @@ Mimo rozsah verze 1, v pořadí, v jakém dávají smysl:
 
 Známá omezení verze 1:
 
-- Při násilném ukončení hlavního procesu (`SIGKILL`, OOM) neběží úklid a rozběhnutí agenti (`claude -p`) mohou
-  dokončit osiřele; běh se pozná jako `aborted` a `resume` ho dodělá z journalu. `SIGINT`/`SIGTERM` jsou ošetřeny.
+- Při násilném ukončení hlavního procesu (`SIGKILL`, OOM) neběží úklid a rozběhnutí agenti (`agentiscode`) mohou
+  dokončit osiřele (samotný `claude` dostane díky `PR_SET_PDEATHSIG` SIGKILL, jakmile umře jeho `agentiscode`); běh se pozná jako `aborted` a `resume` ho dodělá z journalu. `SIGINT`/`SIGTERM` jsou ošetřeny.
 - Cena agenta zabitého při stallu/přerušení je neznámá (počítá se 0), takže `costUsd` je spodní odhad.
 - `stallMs` (default 10 min ticha) může zabít agenta, který dlouho vykonává jeden nástroj bez výstupu; u takových
   agentů ho zvyš.

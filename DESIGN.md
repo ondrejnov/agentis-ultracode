@@ -1,7 +1,7 @@
 # agentis-ultracode — design
 
 Own implementation of dynamic workflows as in Claude Code (`/workflows`, tool `Workflow`):
-an agent (Claude) generates a **TypeScript script**; the script is started with the `ultracode run` command and orchestrates many agents in the background, each as a separate `claude -p` process.
+an agent (Claude) generates a **TypeScript script**; the script is started with the `ultracode run` command and orchestrates many agents in the background, each as a separate `agentiscode --adapter claude` process (a wrapper over `claude -p` with unified JSON output).
 
 Inspiration: <https://code.claude.com/docs/en/workflows>, <https://github.com/ekil1100/pi-ultracode>,
 example run `php8-upgrade-wf_003aa2c5-8ce.js` (21 agents, `agent → pipeline(fix → review)`).
@@ -44,7 +44,7 @@ example run `php8-upgrade-wf_003aa2c5-8ce.js` (21 agents, `agent → pipeline(fi
 bin/ultracode.mjs            thin shim → dist/cli/cli.js (fallback to src/cli/cli.ts via type-stripping, forceable with ULTRACODE_FORCE_SRC=1)
 src/
   types.ts, errors.ts        CONTRACTS (shared)
-  runner/claude.ts           [module 1] running one agent: spawn claude -p, stream-json, retry, stall, abort
+  runner/claude.ts           [module 1] running one agent: spawn agentiscode (→ claude -p), unified JSON events, retry, stall, abort
   script/                    [module 2] loading and running a script
     parse.ts                   extract meta (pure literal), validation, TS strip, wrapping into an async function
     worker.ts                  vm context with the globals (agent/parallel/pipeline…), determinism guards
@@ -85,16 +85,21 @@ agents/<id>/        prompt.txt, stream.jsonl, stderr.txt, result.json   (id = st
 
 `runId` = `wf_<8 hex>-<3 hex>` (as in Claude Code).
 
-### `claude -p` call (one agent)
+### Agent call (one agent)
 
 ```
-claude -p --output-format stream-json --verbose --no-session-persistence
-       --permission-mode bypassPermissions --disallowedTools Workflow[,…]
-       [--model M] [--effort E] [--json-schema '<schema>'] [--allowedTools …]
-       [--append-system-prompt '<default+custom>'] [--max-budget-usd X]
+agentiscode --adapter claude --json
+       --permission-mode bypassPermissions --disallowed-tools Workflow[,…]
+       [--model M] [--effort E]
+       --extra-args-json '["--no-session-persistence", "--append-system-prompt", "<default+custom>",
+                          ["--json-schema", "<schema>"], ["--allowedTools", "…"], ["--max-budget-usd", "X"]]'
 prompt on stdin;  env: CLAUDE_CODE_DISABLE_WORKFLOWS=1
 ```
-The result = the last event `type:"result"` (`result`, `structured_output`, `usage`, `total_cost_usd`, `session_id`, `num_turns`, `is_error`, `subtype`).
+agentiscode runs `claude -p --output-format stream-json --verbose …` and prints unified JSON Lines events
+(`session`, `text`, `reasoning`, `tool`, `step`, `api_retry`, `stderr`, `error`, `result`). The result = the `result` event
+(`result`, `structured_output`, `usage`, `cost_usd`, `session_id`, `num_turns`, `is_error`, `subtype`, `api_error_status`);
+`synthetic: true` marks a result computed by agentiscode when claude produced none. Every agent event is also streamed live
+as `agent_event` by `ultracode run --json`.
 
 ## Scope of v1 / out of scope
 

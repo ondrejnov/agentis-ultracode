@@ -104,9 +104,9 @@ export interface ClaudeRunRequest {
   /** Default `bypassPermissions`. */
   permissionMode?: PermissionMode
   maxBudgetUsd?: number
-  /** Additional raw arguments for `claude`. */
+  /** Additional raw arguments for `claude` (passed through agentiscode `--extra-args-json`). */
   extraArgs?: string[]
-  /** Executable `claude`; default from env `ULTRACODE_CLAUDE_BIN`, otherwise `claude` from PATH. */
+  /** Agent executable (agentiscode); default from env `ULTRACODE_AGENT_BIN` / `ULTRACODE_CLAUDE_BIN`, otherwise `agentiscode` from PATH. */
   bin?: string
   /** Adds to (does not replace) the child process environment. */
   env?: Record<string, string>
@@ -127,6 +127,8 @@ export type ClaudeProgress =
   | { kind: 'usage'; usage: TokenUsage }
   /** `attempt` is the number of the UPCOMING attempt. */
   | { kind: 'retry'; attempt: number; reason: string }
+  /** One raw event of the agent's agentiscode `--json` stream (session/text/reasoning/tool/step/result/…). */
+  | { kind: 'event'; attempt: number; event: Record<string, unknown> }
 
 export interface ClaudeRunResult {
   ok: boolean
@@ -268,6 +270,11 @@ export type RunEvent =
   | { t: 'agent_start'; ts: string; id: number; label: string; phase: string | null; workflowPath: string[]; model?: string; promptPreview: string }
   | { t: 'agent_tool'; ts: string; id: number; tool: string }
   | { t: 'agent_retry'; ts: string; id: number; attempt: number; reason: string }
+  /**
+   * One event from the agent's own log (agentiscode `--json` format, see src/runner/claude.ts). LIVE ONLY: delivered to
+   * `onEvent` but not written to events.jsonl (the full stream is in agents/<id>/stream.jsonl).
+   */
+  | { t: 'agent_event'; ts: string; id: number; label: string; attempt: number; event: Record<string, unknown> }
   | { t: 'agent_done'; ts: string; id: number; ok: boolean; cached: boolean; durationMs: number; usage: TokenUsage; costUsd: number; toolCalls: number; error?: string }
   | { t: 'budget'; ts: string; spentOutputTokens: number; spentUsd: number; limitOutputTokens: number | null; limitUsd: number | null }
   | { t: 'run_end'; ts: string; status: RunStatus; durationMs: number; totals: RunTotals; error?: string }

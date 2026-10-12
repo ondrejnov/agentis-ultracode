@@ -73,6 +73,12 @@ export function argOf(args: string[], flag: string): string | undefined {
   return i >= 0 ? args[i + 1] : undefined
 }
 
+/** The part of the agentiscode argv that goes verbatim to `claude` (`--extra-args-json`). */
+export function claudeArgsOf(args: string[]): string[] {
+  const raw = argOf(args, '--extra-args-json')
+  return raw === undefined ? [] : (JSON.parse(raw) as string[])
+}
+
 /** Is the process alive? A zombie (state Z) counts as dead. */
 export function isAlive(pid: number): boolean {
   try {
@@ -112,8 +118,8 @@ export function childPidFromStream(outDir: string): number | null {
   for (const line of readFileSync(file, 'utf8').split('\n')) {
     if (!line.includes('fake_child')) continue
     try {
-      const o = JSON.parse(line) as { subtype?: string; pid?: number }
-      if (o.subtype === 'fake_child' && typeof o.pid === 'number') return o.pid
+      const o = JSON.parse(line) as { type?: string; pid?: number }
+      if (o.type === 'fake_child' && typeof o.pid === 'number') return o.pid
     } catch {
       // ignore
     }

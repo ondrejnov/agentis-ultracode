@@ -8,6 +8,7 @@ import type { ClaudeProgress, ClaudeRunRequest } from '../../src/types.ts'
 import {
   FIXTURES,
   argOf,
+  claudeArgsOf,
   childPidFromStream,
   collectProgress,
   isAlive,
@@ -55,7 +56,7 @@ describe('runClaude – basic run', () => {
     assert.equal(readFileSync(join(sb.outDir, 'prompt.txt'), 'utf8'), 'Say hello [[fake:tokens 42]] [[fake:cost 0.02]]')
     const stream = readFileSync(join(sb.outDir, 'stream.jsonl'), 'utf8').trim().split('\n')
     assert.ok(stream.length >= 3)
-    assert.equal(JSON.parse(stream[0]!).subtype, 'init')
+    assert.equal(JSON.parse(stream[0]!).type, 'session')
     assert.equal(JSON.parse(stream.at(-1)!).type, 'result')
     assert.ok(existsSync(join(sb.outDir, 'stderr.txt')))
     const saved = JSON.parse(readFileSync(join(sb.outDir, 'result.json'), 'utf8'))
@@ -69,7 +70,7 @@ describe('runClaude – basic run', () => {
     assert.equal(r.ok, true)
     assert.deepEqual(r.structured, { n: 7, tags: [['a']] })
     assert.equal(r.text, '{"n":7,"tags":[["a"]]}')
-    assert.equal(argOf(readLog(sb)[0]!.args, '--json-schema'), JSON.stringify(schema))
+    assert.equal(argOf(claudeArgsOf(readLog(sb)[0]!.args), '--json-schema'), JSON.stringify(schema))
   })
 
   it('schema without directive: minimal object according to the schema', async () => {
@@ -130,18 +131,18 @@ describe('runClaude – arguments and environment', () => {
     )
     assert.equal(r.ok, true)
     const { args, cwd } = readLog(sb)[0]!
-    assert.equal(args[0], '-p')
-    assert.equal(argOf(args, '--output-format'), 'stream-json')
-    assert.ok(args.includes('--verbose'))
-    assert.ok(args.includes('--no-session-persistence'))
+    const claude = claudeArgsOf(args)
+    assert.equal(argOf(args, '--adapter'), 'claude')
+    assert.ok(args.includes('--json'))
+    assert.ok(claude.includes('--no-session-persistence'))
     assert.equal(argOf(args, '--permission-mode'), 'bypassPermissions')
-    assert.equal(argOf(args, '--disallowedTools'), 'Workflow,WebFetch')
-    assert.equal(argOf(args, '--allowedTools'), 'Read,Bash(git diff:*)')
+    assert.equal(argOf(args, '--disallowed-tools'), 'Workflow,WebFetch')
+    assert.equal(argOf(claude, '--allowedTools'), 'Read,Bash(git diff:*)')
     assert.equal(argOf(args, '--model'), 'haiku')
     assert.equal(argOf(args, '--effort'), 'low')
-    assert.equal(argOf(args, '--max-budget-usd'), '0.5')
-    assert.equal(argOf(args, '--add-dir'), '/tmp')
-    const sys = argOf(args, '--append-system-prompt')!
+    assert.equal(argOf(claude, '--max-budget-usd'), '0.5')
+    assert.equal(argOf(claude, '--add-dir'), '/tmp')
+    const sys = argOf(claude, '--append-system-prompt')!
     assert.ok(sys.startsWith(DEFAULT_SUBAGENT_SYSTEM_PROMPT))
     assert.ok(sys.endsWith('Speak English only.'))
     assert.equal(cwd, sb.cwd.replace(/^\/private/, ''))
@@ -153,11 +154,12 @@ describe('runClaude – arguments and environment', () => {
     setup()
     await runClaude(req('x', { permissionMode: 'dontAsk' }))
     const { args } = readLog(sb)[0]!
-    assert.equal(argOf(args, '--append-system-prompt'), DEFAULT_SUBAGENT_SYSTEM_PROMPT)
+    const claude = claudeArgsOf(args)
+    assert.equal(argOf(claude, '--append-system-prompt'), DEFAULT_SUBAGENT_SYSTEM_PROMPT)
     assert.equal(argOf(args, '--permission-mode'), 'dontAsk')
-    assert.equal(argOf(args, '--disallowedTools'), 'Workflow')
-    assert.ok(!args.includes('--allowedTools'))
-    assert.ok(!args.includes('--json-schema'))
+    assert.equal(argOf(args, '--disallowed-tools'), 'Workflow')
+    assert.ok(!claude.includes('--allowedTools'))
+    assert.ok(!claude.includes('--json-schema'))
     assert.ok(!args.includes('--model'))
   })
 
@@ -255,6 +257,31 @@ describe('runClaude – progress and aggregation', () => {
   })
 })
 
+describe('runClaude – agent event stream', () => {
+  it('every parsed agentiscode event is forwarded with the attempt number', async () => {
+    setup()
+    const p = collectProgress()
+    const r = await runClaude(req('stream [[fake:fail-times 1]] [[fake:tools 1]]', { onProgress: p.push }))
+    assert.equal(r.ok, true)
+    const evs = p.events.filter((e) => e.kind === 'event')
+    const byAttempt = (n: number) => evs.filter((e) => e.attempt === n).map((e) => e.event.type)
+    assert.deepEqual(byAttempt(1), ['session', 'stderr', 'error', 'result'])
+    assert.equal(byAttempt(2)[0], 'session')
+    assert.equal(byAttempt(2).at(-1), 'result')
+    assert.ok(byAttempt(2).includes('tool'))
+  })
+
+  it('agentiscode banner stays in stderr.txt but not in error messages', async () => {
+    setup()
+    const r = await runClaude(req('x [[fake:fail]]', { maxAttempts: 1 }))
+    assert.equal(r.ok, false)
+    assert.equal(r.error?.kind, 'exit')
+    assert.match(r.error!.message, /simulated failure/)
+    assert.doesNotMatch(r.error!.message, /\[agentiscode\] command/)
+    assert.match(readFileSync(join(sb.outDir, 'stderr.txt'), 'utf8'), /\[agentiscode\] command/)
+  })
+})
+
 describe('runClaude – retry', () => {
   it('fail-times 1 → second attempt succeeds', async () => {
     setup()
@@ -268,7 +295,7 @@ describe('runClaude – retry', () => {
     // the first attempt's record is moved aside, stream.jsonl is from the last one
     assert.ok(existsSync(join(sb.outDir, 'stderr.attempt-1.txt')))
     assert.match(readFileSync(join(sb.outDir, 'stderr.attempt-1.txt'), 'utf8'), /simulated failure/)
-    assert.equal(readFileSync(join(sb.outDir, 'stderr.txt'), 'utf8'), '')
+    assert.doesNotMatch(readFileSync(join(sb.outDir, 'stderr.txt'), 'utf8'), /simulated failure/)
     assert.ok(readFileSync(join(sb.outDir, 'stream.jsonl'), 'utf8').includes('"type":"result"'))
   })
 

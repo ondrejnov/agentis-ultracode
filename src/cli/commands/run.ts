@@ -124,9 +124,19 @@ export async function runCommand(ctx: CommandContext, argv: string[], mode: 'run
   const asJson = bool(v.json)
   const renderState = createRenderState()
   const renderOpts = { style, verbose: bool(v.verbose) }
+  // --json: stdout is a live JSON Lines stream — every run event including each agent's own log (`agent_event`),
+  // closed by one `{"t":"summary",…}` line with the whole RunSummary.
+  const writeJsonLine = (value: unknown) => {
+    try {
+      io.stdout.write(`${safeJson(value)}\n`)
+    } catch {
+      // a closed stdout must not crash the run
+    }
+  }
   const onEvent = (e: RunEvent) => {
+    if (asJson) writeJsonLine(e)
     if (quiet) return
-    if (e.t === 'run_end') return // the summary prints the conclusion
+    if (e.t === 'run_end' || e.t === 'agent_event') return // the summary prints the conclusion; agent logs are JSON-only
     try {
       writeLines(io.stderr, renderEvent(e, renderState, renderOpts))
     } catch {
@@ -164,7 +174,7 @@ export async function runCommand(ctx: CommandContext, argv: string[], mode: 'run
   }
 
   if (asJson) {
-    io.stdout.write(`${safeJson(summary, jsonIndent(io))}\n`)
+    writeJsonLine({ t: 'summary', ts: new Date().toISOString(), summary })
   } else if (summary.status === 'completed') {
     io.stdout.write(`${safeJson(summary.result === undefined ? null : summary.result, jsonIndent(io))}\n`)
   }

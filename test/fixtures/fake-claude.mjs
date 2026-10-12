@@ -1,9 +1,12 @@
 #!/usr/bin/env node
 /**
- * Fake `claude` for tests (ULTRACODE_CLAUDE_BIN=<this file>).
+ * Fake agent for tests (ULTRACODE_CLAUDE_BIN=<this file>).
  *
- * Imitates `claude -p --output-format stream-json --verbose` (format verified on a real claude 2.1.x,
- * see sample-stream-*.jsonl). Reads the prompt from stdin, looks for directives anywhere in the prompt.
+ * Imitates `agentiscode --adapter claude --json …` wrapping `claude -p` (format verified on a real agentiscode +
+ * claude 2.1.x, see sample-stream-*.jsonl): claude-specific flags arrive in `--extra-args-json`, output is the
+ * unified agentiscode JSON Lines (session/text/tool/step/stderr/error/result), claude's stderr is forwarded as
+ * `stderr` events and a crash without a result ends with an `error` event + synthetic result.
+ * Reads the prompt from stdin, looks for directives anywhere in the prompt.
  *
  * SHARED CONTRACT (must not change):
  *   [[fake:json {...}]]    with --json-schema returns structured_output = this JSON
@@ -31,13 +34,13 @@
  *   [[fake:stderr TEXT]]        writes TEXT to stderr (during the run)
  *   [[fake:heartbeat 100 5]]    5× every 100 ms writes a dot to stderr (activity without stdout), then continues
  *   [[fake:child]]              starts a child `sleep 600` (in the same process group, holds stdout/stderr);
- *                               its pid is in the event {"type":"system","subtype":"fake_child","pid":N}
+ *                               its pid is in the event {"type":"fake_child","pid":N}
  *                               and in the log line as childPid
  *   [[fake:ignore-term]]        ignores SIGTERM (only SIGKILL can kill it)
  *   [[fake:no-newline]]         last (result) line without a trailing \n
  *   [[fake:garbage]]            inserts invalid JSON lines and a fragment of an incomplete line into the output
  *   [[fake:hang-after-result]]  after the result event the process does not exit (hangs)
- *   [[fake:no-result]]          exits with 0 without a result event
+ *   [[fake:no-result]]          exits with 0 with only agentiscode's synthetic result (claude produced none)
  *   [[fake:missing-structured]] with --json-schema returns a successful result WITHOUT structured_output
  *   [[fake:exit-code N]]        after the result event exits with code N (default 0, 1 for errors)
  *
@@ -54,12 +57,23 @@ import { join } from 'node:path'
 const startedAt = new Date().toISOString()
 const argv = process.argv.slice(2)
 
+/** agentiscode argv with `--extra-args-json` expanded in place (= what reaches `claude`). */
+const effectiveArgv = (() => {
+  const out = []
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === '--extra-args-json' && i + 1 < argv.length) {
+      out.push(...JSON.parse(argv[++i]))
+    } else out.push(argv[i])
+  }
+  return out
+})()
+
 function argValue(name) {
-  const i = argv.indexOf(name)
-  return i >= 0 && i + 1 < argv.length ? argv[i + 1] : undefined
+  const i = effectiveArgv.indexOf(name)
+  return i >= 0 && i + 1 < effectiveArgv.length ? effectiveArgv[i + 1] : undefined
 }
 
-const outputFormat = argValue('--output-format') ?? 'text'
+const outputFormat = argv.includes('--json') ? 'json-lines' : 'text'
 const schemaArg = argValue('--json-schema')
 const model = argValue('--model')
 
@@ -189,7 +203,7 @@ process.on('exit', writeLog)
 
 const sessionId = randomUUID()
 function emit(obj, { newline = true } = {}) {
-  if (outputFormat !== 'stream-json') return
+  if (outputFormat !== 'json-lines') return
   process.stdout.write(JSON.stringify(obj) + (newline ? '\n' : ''))
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
@@ -230,56 +244,60 @@ function usageObject() {
   }
 }
 
-function assistantEvent(content, extra = {}) {
-  return {
-    type: 'assistant',
-    message: {
-      model: model ?? 'fake-model',
-      id: `msg_${randomUUID().slice(0, 12)}`,
-      type: 'message',
-      role: 'assistant',
-      content: [content],
-      usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
-      ...extra,
-    },
-    parent_tool_use_id: null,
-    session_id: sessionId,
-    uuid: randomUUID(),
+/** One assistant message the way agentiscode emits it: the content block + a per-message `step` with usage. */
+function emitAssistant(content) {
+  const messageId = `msg_${randomUUID().slice(0, 12)}`
+  if (content.type === 'tool_use') {
+    emit({ type: 'tool', id: content.id, name: content.name, status: 'running', input: content.input, title: content.name, message_id: messageId })
+  } else {
+    emit({ type: 'text', text: content.text, message_id: messageId })
   }
+  emit({
+    type: 'step',
+    usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+    cost_usd: null,
+    message_id: messageId,
+  })
+}
+
+/** claude died without a result: agentiscode forwards its stderr, adds an `error` and a synthetic result, exits 1. */
+function emitCrash(stderrLine) {
+  emit({ type: 'stderr', line: stderrLine })
+  emit({ type: 'error', message: `claude skončil s kódem 1: ${stderrLine}`, exit_code: 1, stderr: stderrLine })
+  emit({ type: 'result', session_id: sessionId, usage: null, cost_usd: null, is_error: true, synthetic: true })
 }
 
 async function main() {
   const t0 = Date.now()
+  process.stderr.write(`[agentiscode] command: agentiscode ${argv.join(' ')}\n`)
   const stderrText = val('stderr')
-  if (stderrText) process.stderr.write(String(stderrText) + '\n')
+  if (stderrText) emit({ type: 'stderr', line: String(stderrText) })
 
   emit({
-    type: 'system',
-    subtype: 'init',
-    cwd: process.cwd(),
+    type: 'session',
+    adapter: 'claude',
     session_id: sessionId,
     model: model ?? 'fake-model',
-    permissionMode: argValue('--permission-mode') ?? 'default',
-    tools: ['Read', 'Bash', 'Grep'],
-    uuid: randomUUID(),
+    provider: 'anthropic',
+    cwd: process.cwd(),
   })
 
   if (has('child')) {
     const c = spawn('sleep', ['600'], { stdio: 'inherit' }) // in the SAME group, holds the pipes
     c.unref()
     childPid = c.pid ?? null
-    emit({ type: 'system', subtype: 'fake_child', pid: childPid, session_id: sessionId, uuid: randomUUID() })
+    emit({ type: 'fake_child', pid: childPid, session_id: sessionId })
   }
 
   // fail / stall (depending on the attempt)
   if (has('fail')) {
-    process.stderr.write('fake-claude: simulated failure (fail)\n')
+    emitCrash('fake-claude: simulated failure (fail)')
     process.exitCode = 1
     return
   }
   const failTimes = num('fail-times', 0)
   if (failTimes > 0 && attempt <= failTimes) {
-    process.stderr.write(`fake-claude: simulated failure (fail-times ${failTimes}, attempt ${attempt})\n`)
+    emitCrash(`fake-claude: simulated failure (fail-times ${failTimes}, attempt ${attempt})`)
     process.exitCode = 1
     return
   }
@@ -291,7 +309,7 @@ async function main() {
 
   if (has('garbage')) {
     process.stdout.write('this is not json {\n')
-    process.stdout.write('{"type":"assistant","message":{"content":[{"type":"te\n')
+    process.stdout.write('{"type":"text","text":"te\n')
   }
 
   // tools
@@ -299,13 +317,8 @@ async function main() {
   const toolNames = ['Read', 'Bash', 'Grep']
   for (let i = 0; i < toolsN; i++) {
     const id = `toolu_fake_${attempt}_${i}`
-    emit(assistantEvent({ type: 'tool_use', id, name: toolNames[i % toolNames.length], input: { n: i } }))
-    emit({
-      type: 'user',
-      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: 'ok' }] },
-      session_id: sessionId,
-      uuid: randomUUID(),
-    })
+    emitAssistant({ type: 'tool_use', id, name: toolNames[i % toolNames.length], input: { n: i } })
+    emit({ type: 'tool', id, status: 'completed', output: 'ok' })
   }
 
   if (has('heartbeat')) {
@@ -321,21 +334,21 @@ async function main() {
   const sleepMs = num('sleep', 0)
   if (sleepMs > 0) await sleep(sleepMs)
 
-  if (has('no-result')) return
+  if (has('no-result')) {
+    emit({ type: 'result', session_id: sessionId, usage: null, cost_usd: null, is_error: false, synthetic: true })
+    return
+  }
 
   const usage = usageObject()
   const cost = num('cost', 0.001)
   const numTurns = num('turns', 1 + toolsN)
   const base = {
     type: 'result',
-    duration_ms: Date.now() - t0,
-    duration_api_ms: Date.now() - t0,
-    num_turns: numTurns,
     session_id: sessionId,
-    total_cost_usd: cost,
-    usage: { ...usage, service_tier: 'standard' },
-    permission_denials: [],
-    uuid: randomUUID(),
+    usage: { ...usage, cache_write_tokens: 0 },
+    cost_usd: cost,
+    duration_ms: Date.now() - t0,
+    num_turns: numTurns,
   }
 
   let exitCode = num('exit-code', 0)
@@ -351,7 +364,7 @@ async function main() {
         ...base,
         subtype: 'error_during_execution',
         is_error: true,
-        api_error_status: status,
+        ...(status !== null ? { api_error_status: status } : {}),
         terminal_reason: 'api_error',
         result: status === 529 ? 'API Error: 529 overloaded_error (fake)' : `API Error: simulated error${status ? ` ${status}` : ''} (fake)`,
       },
@@ -364,18 +377,17 @@ async function main() {
     if (schemaArg !== undefined && !has('missing-structured')) {
       const j = val('json')
       structured = j !== undefined && typeof j === 'object' ? j : minimalFromSchema(safeParse(schemaArg))
-      emit(assistantEvent({ type: 'tool_use', id: `toolu_fake_so_${attempt}`, name: 'StructuredOutput', input: structured }))
+      emitAssistant({ type: 'tool_use', id: `toolu_fake_so_${attempt}`, name: 'StructuredOutput', input: structured })
     }
     if (has('text')) text = String(val('text'))
     else if (structured !== undefined) text = JSON.stringify(structured)
     else text = 'echo: ' + cleanPrompt.slice(0, 200)
-    emit(assistantEvent({ type: 'text', text }))
+    emitAssistant({ type: 'text', text })
     emit(
       {
         ...base,
         subtype: 'success',
         is_error: false,
-        api_error_status: null,
         terminal_reason: 'completed',
         result: text,
         ...(structured !== undefined ? { structured_output: structured } : {}),
@@ -399,11 +411,10 @@ function safeParse(s) {
   }
 }
 
-if (outputFormat !== 'stream-json') {
-  // `--output-format text|json` mode – minimal support only
+if (outputFormat !== 'json-lines') {
+  // text mode (without --json) – minimal support only
   const text = has('text') ? String(val('text')) : 'echo: ' + cleanPrompt.slice(0, 200)
-  if (outputFormat === 'json') process.stdout.write(JSON.stringify({ type: 'result', result: text, is_error: false }) + '\n')
-  else process.stdout.write(text + '\n')
+  process.stdout.write(text + '\n')
   writeLog()
 } else {
   await main()

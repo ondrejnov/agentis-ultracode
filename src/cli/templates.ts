@@ -11,7 +11,7 @@ export const HELLO_WORKFLOW = `/// <reference path="../workflow.d.ts" />
 export const meta = {
   name: 'hello',
   description: 'Sample workflow: one agent greets and returns the answer as JSON.',
-  whenToUse: 'Verifying that ultracode and \`claude -p\` work.',
+  whenToUse: 'Verifying that ultracode and \`agentiscode\` (claude -p) work.',
   phases: [
     { title: 'Greeting', detail: 'one agent returns the greeting as structured output' },
   ],

@@ -1,7 +1,7 @@
 {
   "name": "agentis-ultracode",
   "version": "0.1.0",
-  "description": "Custom runtime for dynamic workflows (like Claude Code /workflows): a TypeScript script orchestrates many agents started via `claude -p`.",
+  "description": "Custom runtime for dynamic workflows (like Claude Code /workflows): a TypeScript script orchestrates many agents started via `agentiscode` (claude -p).",
   "type": "module",
   "license": "UNLICENSED",
   "private": true,

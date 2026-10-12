@@ -16,6 +16,13 @@ const FAKE = join(ROOT, 'test', 'fixtures', 'fake-claude.mjs')
 
 // ───────────────────────── helpers ─────────────────────────
 
+/** `run --json` stdout is a JSON Lines stream; the last line is `{"t":"summary","summary":{…}}`. */
+function summaryOf(stdout: string): any {
+  const last = JSON.parse(stdout.trim().split('\n').at(-1)!)
+  assert.equal(last.t, 'summary')
+  return last.summary
+}
+
 interface Sandbox {
   cwd: string
   log: string
@@ -252,18 +259,19 @@ return { fixed: out, spent: budget.spent() }
     const agentResult = readJson(join(dir, 'agents', '1', 'result.json'))
     assert.equal(agentResult.ok, true)
 
-    // how claude was called: isolation from recursive workflows, bypass, schema, cwd
+    // how agentiscode was called: isolation from recursive workflows, bypass, schema, cwd
     const log = readFakeLog(sb)
     assert.equal(log.length, 6)
     for (const e of log) {
       assert.equal(e.env.CLAUDE_CODE_DISABLE_WORKFLOWS, '1')
       assert.equal(e.cwd, sb.cwd)
-      assert.ok(e.args.includes('-p'))
-      assert.ok(e.args.includes('stream-json'))
+      assert.equal(e.args[e.args.indexOf('--adapter') + 1], 'claude')
+      assert.ok(e.args.includes('--json'))
       assert.equal(e.args[e.args.indexOf('--permission-mode') + 1], 'bypassPermissions')
-      assert.match(e.args[e.args.indexOf('--disallowedTools') + 1], /(^|,)Workflow(,|$)/)
+      assert.match(e.args[e.args.indexOf('--disallowed-tools') + 1], /(^|,)Workflow(,|$)/)
     }
-    assert.equal(log.filter((e) => e.args.includes('--json-schema')).length, 3)
+    const claudeArgs = (e: { args: string[] }) => JSON.parse(e.args[e.args.indexOf('--extra-args-json') + 1]!) as string[]
+    assert.equal(log.filter((e) => claudeArgs(e).includes('--json-schema')).length, 3)
 
     // dependency: the fix received the analysis result in its prompt
     assert.ok(log.some((e) => e.prompt.includes('Fix b.php per analysis-b.php')))
@@ -326,7 +334,7 @@ return { first, last }
     // the fourth process must really be running (init event in the stream), otherwise SIGTERM arrives before its handler
     await waitFor(() => {
       const f = join(runDirs(sb)[0], 'agents', '4', 'stream.jsonl')
-      return existsSync(f) && readFileSync(f, 'utf8').includes('"init"')
+      return existsSync(f) && readFileSync(f, 'utf8').includes('"session"')
     }, 'the fourth agent started')
     first.child.kill('SIGTERM')
     const f1 = await first.done
@@ -425,7 +433,7 @@ return done
     )
     const r = await run(sb, ['run', 'seq', '--cwd', sb.cwd, '--max-usd', '0.03', '--concurrency', '1', '--json'])
     assert.equal(r.code, 1, r.stderr)
-    const summary = JSON.parse(r.stdout)
+    const summary = summaryOf(r.stdout)
     assert.equal(summary.status, 'failed')
     assert.equal(summary.budgetExceeded, true)
     assert.equal(summary.totals.agents, 2)
@@ -443,10 +451,49 @@ return r
     )
     const p = await run(sb, ['run', 'par', '--cwd', sb.cwd, '--max-usd', '0.03', '--concurrency', '1', '--json'])
     assert.equal(p.code, 0, p.stderr)
-    const ps = JSON.parse(p.stdout)
+    const ps = summaryOf(p.stdout)
     assert.equal(ps.status, 'completed')
     assert.equal(ps.budgetExceeded, true)
     assert.deepEqual(ps.result, ['p0', 'p1', null, null, null])
+  })
+
+  it('--json streams run events and every agent\'s own log as JSON Lines, ending with the summary', async () => {
+    const sb = makeSandbox()
+    sb.script(
+      'stream.workflow.ts',
+      `export const meta = { name: 'stream', description: 'json stream' }
+phase('Work')
+const r = await parallel(['a', 'b'].map((n) => () => agent('Do ' + n + ' [[fake:tools 2]] [[fake:text out-' + n + ']]', { label: 'worker ' + n })))
+return r
+`,
+    )
+    const r = await run(sb, ['run', 'stream', '--cwd', sb.cwd, '--json', '--quiet'])
+    assert.equal(r.code, 0, r.stderr)
+    assert.equal(r.stderr, '')
+    const lines = r.stdout.trim().split('\n').map((l) => JSON.parse(l))
+    assert.equal(lines[0].t, 'run_start')
+    assert.equal(lines.at(-2).t, 'run_end')
+    assert.deepEqual(summaryOf(r.stdout).result, ['out-a', 'out-b'])
+
+    const starts = lines.filter((e) => e.t === 'agent_start')
+    assert.equal(starts.length, 2)
+    for (const s of starts) {
+      const own = lines.filter((e) => e.t === 'agent_event' && e.id === s.id)
+      assert.ok(own.every((e) => e.label === s.label && e.attempt === 1))
+      const types = own.map((e) => e.event.type)
+      assert.equal(types[0], 'session')
+      assert.equal(types.at(-1), 'result')
+      assert.equal(own.filter((e) => e.event.type === 'tool' && e.event.status === 'running').length, 2)
+      assert.ok(own.some((e) => e.event.type === 'text'))
+      // agent events come between the agent's start and done
+      const idx = (e: unknown) => lines.indexOf(e)
+      const done = lines.find((e) => e.t === 'agent_done' && e.id === s.id)
+      assert.ok(own.every((e) => idx(e) > idx(s) && idx(e) < idx(done)))
+    }
+    // agent_event is live-only: events.jsonl keeps only the run-level events
+    const persisted = readJsonl(join(runDirs(sb)[0], 'events.jsonl'))
+    assert.ok(!persisted.some((e) => e.t === 'agent_event'))
+    assert.ok(persisted.some((e) => e.t === 'agent_start'))
   })
 
   it('--max-agents: exceeding the agent limit = budget error', async () => {
@@ -460,7 +507,7 @@ return r
     )
     const r = await run(sb, ['run', 'many', '--cwd', sb.cwd, '--max-agents', '2', '--concurrency', '1', '--json'])
     assert.equal(r.code, 0, r.stderr)
-    const s = JSON.parse(r.stdout)
+    const s = summaryOf(r.stdout)
     assert.equal(s.budgetExceeded, true)
     assert.deepEqual(s.result, ['a0', 'a1', null, null])
     assert.equal(readFakeLog(sb).length, 2)

@@ -41,13 +41,23 @@ describe('run: output and exit codes', () => {
     assert.equal(cap.out(), '{\n  "a": 1\n}\n')
   })
 
-  it('--json: whole RunSummary on stdout', async () => {
-    const cap = makeIO()
+  it('--json: JSON Lines stream of all events (agent logs included) ending with the whole RunSummary', async () => {
+    const cap = makeIO({ isTTY: true, stdoutIsTTY: true })
     const summary = makeSummary({ result: [1, 2] })
-    const eng = fakeEngine(summary)
+    const agentEvent = ev('agent_event', { id: 1, label: 'scan', attempt: 1, event: { type: 'text', text: 'hi' } })
+    const events = [...SAMPLE_EVENTS.slice(0, 3), agentEvent, ...SAMPLE_EVENTS.slice(3)]
+    const eng = fakeEngine(summary, events)
     const code = await main(['run', 'demo', '--json'], cap.io, { runWorkflow: eng.runWorkflow })
     assert.equal(code, 0)
-    assert.deepEqual(JSON.parse(cap.out()), JSON.parse(JSON.stringify(summary)))
+    const lines = cap.out().trimEnd().split('\n')
+    assert.equal(lines.length, events.length + 1, 'one compact line per event, even on a TTY')
+    assert.deepEqual(lines.slice(0, -1).map((l) => JSON.parse(l)), JSON.parse(JSON.stringify(events)))
+    const last = JSON.parse(lines.at(-1)!)
+    assert.equal(last.t, 'summary')
+    assert.deepEqual(last.summary, JSON.parse(JSON.stringify(summary)))
+    // human progress on stderr does not show agent logs
+    assert.doesNotMatch(cap.err(), /hi/)
+    assert.match(cap.err(), /-- Summary --/)
   })
 
   it('completed without a result → null', async () => {
@@ -71,7 +81,8 @@ describe('run: output and exit codes', () => {
     const eng = fakeEngine(makeSummary({ status: 'failed', error: 'x' }))
     const code = await main(['run', 'demo', '--json'], cap.io, { runWorkflow: eng.runWorkflow })
     assert.equal(code, 1)
-    assert.equal(JSON.parse(cap.out()).status, 'failed')
+    const last = JSON.parse(cap.out().trimEnd().split('\n').at(-1)!)
+    assert.equal(last.summary.status, 'failed')
   })
 
   it('aborted → 130', async () => {

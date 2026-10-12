@@ -1,6 +1,6 @@
 /** CLI help texts. */
 
-export const MAIN_HELP = `ultracode — dynamic workflows on top of \`claude -p\`
+export const MAIN_HELP = `ultracode — dynamic workflows on top of \`agentiscode\` (claude -p)
 
 Usage:
   ultracode <command> [options]
@@ -22,7 +22,7 @@ Global options:
   --help, -h               help (also for a specific command)
   --version                version
 
-Output of \`run\`: stdout = JSON result of the script (with --json the whole run summary), stderr = progress for humans.
+Output of \`run\`: stdout = JSON result of the script (with --json a JSON Lines event stream), stderr = progress for humans.
 Exit codes: 0 completed, 1 run failed, 2 incorrect usage / invalid script / unknown workflow, 130 interrupted.
 
 Details for each command: ultracode <command> --help
@@ -41,7 +41,8 @@ const RUN_OPTIONS = `Options:
   --run-id <id>            custom run id
   --quiet, -q              suppresses progress on stderr
   --verbose                also shows tool calls and prompt previews
-  --json                   whole run summary on stdout instead of just the result
+  --json                   stream JSON Lines on stdout: run events + every agent's log (agent_event),
+                           ending with {"t":"summary","summary":{…}} (for Agentis visualization)
   --no-color               disables colors (otherwise only on a TTY and without NO_COLOR)`
 
 export const COMMAND_HELP: Record<string, string> = {

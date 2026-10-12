@@ -6,7 +6,7 @@ description: Use when a task is worth splitting across many agents (auditing or 
 # Writing and running workflows for ultracode
 
 `ultracode` runs your TypeScript script, and the script orchestrates many agents in the background; each agent is
-a separate `claude -p` process. The script is **deterministic control code** (loops, branching, fan-out),
+a separate `agentiscode` → `claude -p` process. The script is **deterministic control code** (loops, branching, fan-out),
 agents do the non-deterministic work (read code, fix, evaluate). The script itself has no access to files
 or the shell — everything that touches the world is done by an agent.
 
@@ -259,7 +259,7 @@ ultracode run ./examples/audit-routes.workflow.ts --args-file args.json
 - `--model <m>`, `--effort <low|medium|high|xhigh|max>`: default values for agents without their own choice.
 - `--run-id <id>`: a custom run ID (useful for automation); otherwise `wf_<8hex>-<3hex>`.
 - `--cwd <dir>`: the project directory (the agents' cwd and the root of `.ultracode/`).
-- `--quiet` suppresses progress on stderr, `--verbose` adds tool calls, `--json` prints the whole summary to stdout.
+- `--quiet` suppresses progress on stderr, `--verbose` adds tool calls, `--json` streams JSON Lines to stdout (run events + every agent's log, last line the summary).
 
 **Run a long job in the background** (runs take minutes to hours, and the Bash tool has a time limit):
 
@@ -289,7 +289,9 @@ A cheap trial run without a real model: `ULTRACODE_CLAUDE_BIN=<repo>/test/fixtur
 ## 8. How to read the result
 
 - **stdout** = JSON of the script's return value (`return …`), only when the run is `completed` (exit 0).
-  With `--json` the whole summary goes to stdout: `{ runId, name, status, result, error, totals, budgetExceeded, runDir, … }`
+  With `--json` stdout is a JSON Lines stream instead: run events (`run_start`, `agent_start`, `agent_done`, …),
+  `agent_event` lines with each agent's own log (`{t, id, label, attempt, event}`, agentiscode format) and as the last
+  line `{"t":"summary","summary":{ runId, name, status, result, error, totals, budgetExceeded, runDir, … }}`
   (also for a failed run).
 - **stderr** = progress for a human (phases, agents, log()).
 - **Exit codes:** 0 completed · 1 run failed (script error, budget) · 2 incorrect usage / invalid script /

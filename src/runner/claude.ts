@@ -1,27 +1,32 @@
 /**
- * Runner for a single agent: spawns `claude -p` (stream-json), monitors output, stall watchdog,
- * retry, abort and cleanup of the whole process group.
+ * Runner for a single agent: spawns `agentiscode --adapter claude --json` (a wrapper over `claude -p`, which
+ * normalizes its output into unified JSON Lines events), monitors output, stall watchdog, retry, abort and cleanup
+ * of the whole process group.
  *
- * ── Empirically observed format `claude -p --output-format stream-json --verbose` (claude 2.1.x) ──
- *  - stdout = JSONL. Line types: `system` (subtype `init`, `hook_started`, `hook_response`,
- *    `thinking_tokens`, `api_retry`), `assistant`, `user`, `rate_limit_event`, finally `result`.
- *  - `assistant` event carries exactly ONE content block (thinking | text | tool_use) and the same `message.id`
- *    repeats across blocks of one message → we deduplicate tool_use by `content[].id`.
- *    `message.usage.output_tokens` is only a running snapshot (underestimated); `result.usage` is authoritative.
- *    Input/cache fields of the running snapshots match exactly the sum in `result.usage`.
- *  - Schema (`--json-schema`): claude internally adds a `StructuredOutput` tool; we do NOT count its `tool_use`
- *    as a tool call. The result is in `result.structured_output` (and `result` is its JSON text). When the model
- *    does not call the tool (e.g. a contradictory schema), the `result` event is `is_error:false` and `structured_output`
- *    is missing → that is our `schema` failure. An invalid schema is rejected by the CLI immediately: exit 1, stderr
- *    "--json-schema is not a valid JSON Schema…", no stdout JSON.
- *  - API errors: `result` with `is_error:true`, exit 1. `subtype` is often still `success`; `api_error_status` tells them apart
- *    (HTTP code or null on a network error) and `terminal_reason: "api_error"`; the error text is in `result`.
- *    Exceeded budget: `subtype:"error_max_budget_usd"`, `errors:[…]`, `terminal_reason:"budget_exhausted"`.
- *  - claude itself repeats API calls (up to 10×, `system/api_retry`) – we count these as activity (they do not reset
- *    the stall watchdog) and our retry is the second layer.
- *  - Invalid arguments: exit 1, message on stderr, no stdout JSON (except hooks).
- *  - `total_cost_usd` is only in the `result` event → for killed attempts the cost is unknown (counted as 0),
- *    but tokens are still counted from the running snapshots.
+ * ── agentiscode `--json` format (agentiscode-cli, wraps `claude -p --output-format stream-json --verbose`) ──
+ *  - stdout = JSONL, one flat object per line with `type`: `session` {session_id, model}, `text` {text, message_id},
+ *    `reasoning` {text}, `tool` {id, name, status: running → completed|error, input|output}, `step` {usage, message_id}
+ *    (per-message usage, emitted once per `message_id`), `api_retry` (claude itself repeats API calls up to 10×),
+ *    `stderr` {line} (claude's stderr is forwarded HERE, not to agentiscode's stderr), `error` {message, exit_code},
+ *    finally exactly one `result`.
+ *  - `result` {session_id, usage, cost_usd, is_error, result, subtype, structured_output, num_turns,
+ *    api_error_status, terminal_reason, errors} mirrors claude's own `result` event. `usage` in it is authoritative,
+ *    `step` usages are only running snapshots. When claude did not emit a result (crash, kill), agentiscode
+ *    synthesizes one with `synthetic: true` (is_error:true after an `error` event) → we treat it as a missing result.
+ *  - Schema (`--json-schema`): claude internally adds a `StructuredOutput` tool; we do NOT count it as a tool call.
+ *    When the model does not call the tool, the result is `is_error:false` without `structured_output` → `schema`
+ *    failure. An invalid schema is rejected by claude immediately: exit 1, stderr "--json-schema is not a valid JSON
+ *    Schema…" (arrives as `stderr` events), synthetic result.
+ *  - API errors: `result` with `is_error:true`, exit 1. `subtype` is often still `success`; `api_error_status` tells them
+ *    apart (HTTP code or missing on a network error). Exceeded budget: `subtype:"error_max_budget_usd"`.
+ *  - agentiscode writes `[agentiscode] command: …` and its own argument errors to its real stderr.
+ *  - `cost_usd` is only in the `result` event → for killed attempts the cost is unknown (counted as 0),
+ *    but tokens are still counted from the `step` snapshots.
+ *  - Every parsed event is also forwarded as `onProgress({kind:'event'})`, so the engine can stream the whole
+ *    agent log (for `ultracode run --json`).
+ *
+ * Claude-specific flags are passed through `--extra-args-json` (JSON array appended verbatim to the `claude` argv);
+ * the permission mode and disallowed tools via agentiscode's `--permission-mode` / `--disallowed-tools`.
  *
  * Note on permissions: `--allowedTools` in `bypassPermissions` mode restricts NOTHING (verified). The tool whitelist
  * is only enforced in `dontAsk`; tool bans (`--disallowedTools`) work in all modes.
@@ -68,46 +73,63 @@ const DEFAULT_EXIT_DRAIN_MS = 2000
 const MAX_LINE_CHARS = 64 * 1024 * 1024
 const STDERR_TAIL_CHARS = 8192
 const INTERNAL_TOOLS = new Set(['StructuredOutput'])
+/** agentiscode's own banner on stderr; it carries the whole argv (system prompt, schema) → kept out of error messages. */
+const AGENTISCODE_BANNER = /^\[agentiscode\] command: .*$/gm
 
 // ───────────────────────── public helper functions ─────────────────────────
 
-/** Executable for `claude`: env `ULTRACODE_CLAUDE_BIN`, otherwise `claude` from PATH. */
+/**
+ * Agent executable: env `ULTRACODE_AGENT_BIN`, then the older `ULTRACODE_CLAUDE_BIN`, otherwise `agentiscode` from PATH.
+ */
 export function resolveClaudeBin(): string {
-  const fromEnv = process.env['ULTRACODE_CLAUDE_BIN']
+  for (const name of ['ULTRACODE_AGENT_BIN', 'ULTRACODE_CLAUDE_BIN']) {
+    const fromEnv = process.env[name]
+    if (fromEnv && fromEnv.trim()) return fromEnv.trim()
+  }
+  return 'agentiscode'
+}
+
+/** agentiscode `--adapter`: env `ULTRACODE_AGENT_ADAPTER`, otherwise `claude` (schemas etc. are claude-specific). */
+export function resolveAgentAdapter(): string {
+  const fromEnv = process.env['ULTRACODE_AGENT_ADAPTER']
   return fromEnv && fromEnv.trim() ? fromEnv.trim() : 'claude'
 }
 
 /**
- * Builds the argv for `claude` (without the prompt – that goes to stdin). Pure function.
+ * Builds the argv for `agentiscode` (without the prompt – that goes to stdin). Pure function apart from the adapter env.
  * Tools are passed as ONE comma-separated argument (variadic options could otherwise swallow further arguments;
  * specs with a space such as `Bash(git diff:*)` are verified to work this way).
  */
 export function buildClaudeArgs(req: ClaudeRunRequest): string[] {
+  // We always disable Workflow (except via env CLAUDE_CODE_DISABLE_WORKFLOWS), so child agents do not start recursively.
+  // agentiscode adds AskUserQuestion itself and merges both into a single `--disallowedTools`.
+  const disallowed = uniqueNonEmpty(['Workflow', ...(req.disallowedTools ?? [])])
   const args: string[] = [
-    '-p',
-    '--output-format',
-    'stream-json',
-    '--verbose',
-    '--no-session-persistence',
+    '--adapter',
+    resolveAgentAdapter(),
+    '--json',
     '--permission-mode',
     req.permissionMode ?? 'bypassPermissions',
+    '--disallowed-tools',
+    disallowed.join(','),
   ]
-  // We always disable Workflow (except via env CLAUDE_CODE_DISABLE_WORKFLOWS), so child agents do not start recursively.
-  const disallowed = ['Workflow', ...(req.disallowedTools ?? [])]
-  args.push('--disallowedTools', uniqueNonEmpty(disallowed).join(','))
-  const allowed = uniqueNonEmpty(req.allowedTools ?? [])
-  if (allowed.length > 0) args.push('--allowedTools', allowed.join(','))
   if (req.model) args.push('--model', req.model)
   if (req.effort) args.push('--effort', req.effort)
-  if (req.schema) args.push('--json-schema', JSON.stringify(req.schema))
+
+  // flags agentiscode has no own option for go verbatim to `claude`
+  const claudeArgs: string[] = ['--no-session-persistence']
+  const allowed = uniqueNonEmpty(req.allowedTools ?? [])
+  if (allowed.length > 0) claudeArgs.push('--allowedTools', allowed.join(','))
+  if (req.schema) claudeArgs.push('--json-schema', JSON.stringify(req.schema))
   const system = req.appendSystemPrompt?.trim()
     ? `${DEFAULT_SUBAGENT_SYSTEM_PROMPT}\n\n${req.appendSystemPrompt.trim()}`
     : DEFAULT_SUBAGENT_SYSTEM_PROMPT
-  args.push('--append-system-prompt', system)
+  claudeArgs.push('--append-system-prompt', system)
   if (typeof req.maxBudgetUsd === 'number' && Number.isFinite(req.maxBudgetUsd) && req.maxBudgetUsd > 0) {
-    args.push('--max-budget-usd', String(req.maxBudgetUsd))
+    claudeArgs.push('--max-budget-usd', String(req.maxBudgetUsd))
   }
-  if (req.extraArgs && req.extraArgs.length > 0) args.push(...req.extraArgs)
+  if (req.extraArgs && req.extraArgs.length > 0) claudeArgs.push(...req.extraArgs)
+  args.push('--extra-args-json', JSON.stringify(claudeArgs))
   return args
 }
 
@@ -365,7 +387,6 @@ function runAttempt(ctx: AttemptContext): Promise<Outcome> {
     let outBuf = ''
     let lineOverflow = false
     const toolIds = new Set<string>()
-    const textKeys = new Set<string>()
     const messageUsage = new Map<string, TokenUsage>()
     let toolCalls = 0
     let lastUsageSig = -1
@@ -387,43 +408,54 @@ function runAttempt(ctx: AttemptContext): Promise<Outcome> {
     }
 
     // ── stream events ──
+    const appendStderr = (text: string): void => {
+      writeArtifactAppend(stderrFile, text)
+      const clean = text.replace(AGENTISCODE_BANNER, '')
+      if (clean.trim()) stderrTail = (stderrTail + clean).slice(-STDERR_TAIL_CHARS)
+    }
+
     const handleEvent = (o: Json): void => {
-      if (typeof o.session_id === 'string') sessionId = o.session_id
+      if (typeof o.session_id === 'string' && o.session_id) sessionId = o.session_id
       switch (o.type) {
-        case 'assistant': {
-          const msg = o.message as Json | undefined
-          if (!msg) return
-          if (typeof msg.id === 'string' && msg.usage) {
-            const prev = messageUsage.get(msg.id)
-            const cur = toUsage(msg.usage)
-            messageUsage.set(msg.id, prev ? maxUsage(prev, cur) : cur)
-            const run = runningUsage()
-            if (run.outputTokens + run.inputTokens !== lastUsageSig) {
-              lastUsageSig = run.outputTokens + run.inputTokens
-              ctx.emit({ kind: 'usage', usage: addUsage(ctx.baseUsage, run) })
-            }
+        case 'step': {
+          if (!o.usage) return
+          const key = typeof o.message_id === 'string' ? o.message_id : `step:${messageUsage.size}`
+          const prev = messageUsage.get(key)
+          const cur = toUsage(o.usage)
+          messageUsage.set(key, prev ? maxUsage(prev, cur) : cur)
+          const run = runningUsage()
+          if (run.outputTokens + run.inputTokens !== lastUsageSig) {
+            lastUsageSig = run.outputTokens + run.inputTokens
+            ctx.emit({ kind: 'usage', usage: addUsage(ctx.baseUsage, run) })
           }
-          const content: unknown = msg.content
-          if (!Array.isArray(content)) return
-          for (const block of content as Json[]) {
-            if (block?.type === 'tool_use' && typeof block.name === 'string') {
-              const id = typeof block.id === 'string' ? block.id : `${o.uuid ?? ''}:${toolCalls}`
-              if (toolIds.has(id)) continue
-              toolIds.add(id)
-              if (INTERNAL_TOOLS.has(block.name)) continue
-              toolCalls++
-              ctx.emit({ kind: 'tool', name: block.name })
-            } else if (block?.type === 'text' && typeof block.text === 'string') {
-              const key = `${o.uuid ?? msg.id ?? ''}:${block.text.length}`
-              if (textKeys.has(key)) continue
-              textKeys.add(key)
-              ctx.emit({ kind: 'text', chars: block.text.length })
-            }
-          }
+          return
+        }
+        case 'tool': {
+          if (o.status !== 'running' || typeof o.name !== 'string') return
+          const id = typeof o.id === 'string' && o.id ? o.id : `tool:${toolIds.size}`
+          if (toolIds.has(id)) return
+          toolIds.add(id)
+          if (INTERNAL_TOOLS.has(o.name)) return
+          toolCalls++
+          ctx.emit({ kind: 'tool', name: o.name })
+          return
+        }
+        case 'text': {
+          if (typeof o.text === 'string' && o.text) ctx.emit({ kind: 'text', chars: o.text.length })
+          return
+        }
+        case 'stderr': {
+          if (typeof o.line === 'string') appendStderr(o.line + '\n')
+          return
+        }
+        case 'error': {
+          // claude exited without a result; the reason is mostly already in the forwarded stderr lines
+          if (typeof o.message === 'string' && !stderrTail.includes(o.message)) appendStderr(o.message + '\n')
           return
         }
         case 'result': {
           if (resultEvent) return // we take the first result
+          if (o.synthetic === true) return // computed by agentiscode: claude itself produced no result
           resultEvent = o
           clearTimeout(stallTimer)
           clearTimeout(timeoutTimer)
@@ -455,6 +487,7 @@ function runAttempt(ctx: AttemptContext): Promise<Outcome> {
         } catch {
           // an error while processing one event must not crash the attempt
         }
+        ctx.emit({ kind: 'event', attempt: ctx.attempt, event: parsed as Record<string, unknown> })
       }
     }
 
@@ -525,7 +558,7 @@ function runAttempt(ctx: AttemptContext): Promise<Outcome> {
       // An error result event often carries zero usage – but the tokens were already spent, so take the running snapshot.
       const resUsage = res?.usage ? toUsage(res.usage) : null
       const usage = resUsage && resUsage.inputTokens + resUsage.outputTokens + resUsage.cacheReadTokens + resUsage.cacheCreationTokens > 0 ? resUsage : running
-      const costUsd = res && typeof res.total_cost_usd === 'number' ? res.total_cost_usd : 0
+      const costUsd = res && typeof res.cost_usd === 'number' ? res.cost_usd : 0
       const numTurns = res && typeof res.num_turns === 'number' ? res.num_turns : messageUsage.size
       const base = { usage, costUsd, numTurns, toolCalls, ...(sessionId ? { sessionId } : {}) }
       const fail = (kind: ClaudeErrorKind, message: string, retryable: boolean): Outcome => ({
@@ -604,10 +637,13 @@ function runAttempt(ctx: AttemptContext): Promise<Outcome> {
       if (/unknown option|is invalid\. Allowed choices|Input must be provided|required option .* not specified/i.test(stderrText)) {
         return fail('exit', `claude rejected the arguments (${how}): ${truncate(stderrText, 600)}`, false)
       }
-      if (exitCode === 0 && !exitSignal) {
-        return fail('exit', `claude ended without a result (missing result event).${tail}`, true)
+      if (/agentiscode: error:|unrecognized arguments|invalid choice/i.test(stderrText)) {
+        return fail('exit', `agentiscode rejected the arguments (${how}): ${truncate(stderrText, 600)}`, false)
       }
-      return fail('exit', `claude ended ${how} without a result.${tail}`, true)
+      if (exitCode === 0 && !exitSignal) {
+        return fail('exit', `Agent ended without a result (missing result event).${tail}`, true)
+      }
+      return fail('exit', `Agent ended ${how} without a result.${tail}`, true)
     }
 
     // ── process handling ──
@@ -661,10 +697,7 @@ function runAttempt(ctx: AttemptContext): Promise<Outcome> {
       lastActivity = Date.now()
       if (settled) return
       const text = errDecoder.write(chunk)
-      if (text) {
-        writeArtifactAppend(stderrFile, text)
-        stderrTail = (stderrTail + text).slice(-STDERR_TAIL_CHARS)
-      }
+      if (text) appendStderr(text)
     })
     child.stderr?.on('error', () => {})
 

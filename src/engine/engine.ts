@@ -477,6 +477,11 @@ async function runWorkflowImpl(opts: RunOptions, deps: EngineDeps, lock: { relea
     void events.append(e)
     safeCallback(e)
   }
+  /** Only to the listener (high-volume agent log; the agent's own stream.jsonl keeps it on disk). */
+  const emitLive = (e: RunEvent): void => {
+    if (closed || !opts.onEvent) return
+    safeCallback(e)
+  }
 
   const currentSummary = (): RunSummary => {
     const running = status === 'running'
@@ -665,6 +670,7 @@ async function runWorkflowImpl(opts: RunOptions, deps: EngineDeps, lock: { relea
         onProgress: (p) => {
           if (p.kind === 'tool') emit({ t: 'agent_tool', ts: nowIso(), id, tool: p.name })
           else if (p.kind === 'retry') emit({ t: 'agent_retry', ts: nowIso(), id, attempt: p.attempt, reason: p.reason })
+          else if (p.kind === 'event') emitLive({ t: 'agent_event', ts: nowIso(), id, label, attempt: p.attempt, event: p.event })
         },
       }
       if (opts.claudeBin) req.bin = opts.claudeBin

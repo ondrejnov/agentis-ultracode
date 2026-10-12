@@ -72,7 +72,7 @@ interface AgentOptions {
 type AgentOptionsWithSchema = AgentOptions & { schema: WorkflowJsonSchema }
 
 /**
- * Runs one agent (`claude -p`). Without `schema` returns the final text; with `schema` a validated object.
+ * Runs one agent (`agentiscode` → `claude -p`). Without `schema` returns the final text; with `schema` a validated object.
  * Returns `null` when the agent fails terminally (after retry/stall restarts) or is aborted – ALWAYS before
  * use, filter with `.filter(Boolean)` / handle `null`.
  * Throws only on a script error (invalid schema, exceeded budget, …).

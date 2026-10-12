@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * "Replayer" of saved real streams: instead of claude it prints the lines from the file $REPLAY_FILE
+ * "Replayer" of saved real streams: instead of agentiscode it prints the lines from the file $REPLAY_FILE
  * (test/fixtures/sample-stream-*.jsonl) and ends with code $REPLAY_EXIT (default 0).
  * The prompt from stdin is simply discarded. Used to verify that the runner understands the REAL format.
  */

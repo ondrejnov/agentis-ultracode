@@ -7,29 +7,54 @@ import {
   resolveClaudeBin,
 } from '../../src/runner/claude.ts'
 
-const saved = process.env['ULTRACODE_CLAUDE_BIN']
+const ENV_KEYS = ['ULTRACODE_CLAUDE_BIN', 'ULTRACODE_AGENT_BIN', 'ULTRACODE_AGENT_ADAPTER'] as const
+const saved = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]))
 afterEach(() => {
-  if (saved === undefined) delete process.env['ULTRACODE_CLAUDE_BIN']
-  else process.env['ULTRACODE_CLAUDE_BIN'] = saved
+  for (const k of ENV_KEYS) {
+    if (saved[k] === undefined) delete process.env[k]
+    else process.env[k] = saved[k]
+  }
 })
 
 const base = { prompt: 'p', cwd: '/tmp', outDir: '/tmp/o' }
 
+/** Arguments that go verbatim to `claude` through agentiscode `--extra-args-json`. */
+function claudeArgs(a: string[]): string[] {
+  return JSON.parse(a[a.indexOf('--extra-args-json') + 1]!) as string[]
+}
+
 describe('buildClaudeArgs', () => {
   it('minimal request', () => {
     const a = buildClaudeArgs(base)
-    assert.deepEqual(a.slice(0, 7), ['-p', '--output-format', 'stream-json', '--verbose', '--no-session-persistence', '--permission-mode', 'bypassPermissions'])
-    assert.ok(a.includes('--disallowedTools'))
-    assert.equal(a[a.indexOf('--disallowedTools') + 1], 'Workflow')
-    assert.equal(a[a.indexOf('--append-system-prompt') + 1], DEFAULT_SUBAGENT_SYSTEM_PROMPT)
-    for (const flag of ['--allowedTools', '--model', '--effort', '--json-schema', '--max-budget-usd']) {
-      assert.ok(!a.includes(flag), flag)
-    }
+    assert.deepEqual(a.slice(0, 7), ['--adapter', 'claude', '--json', '--permission-mode', 'bypassPermissions', '--disallowed-tools', 'Workflow'])
+    const c = claudeArgs(a)
+    assert.equal(c[0], '--no-session-persistence')
+    assert.equal(c[c.indexOf('--append-system-prompt') + 1], DEFAULT_SUBAGENT_SYSTEM_PROMPT)
+    for (const flag of ['--model', '--effort']) assert.ok(!a.includes(flag), flag)
+    for (const flag of ['--allowedTools', '--json-schema', '--max-budget-usd']) assert.ok(!c.includes(flag), flag)
+  })
+
+  it('model, effort and permission mode are agentiscode options; allowedTools/schema/budget go to claude', () => {
+    const schema = { type: 'object', properties: { n: { type: 'number' } } }
+    const a = buildClaudeArgs({ ...base, model: 'haiku', effort: 'low', permissionMode: 'dontAsk', allowedTools: ['Read', 'Bash(git diff:*)'], schema, maxBudgetUsd: 0.5 })
+    assert.equal(a[a.indexOf('--model') + 1], 'haiku')
+    assert.equal(a[a.indexOf('--effort') + 1], 'low')
+    assert.equal(a[a.indexOf('--permission-mode') + 1], 'dontAsk')
+    const c = claudeArgs(a)
+    assert.equal(c[c.indexOf('--allowedTools') + 1], 'Read,Bash(git diff:*)')
+    assert.equal(c[c.indexOf('--json-schema') + 1], JSON.stringify(schema))
+    assert.equal(c[c.indexOf('--max-budget-usd') + 1], '0.5')
+  })
+
+  it('adapter from env ULTRACODE_AGENT_ADAPTER', () => {
+    process.env['ULTRACODE_AGENT_ADAPTER'] = 'claude-p'
+    const a = buildClaudeArgs(base)
+    assert.equal(a[a.indexOf('--adapter') + 1], 'claude-p')
   })
 
   it('Workflow in disallowedTools is not duplicated and always comes first', () => {
     const a = buildClaudeArgs({ ...base, disallowedTools: ['Bash', 'Workflow', 'Bash', ' '] })
-    assert.equal(a[a.indexOf('--disallowedTools') + 1], 'Workflow,Bash')
+    assert.equal(a[a.indexOf('--disallowed-tools') + 1], 'Workflow,Bash')
   })
 
   it('prompt is never put into argv', () => {
@@ -38,29 +63,34 @@ describe('buildClaudeArgs', () => {
   })
 
   it('custom system prompt is appended after the default', () => {
-    const a = buildClaudeArgs({ ...base, appendSystemPrompt: '  Addendum.  ' })
-    assert.equal(a[a.indexOf('--append-system-prompt') + 1], `${DEFAULT_SUBAGENT_SYSTEM_PROMPT}\n\nAddendum.`)
+    const c = claudeArgs(buildClaudeArgs({ ...base, appendSystemPrompt: '  Addendum.  ' }))
+    assert.equal(c[c.indexOf('--append-system-prompt') + 1], `${DEFAULT_SUBAGENT_SYSTEM_PROMPT}\n\nAddendum.`)
   })
 
   it('invalid budget is not passed', () => {
-    assert.ok(!buildClaudeArgs({ ...base, maxBudgetUsd: 0 }).includes('--max-budget-usd'))
-    assert.ok(!buildClaudeArgs({ ...base, maxBudgetUsd: Number.NaN }).includes('--max-budget-usd'))
+    assert.ok(!claudeArgs(buildClaudeArgs({ ...base, maxBudgetUsd: 0 })).includes('--max-budget-usd'))
+    assert.ok(!claudeArgs(buildClaudeArgs({ ...base, maxBudgetUsd: Number.NaN })).includes('--max-budget-usd'))
   })
 
-  it('extraArgs are at the end', () => {
+  it('extraArgs are at the end of the claude arguments', () => {
     const a = buildClaudeArgs({ ...base, model: 'opus', extraArgs: ['--foo', 'bar'] })
-    assert.deepEqual(a.slice(-2), ['--foo', 'bar'])
+    assert.deepEqual(claudeArgs(a).slice(-2), ['--foo', 'bar'])
+    assert.ok(!a.includes('--foo'))
   })
 })
 
 describe('resolveClaudeBin', () => {
-  it('env overrides, otherwise "claude"', () => {
+  it('ULTRACODE_AGENT_BIN, then ULTRACODE_CLAUDE_BIN, otherwise "agentiscode"', () => {
+    delete process.env['ULTRACODE_AGENT_BIN']
     delete process.env['ULTRACODE_CLAUDE_BIN']
-    assert.equal(resolveClaudeBin(), 'claude')
+    assert.equal(resolveClaudeBin(), 'agentiscode')
     process.env['ULTRACODE_CLAUDE_BIN'] = '/x/fake'
     assert.equal(resolveClaudeBin(), '/x/fake')
+    process.env['ULTRACODE_AGENT_BIN'] = '/y/agent'
+    assert.equal(resolveClaudeBin(), '/y/agent')
+    process.env['ULTRACODE_AGENT_BIN'] = '   '
     process.env['ULTRACODE_CLAUDE_BIN'] = '   '
-    assert.equal(resolveClaudeBin(), 'claude')
+    assert.equal(resolveClaudeBin(), 'agentiscode')
   })
 })
 
