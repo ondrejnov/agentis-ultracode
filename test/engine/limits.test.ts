@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { availableParallelism } from 'node:os'
 import { describe, test } from 'node:test'
-import { resolveConcurrency, runWorkflow } from '../../src/engine/engine.ts'
+import { resolveAgentisTelemetry, resolveConcurrency, runWorkflow } from '../../src/engine/engine.ts'
 import { Semaphore } from '../../src/engine/semaphore.ts'
 import { eventsOf, journalOf, makeProject, makeRunner, scriptDeps } from './helpers.ts'
 
@@ -271,6 +271,39 @@ describe('budget', () => {
         }),
       )
       assert.deepEqual(summary.result, { total: null, totalUsd: null, spent: 7 })
+    } finally {
+      p.cleanup()
+    }
+  })
+})
+
+describe('Agentis telemetry', () => {
+  const env = { AGENTIS_TASK_ID: 'task-1', AGENTIS_RUN_ID: 'run-1', AGENTIS_ENDPOINT: 'https://agentis.local/api' }
+
+  test('resolveAgentisTelemetry: on only inside an Agentis run, opt-out via ULTRACODE_AGENTIS_TELEMETRY', () => {
+    assert.deepEqual(resolveAgentisTelemetry(env), { taskId: 'task-1', runId: 'run-1' })
+    assert.deepEqual(resolveAgentisTelemetry({ ...env, AGENTIS_SESSION_ID: 'ses-a', CLAUDE_CODE_SESSION_ID: 'ses-c' }), { taskId: 'task-1', runId: 'run-1', parentSessionId: 'ses-c' })
+    assert.deepEqual(resolveAgentisTelemetry({ ...env, AGENTIS_SESSION_ID: 'ses-a' }), { taskId: 'task-1', runId: 'run-1', parentSessionId: 'ses-a' })
+    assert.equal(resolveAgentisTelemetry({}), null)
+    assert.equal(resolveAgentisTelemetry({ ...env, AGENTIS_ENDPOINT: '' }), null)
+    assert.equal(resolveAgentisTelemetry({ ...env, AGENTIS_RUN_ID: ' ' }), null)
+    for (const off of ['0', 'false', 'OFF', 'no']) assert.equal(resolveAgentisTelemetry({ ...env, ULTRACODE_AGENTIS_TELEMETRY: off }), null)
+    assert.notEqual(resolveAgentisTelemetry({ ...env, ULTRACODE_AGENTIS_TELEMETRY: '1' }), null)
+  })
+
+  test('every agent gets the target and a session title "[phase] label #id"; null turns it off', async () => {
+    const p = makeProject()
+    try {
+      const agentis = { taskId: 'task-1', runId: 'run-1', parentSessionId: 'ses-main' }
+      const body = scriptDeps(async (api) => [await api.agent('a', { label: 'scan', phase: 'Scan' }), await api.agent('b')])
+      const on = makeRunner()
+      await runWorkflow({ workflow: p.script(), cwd: p.cwd, runner: on.runner, agentis }, body)
+      assert.deepEqual(on.calls.map((r) => r.agentis), [agentis, agentis])
+      assert.equal(on.calls[0]!.title, '[Scan] scan #1')
+      assert.match(on.calls[1]!.title!, /^[^[].* #2$/) // no phase → no "[…]" prefix
+      const off = makeRunner()
+      await runWorkflow({ workflow: p.script(), cwd: p.cwd, runner: off.runner, agentis: null }, body)
+      assert.deepEqual(off.calls.map((r) => [r.agentis, r.title]), [[undefined, undefined], [undefined, undefined]])
     } finally {
       p.cleanup()
     }

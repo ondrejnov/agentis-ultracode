@@ -19,6 +19,7 @@ import {
   WorkflowNotFoundError,
 } from '../errors.ts'
 import {
+  type AgentisTelemetryTarget,
   BUDGET_SLOTS,
   EMPTY_USAGE,
   type AgentOptions,
@@ -90,6 +91,20 @@ export function resolveConcurrency(requested?: number, env: NodeJS.ProcessEnv = 
     cpus = 1
   }
   return Math.min(16, Math.max(1, cpus - 2))
+}
+
+/**
+ * Agentis telemetry target: on when ultracode runs inside an Agentis run (env `AGENTIS_TASK_ID`, `AGENTIS_RUN_ID`
+ * and `AGENTIS_ENDPOINT`, which agentiscode needs), unless `ULTRACODE_AGENTIS_TELEMETRY` is `0`/`false`/`no`/`off`.
+ * Parent session = the Claude Code session that started ultracode (`CLAUDE_CODE_SESSION_ID`, then `AGENTIS_SESSION_ID`).
+ */
+export function resolveAgentisTelemetry(env: NodeJS.ProcessEnv = process.env): AgentisTelemetryTarget | null {
+  if (/^(0|false|no|off)$/i.test(env.ULTRACODE_AGENTIS_TELEMETRY?.trim() ?? '')) return null
+  const taskId = env.AGENTIS_TASK_ID?.trim()
+  const runId = env.AGENTIS_RUN_ID?.trim()
+  if (!taskId || !runId || !env.AGENTIS_ENDPOINT?.trim()) return null
+  const parentSessionId = env.CLAUDE_CODE_SESSION_ID?.trim() || env.AGENTIS_SESSION_ID?.trim()
+  return parentSessionId ? { taskId, runId, parentSessionId } : { taskId, runId }
 }
 
 function nowIso(): string {
@@ -526,6 +541,7 @@ async function runWorkflowImpl(opts: RunOptions, deps: EngineDeps, lock: { relea
   const internalAbort = new AbortController()
   const runSignal: AbortSignal = userSignal ? AbortSignal.any([userSignal, internalAbort.signal]) : internalAbort.signal
   const concurrencyLimit = resolveConcurrency(eff.concurrency)
+  const agentis = opts.agentis === undefined ? resolveAgentisTelemetry() : opts.agentis
   const semaphore = new Semaphore(concurrencyLimit)
   // USD budget: sum of the caps allocated to running agents (reservations), so that concurrent agents do not each draw the whole remainder.
   let reservedUsd = 0
@@ -674,6 +690,10 @@ async function runWorkflowImpl(opts: RunOptions, deps: EngineDeps, lock: { relea
         },
       }
       if (opts.claudeBin) req.bin = opts.claudeBin
+      if (agentis) {
+        req.agentis = agentis
+        req.title = `${phase ? `[${phase}] ` : ''}${label} #${id}`
+      }
       if (model !== undefined) req.model = model
       if (effort !== undefined) req.effort = effort
       if (aopts.schema !== undefined) req.schema = aopts.schema

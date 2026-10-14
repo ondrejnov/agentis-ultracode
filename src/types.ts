@@ -90,6 +90,17 @@ export interface AgentOptions {
 /** An exceeded agent budget (`--max-budget-usd`) and HTTP errors are reported as `api`, invalid CLI arguments as `exit`. */
 export type ClaudeErrorKind = 'stall' | 'timeout' | 'exit' | 'api' | 'schema' | 'aborted' | 'spawn'
 
+/**
+ * Existing Agentis run to which every agent attaches its session as a secondary one (agentiscode `--task-id`/`--run-id`).
+ * The endpoint and tokens are not here: agentiscode reads them from the inherited env (`AGENTIS_ENDPOINT`, …).
+ */
+export interface AgentisTelemetryTarget {
+  taskId: string
+  runId: string
+  /** Session of the orchestrator that started the workflow; agents' sessions are shown under it. */
+  parentSessionId?: string
+}
+
 export interface ClaudeRunRequest {
   prompt: string
   cwd: string
@@ -106,6 +117,10 @@ export interface ClaudeRunRequest {
   maxBudgetUsd?: number
   /** Additional raw arguments for `claude` (passed through agentiscode `--extra-args-json`). */
   extraArgs?: string[]
+  /** Agentis run the agent reports its live transcript into (agentiscode telemetry); none = no telemetry. */
+  agentis?: AgentisTelemetryTarget
+  /** Title of the agent's session in Agentis (only with `agentis`). */
+  title?: string
   /** Agent executable (agentiscode); default from env `ULTRACODE_AGENT_BIN` / `ULTRACODE_CLAUDE_BIN`, otherwise `agentiscode` from PATH. */
   bin?: string
   /** Adds to (does not replace) the child process environment. */
@@ -229,6 +244,8 @@ export interface RunOptions {
   effort?: EffortLevel
   permissionMode?: PermissionMode
   claudeBin?: string
+  /** Agentis telemetry of agents; default from env (`resolveAgentisTelemetry`), `null` = off. */
+  agentis?: AgentisTelemetryTarget | null
   /** Injected runner (tests). Default `runClaude` from `src/runner/claude.ts`. */
   runner?: ClaudeRunner
   signal?: AbortSignal

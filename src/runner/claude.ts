@@ -115,6 +115,12 @@ export function buildClaudeArgs(req: ClaudeRunRequest): string[] {
   ]
   if (req.model) args.push('--model', req.model)
   if (req.effort) args.push('--effort', req.effort)
+  // live transcript into the Agentis run as a secondary session (the orchestrator's session stays primary)
+  if (req.agentis) {
+    args.push('--task-id', req.agentis.taskId, '--run-id', req.agentis.runId, '--primary-session', 'false')
+    if (req.agentis.parentSessionId) args.push('--parent-session-id', req.agentis.parentSessionId)
+    if (req.title?.trim()) args.push('--session-title', req.title.trim())
+  }
 
   // flags agentiscode has no own option for go verbatim to `claude`
   const claudeArgs: string[] = ['--no-session-persistence']

@@ -271,6 +271,10 @@ ultracode logs audit-1 --agent 7  # prompt and result of a specific agent
 ultracode list                    # runs and available workflows
 ```
 
+Inside an Agentis task (env `AGENTIS_TASK_ID`, `AGENTIS_RUN_ID`, `AGENTIS_ENDPOINT`) every agent also shows up live in the
+task's run as a secondary session titled `[Phase] label #id` — meaningful `label`s pay off there.
+Off with `ULTRACODE_AGENTIS_TELEMETRY=0`.
+
 **Resuming** (after Ctrl+C, a crash, an exhausted budget, agent failures):
 
 ```bash

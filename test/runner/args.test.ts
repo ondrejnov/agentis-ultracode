@@ -34,6 +34,19 @@ describe('buildClaudeArgs', () => {
     for (const flag of ['--allowedTools', '--json-schema', '--max-budget-usd']) assert.ok(!c.includes(flag), flag)
   })
 
+  it('Agentis telemetry: secondary session in the given run, with parent and title', () => {
+    const a = buildClaudeArgs({ ...base, agentis: { taskId: 'task-1', runId: 'run-1', parentSessionId: 'ses-main' }, title: ' [Fix] fix:auth #7 ' })
+    assert.equal(a[a.indexOf('--task-id') + 1], 'task-1')
+    assert.equal(a[a.indexOf('--run-id') + 1], 'run-1')
+    assert.equal(a[a.indexOf('--primary-session') + 1], 'false')
+    assert.equal(a[a.indexOf('--parent-session-id') + 1], 'ses-main')
+    assert.equal(a[a.indexOf('--session-title') + 1], '[Fix] fix:auth #7')
+    const bare = buildClaudeArgs({ ...base, agentis: { taskId: 'task-1', runId: 'run-1' } })
+    for (const flag of ['--parent-session-id', '--session-title']) assert.ok(!bare.includes(flag), flag)
+    const none = buildClaudeArgs({ ...base, title: 'ignored without agentis' })
+    for (const flag of ['--task-id', '--run-id', '--primary-session', '--session-title']) assert.ok(!none.includes(flag), flag)
+  })
+
   it('model, effort and permission mode are agentiscode options; allowedTools/schema/budget go to claude', () => {
     const schema = { type: 'object', properties: { n: { type: 'number' } } }
     const a = buildClaudeArgs({ ...base, model: 'haiku', effort: 'low', permissionMode: 'dontAsk', allowedTools: ['Read', 'Bash(git diff:*)'], schema, maxBudgetUsd: 0.5 })

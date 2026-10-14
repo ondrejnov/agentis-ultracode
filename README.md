@@ -189,6 +189,15 @@ Každý řádek je jeden JSON objekt s polem `t`:
 ultracode run audit --json --quiet | agentis-ingest     # stdout = jen JSON Lines
 ```
 
+### Živý průběh subagentů v Agentis tasku
+
+Když `ultracode` běží uvnitř Agentis runu (v env jsou `AGENTIS_TASK_ID`, `AGENTIS_RUN_ID` a `AGENTIS_ENDPOINT` —
+typicky ho spustil agent z Agentis tasku), předá každému subagentovi `agentiscode --task-id … --run-id …
+--primary-session false`. Každý subagent se pak v aktuálním runu tasku zobrazí jako vedlejší session s živým
+přepisem (text, reasoning, nástroje, tokeny), s titulkem `[Fáze] label #id` a rodičovskou session orchestrátoru
+(`CLAUDE_CODE_SESSION_ID`, jinak `AGENTIS_SESSION_ID`). Endpoint a tokeny čte `agentiscode` ze zděděného env.
+Vypnutí: `ULTRACODE_AGENTIS_TELEMETRY=0`. Vyžaduje `agentiscode` s volbami `--session-title` a `--parent-session-id`.
+
 Workflow se hledá podle jména (`<jméno>.workflow.ts`, `.workflow.js`, `.ts`, `.js`) v
 `<cwd>/.ultracode/workflows/` a ve stejných podadresářích rodičů, poté v `~/.ultracode/workflows` a v
 `$ULTRACODE_WORKFLOWS_DIR`.
@@ -217,6 +226,7 @@ agents/<n>/      prompt.txt, stream.jsonl, stderr.txt, result.json  (n = pořad�
 | --- | --- | --- |
 | `ULTRACODE_AGENT_BIN` | spustitelný soubor agenta (`agentiscode`); starší alias `ULTRACODE_CLAUDE_BIN` (pro testy: `test/fixtures/fake-claude.mjs`) | `agentiscode` z `PATH` |
 | `ULTRACODE_AGENT_ADAPTER` | hodnota `agentiscode --adapter` (`claude`, `claude-p`) | `claude` |
+| `ULTRACODE_AGENTIS_TELEMETRY` | `0`/`false`/`no`/`off` vypne živý přepis subagentů do Agentis runu (jinak zapnuto, je-li v env `AGENTIS_TASK_ID`, `AGENTIS_RUN_ID` a `AGENTIS_ENDPOINT`) | zapnuto |
 | `ULTRACODE_MAX_CONCURRENCY` | max. souběžných agentů (`--concurrency` má přednost) | `min(16, CPU−2)` |
 | `ULTRACODE_WORKFLOWS_DIR` | další adresáře s workflow (více cest odděl `:`) | — |
 | `ULTRACODE_RETRY_BACKOFF_MS` | základ prodlevy mezi pokusy agenta (`× číslo pokusu`) | `2000` |
