@@ -43,8 +43,8 @@ more finders, 3–5 votes, synthesis, a critic. Do not waste: each agent costs t
 3. **Write the file** `.ultracode/workflows/<name>.workflow.ts` (`<name>` = `meta.name`).
 4. **Validate:** `ultracode validate .ultracode/workflows/<name>.workflow.ts` (exit 2 = error).
 5. **Go through the checklist** (section 9). If in doubt, first run on a small input with `--max-usd`.
-6. **Start the run detached and wait for it in the foreground:** `ultracode run <name> --args '{...}'` under `setsid nohup`,
-   then block in wait slices until it ends. Never kill the run itself with `timeout` and never finish your turn while
+6. **Run it in the foreground and wait until it ends:** `ultracode run <name> --args '{...}'` as a plain blocking
+   Bash call — never in the background (no `&`, `nohup`, `setsid`, `run_in_background`). Never finish your turn while
    the run is unfinished (section 7).
 7. **Read the result** (stdout JSON; section 8) and **verify it** — especially the counts of failures / `null` / unverified.
 8. On interruption or failure, **`ultracode resume <runId>`** (section 7); do not start unfinished work from scratch.
@@ -265,37 +265,34 @@ ultracode run ./examples/audit-routes.workflow.ts --args-file args.json
 
 **A run takes as long as it takes (minutes to hours) – let it run uninterrupted and wait for it to finish.**
 You are often a headless agent (`claude -p`, an Agentis task): as soon as you write your final answer, your process
-ends and nothing will ever wake you up again to read the result. At the same time one foreground Bash tool call is
-capped at 10 minutes. Therefore the run itself is detached, and only the *waiting* is cut into slices:
+ends and nothing will ever wake you up again to read the result. Therefore a run is **always started in the
+foreground** and you block on it until it ends:
 
-- **Never** wrap `ultracode run` / `ultracode resume` in `timeout` and never kill it to "continue with resume".
-  Killing aborts every agent in flight, and only successful agents are journaled – a long agent (e.g. one that
-  writes a whole module) would lose all its work on every cut and, if it needs more than one slice, never finish.
-- Start the run with `setsid nohup … &` with **all** of stdin/stdout/stderr redirected (otherwise the Bash tool keeps
-  waiting for the pipe), and write the exit code to a file.
-- Do **not** use the Bash tool's `run_in_background: true` – in a headless session nothing re-invokes you.
+- Run `ultracode run` / `ultracode resume` as a plain blocking Bash call with the maximum Bash tool timeout
+  (`timeout: 600000`). **Never** run it in the background: no `&`, `nohup`, `setsid`, no Bash tool
+  `run_in_background: true`, no detached wrapper with a polling loop.
+- **Never** wrap it in the shell `timeout` command and never kill it to "continue with resume".
+  Killing aborts every agent in flight, and only successful agents are journaled – their work would be lost.
+- Always pass a fixed `--run-id`, so you can inspect and resume the run by name.
 - **Never** end your turn while a run is unfinished ("the workflow is running, I'll check later" is forbidden).
-  Keep calling the wait slice (Bash tool `timeout: 600000`) until the exit file exists. The run's result is part of your answer.
+  The run's result is part of your answer.
 
 ```bash
-# 1) start detached with a fixed --run-id; returns immediately
-setsid nohup sh -c 'ultracode run audit-routes --args-file args.json --run-id audit-1 --quiet \
-  > /tmp/audit-1.json 2> /tmp/audit-1.log; echo $? > /tmp/audit-1.exit' > /dev/null 2>&1 < /dev/null &
+# start in the foreground (Bash tool timeout: 600000) and wait until it ends
+ultracode run audit-routes --args-file args.json --run-id audit-1 --quiet \
+  > /tmp/audit-1.json 2> /tmp/audit-1.log; echo "exit=$?"
 
-# 2) wait slice (Bash tool timeout: 600000) – repeat while it prints "still running"; the run is not touched
-timeout 570 sh -c 'until [ -f /tmp/audit-1.exit ]; do sleep 10; done'
-if [ -f /tmp/audit-1.exit ]; then echo "exit=$(cat /tmp/audit-1.exit)"; else echo "still running"; ultracode status audit-1; fi
-
-# 3) the run has ended: read the result
+# the run has ended: read the result
 cat /tmp/audit-1.json             # stdout = result JSON (only for status completed, exit 0)
 ultracode status audit-1 --json   # summary, also for a failed run
 ```
 
-Use the same pattern for `ultracode resume audit-1` (after a failure, an exhausted budget, a crash) – remove the old
-`.exit` file first. If your own session is killed, the detached run keeps going; a later session can wait for it the
-same way (`ultracode status audit-1` shows whether it is still `running`).
+If the Bash call hits the tool's time limit before the run ends, do **not** start a new run: check
+`ultracode status audit-1`, and if it is no longer `running` (interrupted), continue it in the foreground with
+`ultracode resume audit-1` – completed agents come back from the journal, only unfinished work runs again. Use the same
+foreground pattern for `resume` after a failure, an exhausted budget or a crash.
 
-Other useful commands (between wait slices): `ultracode status audit-1`, `ultracode logs audit-1 --agent 7` (prompt
+Other useful commands (after the run): `ultracode status audit-1`, `ultracode logs audit-1 --agent 7` (prompt
 and result of a specific agent), `ultracode list` (runs and available workflows).
 
 Inside an Agentis task (env `AGENTIS_TASK_ID`, `AGENTIS_RUN_ID`, `AGENTIS_ENDPOINT`) every agent also shows up live in the
