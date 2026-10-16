@@ -1,11 +1,11 @@
 ---
 name: ultracode-workflow
-description: Use when a task is worth splitting across many agents (auditing or reviewing many files, a bulk migration or fix partitioned by directory, multi-angle research with verification, a "fix until tests pass" loop, adversarial verification of findings), or when the user says "workflow", "ultracode", or "run this in the background across several agents". Teaches you to write a TypeScript script `.ultracode/workflows/<name>.workflow.ts` for the agentis-ultracode runtime (globals agent/parallel/pipeline/phase/log/args/budget/workflow, no imports), validate it (`ultracode validate`), run it (`ultracode run`), monitor it (`ultracode status/logs`), and resume it (`ultracode resume`).
+description: Use when a task is worth splitting across many agents (auditing or reviewing many files, a bulk migration or fix partitioned by directory, multi-angle research with verification, a "fix until tests pass" loop, adversarial verification of findings), or when the user says "workflow", "ultracode", or "run this across several agents". Teaches you to write a TypeScript script `.ultracode/workflows/<name>.workflow.ts` for the agentis-ultracode runtime (globals agent/parallel/pipeline/phase/log/args/budget/workflow, no imports), validate it (`ultracode validate`), run it (`ultracode run`), monitor it (`ultracode status/logs`), and resume it (`ultracode resume`).
 ---
 
 # Writing and running workflows for ultracode
 
-`ultracode` runs your TypeScript script, and the script orchestrates many agents in the background; each agent is
+`ultracode` runs your TypeScript script, and the script orchestrates many agents in parallel; each agent is
 a separate `agentiscode` → `claude -p` process. The script is **deterministic control code** (loops, branching, fan-out),
 agents do the non-deterministic work (read code, fix, evaluate). The script itself has no access to files
 or the shell — everything that touches the world is done by an agent.
@@ -43,7 +43,9 @@ more finders, 3–5 votes, synthesis, a critic. Do not waste: each agent costs t
 3. **Write the file** `.ultracode/workflows/<name>.workflow.ts` (`<name>` = `meta.name`).
 4. **Validate:** `ultracode validate .ultracode/workflows/<name>.workflow.ts` (exit 2 = error).
 5. **Go through the checklist** (section 9). If in doubt, first run on a small input with `--max-usd`.
-6. **Run:** `ultracode run <name> --args '{...}'`. Run a long job in the background (section 7).
+6. **Start the run detached and wait for it in the foreground:** `ultracode run <name> --args '{...}'` under `setsid nohup`,
+   then block in wait slices until it ends. Never kill the run itself with `timeout` and never finish your turn while
+   the run is unfinished (section 7).
 7. **Read the result** (stdout JSON; section 8) and **verify it** — especially the counts of failures / `null` / unverified.
 8. On interruption or failure, **`ultracode resume <runId>`** (section 7); do not start unfinished work from scratch.
 
@@ -261,15 +263,40 @@ ultracode run ./examples/audit-routes.workflow.ts --args-file args.json
 - `--cwd <dir>`: the project directory (the agents' cwd and the root of `.ultracode/`).
 - `--quiet` suppresses progress on stderr, `--verbose` adds tool calls, `--json` streams JSON Lines to stdout (run events + every agent's log, last line the summary).
 
-**Run a long job in the background** (runs take minutes to hours, and the Bash tool has a time limit):
+**A run takes as long as it takes (minutes to hours) – let it run uninterrupted and wait for it to finish.**
+You are often a headless agent (`claude -p`, an Agentis task): as soon as you write your final answer, your process
+ends and nothing will ever wake you up again to read the result. At the same time one foreground Bash tool call is
+capped at 10 minutes. Therefore the run itself is detached, and only the *waiting* is cut into slices:
+
+- **Never** wrap `ultracode run` / `ultracode resume` in `timeout` and never kill it to "continue with resume".
+  Killing aborts every agent in flight, and only successful agents are journaled – a long agent (e.g. one that
+  writes a whole module) would lose all its work on every cut and, if it needs more than one slice, never finish.
+- Start the run with `setsid nohup … &` with **all** of stdin/stdout/stderr redirected (otherwise the Bash tool keeps
+  waiting for the pipe), and write the exit code to a file.
+- Do **not** use the Bash tool's `run_in_background: true` – in a headless session nothing re-invokes you.
+- **Never** end your turn while a run is unfinished ("the workflow is running, I'll check later" is forbidden).
+  Keep calling the wait slice (Bash tool `timeout: 600000`) until the exit file exists. The run's result is part of your answer.
 
 ```bash
-ultracode run audit-routes --args-file args.json --run-id audit-1 > /tmp/audit-1.json 2> /tmp/audit-1.log &
-ultracode status audit-1          # state, phases, agents, totals
-ultracode logs audit-1 --follow   # events over time, ends with the run
-ultracode logs audit-1 --agent 7  # prompt and result of a specific agent
-ultracode list                    # runs and available workflows
+# 1) start detached with a fixed --run-id; returns immediately
+setsid nohup sh -c 'ultracode run audit-routes --args-file args.json --run-id audit-1 --quiet \
+  > /tmp/audit-1.json 2> /tmp/audit-1.log; echo $? > /tmp/audit-1.exit' > /dev/null 2>&1 < /dev/null &
+
+# 2) wait slice (Bash tool timeout: 600000) – repeat while it prints "still running"; the run is not touched
+timeout 570 sh -c 'until [ -f /tmp/audit-1.exit ]; do sleep 10; done'
+if [ -f /tmp/audit-1.exit ]; then echo "exit=$(cat /tmp/audit-1.exit)"; else echo "still running"; ultracode status audit-1; fi
+
+# 3) the run has ended: read the result
+cat /tmp/audit-1.json             # stdout = result JSON (only for status completed, exit 0)
+ultracode status audit-1 --json   # summary, also for a failed run
 ```
+
+Use the same pattern for `ultracode resume audit-1` (after a failure, an exhausted budget, a crash) – remove the old
+`.exit` file first. If your own session is killed, the detached run keeps going; a later session can wait for it the
+same way (`ultracode status audit-1` shows whether it is still `running`).
+
+Other useful commands (between wait slices): `ultracode status audit-1`, `ultracode logs audit-1 --agent 7` (prompt
+and result of a specific agent), `ultracode list` (runs and available workflows).
 
 Inside an Agentis task (env `AGENTIS_TASK_ID`, `AGENTIS_RUN_ID`, `AGENTIS_ENDPOINT`) every agent also shows up live in the
 task's run as a secondary session titled `[Phase] label #id` — meaningful `label`s pay off there.
