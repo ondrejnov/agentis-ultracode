@@ -179,6 +179,7 @@ function writeLog() {
       CLAUDE_CODE_DISABLE_WORKFLOWS: process.env.CLAUDE_CODE_DISABLE_WORKFLOWS ?? null,
       // extension for testing env passing (superset of the contract)
       ULTRACODE_TEST_ENV: process.env.ULTRACODE_TEST_ENV ?? null,
+      AGENTISCODE_DIE_WITH_PARENT: process.env.AGENTISCODE_DIE_WITH_PARENT ?? null,
     },
     attempt,
     ...(childPid !== null ? { childPid } : {}),

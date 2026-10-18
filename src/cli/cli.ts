@@ -140,6 +140,13 @@ if (isDirectEntry()) {
   process.on('SIGTERM', () => controller.abort())
   // SIGHUP (terminal closed, SSH drop): without a handler the process would exit without cleanup and agents would keep running orphaned.
   process.on('SIGHUP', () => controller.abort())
+  // Parent death without a signal (SIGKILL of the parent): a changed ppid = the parent is gone → abort like SIGTERM.
+  const parentPid = process.ppid
+  const parentWatch = setInterval(() => {
+    if (process.ppid === parentPid) return
+    clearInterval(parentWatch)
+    controller.abort()
+  }, 1000).unref()
   main(
     process.argv.slice(2),
     {

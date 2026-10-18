@@ -53,6 +53,14 @@ process.on('SIGTERM', () => {
 process.on('SIGHUP', () => {
   controller.abort()
 })
+// Parent death without a signal (e.g. Claude Code killed with SIGKILL while we ran in its Bash tool, in our own session):
+// we would be reparented and keep running with all agents. A changed ppid = the parent is gone → abort like SIGTERM.
+const parentPid = process.ppid
+const parentWatch = setInterval(() => {
+  if (process.ppid === parentPid) return
+  clearInterval(parentWatch)
+  controller.abort()
+}, 1000).unref()
 
 let code = 1
 try {

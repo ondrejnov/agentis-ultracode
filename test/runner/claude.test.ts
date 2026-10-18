@@ -171,6 +171,15 @@ describe('runClaude – arguments and environment', () => {
     assert.equal(env.ULTRACODE_TEST_ENV, 'value')
   })
 
+  it('env: AGENTISCODE_DIE_WITH_PARENT=1 by default, can be turned off', async () => {
+    setup()
+    await runClaude(req('x'))
+    await runClaude(req('y', { env: { AGENTISCODE_DIE_WITH_PARENT: '0' } }))
+    const [on, off] = readLog(sb)
+    assert.equal(on!.env.AGENTISCODE_DIE_WITH_PARENT, '1')
+    assert.equal(off!.env.AGENTISCODE_DIE_WITH_PARENT, '0')
+  })
+
   it('req.bin takes precedence over env ULTRACODE_CLAUDE_BIN (and changes nothing in process.env)', async () => {
     setup()
     const real = process.env['ULTRACODE_CLAUDE_BIN']

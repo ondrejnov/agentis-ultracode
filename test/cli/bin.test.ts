@@ -222,6 +222,23 @@ describe('direct run of src/cli/cli.ts (same handling as bin)', () => {
   const CLI = join(import.meta.dirname, '..', '..', 'src', 'cli', 'cli.ts')
   const FAKE = join(import.meta.dirname, '..', 'fixtures', 'fake-claude.mjs')
 
+  it('parent death without a signal (reparenting) aborts', async () => {
+    const dir = tmpDir('uc-orphan-')
+    const marker = join(dir, 'aborted')
+    const bin = makeShimPackage(`
+      const keep = setInterval(() => {}, 1000)
+      await new Promise((r) => deps.signal.addEventListener('abort', r, { once: true }))
+      clearInterval(keep)
+      ;(await import('node:fs')).writeFileSync(${JSON.stringify(marker)}, 'x')
+      return 130`)
+    // the parent shell exits without signalling us (like a SIGKILLed Claude Code) → we get reparented
+    const parent = spawn('sh', ['-c', `"${process.execPath}" "${bin}" </dev/null >/dev/null 2>&1 & sleep 0.5`], { stdio: 'ignore' })
+    await exitOf(parent)
+    const t = Date.now()
+    while (!existsSync(marker) && Date.now() - t < 5000) await new Promise((r) => setTimeout(r, 50))
+    assert.ok(existsSync(marker), 'orphaned ultracode did not abort')
+  })
+
   function slowProject(): string {
     const cwd = tmpDir('uc-direct-')
     writeFile(

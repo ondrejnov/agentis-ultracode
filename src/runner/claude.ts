@@ -276,6 +276,9 @@ export async function runClaude(req: ClaudeRunRequest): Promise<ClaudeRunResult>
   }
   const bin = req.bin && req.bin.trim() ? req.bin.trim() : resolveClaudeBin()
   const env: NodeJS.ProcessEnv = {
+    // Agents are detached; if we die by SIGKILL, the 'exit' hook does not run. agentiscode then terminates itself
+    // (PDEATHSIG) together with its claude and claude's descendants. Can be turned off via env ('0').
+    AGENTISCODE_DIE_WITH_PARENT: '1',
     ...process.env,
     ...(req.env ?? {}),
     // Subagents must not start other workflows (the user's global setting would otherwise recurse).

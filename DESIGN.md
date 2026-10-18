@@ -33,7 +33,7 @@ example run `php8-upgrade-wf_003aa2c5-8ce.js` (21 agents, `agent → pipeline(fi
 5. **Subagents inherit CLAUDE.md, skills, and MCP** from the project (we do not use `--bare`); `--no-session-persistence`, so the `/resume` picker does not fill up.
    Each agent's own record is in `agents/<id>/`.
 6. **Concurrency** `min(16, CPU-2)` (min 1), override with `--concurrency` / `ULTRACODE_MAX_CONCURRENCY`; 1000 agents per run; 4096 items per `parallel`/`pipeline`.
-7. **Process group**: each `claude` starts as the leader of its own group, and on abort/stall/exit the whole group is killed (no orphans).
+7. **Process group**: each `claude` starts as the leader of its own group, and on abort/stall/exit the whole group is killed (no orphans). ultracode aborts on SIGINT/SIGTERM/SIGHUP and when its parent dies (the ppid changes, checked every second). Agents get `AGENTISCODE_DIE_WITH_PARENT=1`, so they end themselves even if ultracode is SIGKILLed.
 8. **Tool whitelist** (a fact correction after integration): `--allowedTools` does NOTHING to restrict in `bypassPermissions` (verified with a real claude).
    An agent with the `tools` option therefore runs in `--permission-mode dontAsk` (everything outside the list is rejected); without `tools` it stays on `bypassPermissions`.
 9. **CLI stdout = JSON result of the script**, stderr = human log. Exit codes: 0 ok, 1 run failed, 2 incorrect usage/invalid script, 130 aborted.
