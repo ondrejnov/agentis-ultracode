@@ -11,7 +11,7 @@ example run `php8-upgrade-wf_003aa2c5-8ce.js` (21 agents, `agent → pipeline(fi
 | Topic | Decision |
 | --- | --- |
 | Script model | **Globals + `.d.ts`**: the script has no imports; `agent/parallel/pipeline/phase/log/args/budget/workflow` are injected. Scripts from Claude Code are usable almost 1:1 (only TS instead of JS). |
-| Agent permissions | **Always `--permission-mode bypassPermissions`** (runs unattended, in parallel). Verified to work as root too. Recommended to run in a container/VM. |
+| Agent permissions | **Always `--dangerously-skip-permissions`** (agentiscode's default when no `--permission-mode` is given; runs unattended, in parallel). Agents get `IS_SANDBOX=1`, so it works as root too. Recommended to run in a container/VM. |
 | Integration | **Standalone CLI `ultracode`**. The Agentis adapter will later call it from a bash step (stdout = JSON result, exit code, `.ultracode/runs/<id>/`). |
 | Observation | **Plain log (stderr) + `events.jsonl` + `journal.jsonl`** on disk; `status`/`list`/`logs` read from disk. No TUI/web. |
 | Runtime | **Node ≥ 22.18 (target 24) + TypeScript**, `vm` + `worker_threads`. At run time **0 dependencies**. Scripts are transpiled via `module.stripTypeScriptTypes`. |
@@ -30,8 +30,12 @@ example run `php8-upgrade-wf_003aa2c5-8ce.js` (21 agents, `agent → pipeline(fi
    (inside `parallel`/`pipeline` it turns into `null`, the run finishes with a partial result and `budgetExceeded: true`).
 4. **Subagents have workflows disabled** (`CLAUDE_CODE_DISABLE_WORKFLOWS=1` + `--disallowedTools Workflow`), otherwise the user's global
    `ultracode` setting would run recursive workflows from the children.
-5. **Subagents inherit CLAUDE.md, skills, and MCP** from the project (we do not use `--bare`); `--no-session-persistence`, so the `/resume` picker does not fill up.
-   Each agent's own record is in `agents/<id>/`.
+5. **Subagents inherit CLAUDE.md, skills, and MCP** from the project (we do not use `--bare`). Their sessions are persisted
+   (no `--no-session-persistence`, at the cost of entries in the `/resume` picker): a retry of an interrupted attempt that got at
+   least one model turn continues the same session (`--resume <session_id>` + a short continuation prompt) instead of redoing the
+   whole work; a resume that gets no turn falls back to a fresh start with the original prompt.
+   Each agent's own record is in `agents/<id>/`, including claude's `--debug-file` (`claude-debug.log`, previous attempts
+   `claude-debug.attempt-<n>.log`; off with `ULTRACODE_CLAUDE_DEBUG=0`) for diagnosing exits without a result.
 6. **Concurrency** `min(16, CPU-2)` (min 1), override with `--concurrency` / `ULTRACODE_MAX_CONCURRENCY`; 1000 agents per run; 4096 items per `parallel`/`pipeline`.
 7. **Process group**: each `claude` starts as the leader of its own group, and on abort/stall/exit the whole group is killed (no orphans). ultracode aborts on SIGINT/SIGTERM/SIGHUP and when its parent dies (the ppid changes, checked every second). Agents get `AGENTISCODE_DIE_WITH_PARENT=1`, so they end themselves even if ultracode is SIGKILLed.
 8. **Tool whitelist** (a fact correction after integration): `--allowedTools` does NOTHING to restrict in `bypassPermissions` (verified with a real claude).
@@ -89,11 +93,12 @@ agents/<id>/        prompt.txt, stream.jsonl, stderr.txt, result.json   (id = st
 
 ```
 agentiscode --adapter claude --json
-       --permission-mode bypassPermissions --disallowed-tools Workflow[,…]
-       [--model M] [--effort E]
-       --extra-args-json '["--no-session-persistence", "--append-system-prompt", "<default+custom>",
-                          ["--json-schema", "<schema>"], ["--allowedTools", "…"], ["--max-budget-usd", "X"]]'
-prompt on stdin;  env: CLAUDE_CODE_DISABLE_WORKFLOWS=1
+       --disallowed-tools Workflow[,…] [--permission-mode M]   # no mode = --dangerously-skip-permissions
+       [--model M] [--effort E] [--resume <session_id>]                # --resume only on a retry of an interrupted attempt
+       --extra-args-json '[["--dangerously-skip-permissions"], "--append-system-prompt", "<default+custom>",
+                          ["--json-schema", "<schema>"], ["--allowedTools", "…"], ["--max-budget-usd", "X"],
+                          ["--debug-file", "agents/<id>/claude-debug.log"]]'
+prompt on stdin;  env: CLAUDE_CODE_DISABLE_WORKFLOWS=1, IS_SANDBOX=1
 ```
 agentiscode runs `claude -p --output-format stream-json --verbose …` and prints unified JSON Lines events
 (`session`, `text`, `reasoning`, `tool`, `step`, `api_retry`, `stderr`, `error`, `result`). The result = the `result` event

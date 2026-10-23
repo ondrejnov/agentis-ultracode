@@ -26,12 +26,24 @@ function claudeArgs(a: string[]): string[] {
 describe('buildClaudeArgs', () => {
   it('minimal request', () => {
     const a = buildClaudeArgs(base)
-    assert.deepEqual(a.slice(0, 7), ['--adapter', 'claude', '--json', '--permission-mode', 'bypassPermissions', '--disallowed-tools', 'Workflow'])
+    assert.deepEqual(a.slice(0, 5), ['--adapter', 'claude', '--json', '--disallowed-tools', 'Workflow'])
+    assert.ok(!a.includes('--permission-mode'))
     const c = claudeArgs(a)
-    assert.equal(c[0], '--no-session-persistence')
+    assert.ok(c.includes('--dangerously-skip-permissions'))
+    // sessions are persisted so an interrupted attempt can be resumed
+    assert.ok(!c.includes('--no-session-persistence'))
     assert.equal(c[c.indexOf('--append-system-prompt') + 1], DEFAULT_SUBAGENT_SYSTEM_PROMPT)
     for (const flag of ['--model', '--effort']) assert.ok(!a.includes(flag), flag)
-    for (const flag of ['--allowedTools', '--json-schema', '--max-budget-usd']) assert.ok(!c.includes(flag), flag)
+    for (const flag of ['--allowedTools', '--json-schema', '--max-budget-usd', '--debug-file']) assert.ok(!c.includes(flag), flag)
+    assert.ok(!a.includes('--resume'))
+  })
+
+  it('resume of an interrupted session is an agentiscode option; debug log goes to claude', () => {
+    const a = buildClaudeArgs({ ...base, resumeSessionId: 'ses-1', debugFile: '/tmp/o/claude-debug.log' })
+    assert.equal(a[a.indexOf('--resume') + 1], 'ses-1')
+    const c = claudeArgs(a)
+    assert.equal(c[c.indexOf('--debug-file') + 1], '/tmp/o/claude-debug.log')
+    assert.ok(!c.includes('--resume'))
   })
 
   it('Agentis telemetry: secondary session in the given run, with parent and title', () => {

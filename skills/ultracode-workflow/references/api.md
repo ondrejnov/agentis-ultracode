@@ -111,13 +111,16 @@ ignored with a warning in the log.
 
 ### Default agent behavior
 
-- It runs as `agentiscode --adapter claude --json --permission-mode bypassPermissions --disallowed-tools Workflow,…`
-  which starts `claude -p --no-session-persistence …` (with the `tools` option instead `--permission-mode dontAsk`
-  and `--allowedTools …`), the prompt goes to stdin, and the environment has `CLAUDE_CODE_DISABLE_WORKFLOWS=1`.
+- It runs as `agentiscode --adapter claude --json --disallowed-tools Workflow,…`
+  which starts `claude -p --dangerously-skip-permissions --debug-file agents/<id>/claude-debug.log …` (with the `tools` option instead `--permission-mode dontAsk`
+  and `--allowedTools …`), the prompt goes to stdin, and the environment has `CLAUDE_CODE_DISABLE_WORKFLOWS=1` and `IS_SANDBOX=1`.
 - It inherits the project's `CLAUDE.md`, skills, and MCP from `cwd` (`--bare` is not used).
 - Default system prompt: the final message is returned to the script, not to a human; return only data and ask nothing; stay within the given scope.
 - Attempts: up to 3 on a stall (`stallMs`), a transient API error (408/409/425/429/5xx, network errors, overload), or exit without a result (not when the usage limit is exhausted, the login is invalid, or the prompt is too long); the delay is `ULTRACODE_RETRY_BACKOFF_MS × attempt` (default 2 s). If the schema is not met, one retry.
   No retry: exceeded `timeoutMs`, exceeded `maxUsd`, exhausted turns, abort.
+  A retry of an attempt that already did some work (≥ 1 model turn) **resumes the same claude session** with a short
+  "continue where you stopped" prompt, so the work done so far is not repeated; the `agent_retry` event then has
+  `resumeSessionId`. If the resume cannot continue (no turn), the next attempt starts over with the original prompt.
 
 ### Schema
 

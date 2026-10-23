@@ -43,6 +43,13 @@
  *   [[fake:no-result]]          exits with 0 with only agentiscode's synthetic result (claude produced none)
  *   [[fake:missing-structured]] with --json-schema returns a successful result WITHOUT structured_output
  *   [[fake:exit-code N]]        after the result event exits with code N (default 0, 1 for errors)
+ *   [[fake:no-result-times N]]  the first N attempts make one tool call and then exit 0 with only the synthetic result
+ *                               (carrying exit_code 0), the next ones succeed
+ *   [[fake:resume-missing]]     with `--resume` claude does not find the session: crash without any model turn
+ *
+ * RESUME: with agentiscode `--resume <id>` the session id stays <id> and the directives (and the attempt counter)
+ * come from the prompt the session was started with (saved in $FAKE_CLAUDE_STATE_DIR), so a resumed attempt behaves
+ * like the next attempt of the original prompt; the continuation prompt itself is only logged.
  *
  * Environment variables: FAKE_CLAUDE_LOG (log file), FAKE_CLAUDE_STATE_DIR (attempt counters;
  * default $TMPDIR/fake-claude-state-<ppid>, i.e. bound to the parent process = runner).
@@ -50,7 +57,7 @@
 
 import { spawn } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { appendFileSync, fstatSync, mkdirSync, openSync, closeSync, writeSync, readFileSync } from 'node:fs'
+import { appendFileSync, fstatSync, mkdirSync, openSync, closeSync, writeSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -85,6 +92,17 @@ function readStdin() {
   }
 }
 const prompt = readStdin()
+const stateDir = process.env.FAKE_CLAUDE_STATE_DIR || join(tmpdir(), `fake-claude-state-${process.ppid}`)
+const resumeArg = argValue('--resume')
+/** Prompt the directives are read from: the session's original prompt on `--resume`. */
+const directivePrompt = (() => {
+  if (!resumeArg) return prompt
+  try {
+    return readFileSync(join(stateDir, `session-${resumeArg}.prompt`), 'utf8')
+  } catch {
+    return ''
+  }
+})()
 
 // ───────── directives ─────────
 
@@ -109,20 +127,20 @@ function parseJsonDirective(text, from) {
 {
   const re = /\[\[fake:([a-z-]+)/g
   let m
-  while ((m = re.exec(prompt)) !== null) {
+  while ((m = re.exec(directivePrompt)) !== null) {
     const name = m[1]
     const afterName = m.index + m[0].length
     if (name === 'json') {
-      const parsed = parseJsonDirective(prompt, afterName)
+      const parsed = parseJsonDirective(directivePrompt, afterName)
       if (parsed) {
         directives.push({ name, value: parsed.value, start: m.index, end: parsed.end })
         re.lastIndex = parsed.end
         continue
       }
     }
-    const close = prompt.indexOf(']]', afterName)
+    const close = directivePrompt.indexOf(']]', afterName)
     if (close < 0) continue
-    directives.push({ name, value: prompt.slice(afterName, close).trim(), start: m.index, end: close + 2 })
+    directives.push({ name, value: directivePrompt.slice(afterName, close).trim(), start: m.index, end: close + 2 })
     re.lastIndex = close + 2
   }
 }
@@ -138,7 +156,7 @@ const num = (name, def) => {
   return Number.isFinite(n) ? n : def
 }
 
-let cleanPrompt = prompt
+let cleanPrompt = directivePrompt
 for (const d of [...directives].sort((a, b) => b.start - a.start)) {
   cleanPrompt = cleanPrompt.slice(0, d.start) + cleanPrompt.slice(d.end)
 }
@@ -146,8 +164,7 @@ cleanPrompt = cleanPrompt.replace(/\s+/g, ' ').trim()
 
 // ───────── attempt counter ─────────
 
-const promptHash = createHash('sha1').update(prompt).digest('hex')
-const stateDir = process.env.FAKE_CLAUDE_STATE_DIR || join(tmpdir(), `fake-claude-state-${process.ppid}`)
+const promptHash = createHash('sha1').update(directivePrompt).digest('hex')
 let attempt = 1
 try {
   mkdirSync(stateDir, { recursive: true })
@@ -180,6 +197,7 @@ function writeLog() {
       // extension for testing env passing (superset of the contract)
       ULTRACODE_TEST_ENV: process.env.ULTRACODE_TEST_ENV ?? null,
       AGENTISCODE_DIE_WITH_PARENT: process.env.AGENTISCODE_DIE_WITH_PARENT ?? null,
+      IS_SANDBOX: process.env.IS_SANDBOX ?? null,
     },
     attempt,
     ...(childPid !== null ? { childPid } : {}),
@@ -202,7 +220,15 @@ process.on('exit', writeLog)
 
 // ───────── output ─────────
 
-const sessionId = randomUUID()
+const sessionId = resumeArg ?? randomUUID()
+if (!resumeArg) {
+  try {
+    mkdirSync(stateDir, { recursive: true })
+    writeFileSync(join(stateDir, `session-${sessionId}.prompt`), prompt)
+  } catch {
+    // resume of this session then has no directives
+  }
+}
 function emit(obj, { newline = true } = {}) {
   if (outputFormat !== 'json-lines') return
   process.stdout.write(JSON.stringify(obj) + (newline ? '\n' : ''))
@@ -290,6 +316,12 @@ async function main() {
     emit({ type: 'fake_child', pid: childPid, session_id: sessionId })
   }
 
+  if (resumeArg && has('resume-missing')) {
+    emitCrash(`No conversation found with session ID: ${resumeArg}`)
+    process.exitCode = 1
+    return
+  }
+
   // fail / stall (depending on the attempt)
   if (has('fail')) {
     emitCrash('fake-claude: simulated failure (fail)')
@@ -335,8 +367,16 @@ async function main() {
   const sleepMs = num('sleep', 0)
   if (sleepMs > 0) await sleep(sleepMs)
 
+  const noResultTimes = num('no-result-times', 0)
+  if (noResultTimes > 0 && attempt <= noResultTimes) {
+    const id = `toolu_fake_noresult_${attempt}`
+    emitAssistant({ type: 'tool_use', id, name: 'Bash', input: { n: 0 } })
+    emit({ type: 'tool', id, status: 'completed', output: 'ok' })
+    emit({ type: 'result', session_id: sessionId, usage: null, cost_usd: null, is_error: false, synthetic: true, exit_code: 0, exit_signal: null })
+    return
+  }
   if (has('no-result')) {
-    emit({ type: 'result', session_id: sessionId, usage: null, cost_usd: null, is_error: false, synthetic: true })
+    emit({ type: 'result', session_id: sessionId, usage: null, cost_usd: null, is_error: false, synthetic: true, exit_code: 0, exit_signal: null })
     return
   }
 

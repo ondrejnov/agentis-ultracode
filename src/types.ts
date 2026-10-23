@@ -130,6 +130,13 @@ export interface ClaudeRunRequest {
   timeoutMs?: number
   /** Total number of attempts on a stall / transient error (default 3, max 6). */
   maxAttempts?: number
+  /**
+   * Continue this existing claude session (agentiscode `--resume`) instead of starting a new one; set by the runner
+   * itself when it retries an interrupted attempt.
+   */
+  resumeSessionId?: string
+  /** claude's own debug log (`--debug-file`); set by the runner per attempt. */
+  debugFile?: string
   signal?: AbortSignal
   onProgress?: (e: ClaudeProgress) => void
 }
@@ -141,7 +148,7 @@ export type ClaudeProgress =
   /** CUMULATIVE usage for the whole `runClaude` call (including previous attempts); intermediate outputTokens are only an estimate. */
   | { kind: 'usage'; usage: TokenUsage }
   /** `attempt` is the number of the UPCOMING attempt. */
-  | { kind: 'retry'; attempt: number; reason: string }
+  | { kind: 'retry'; attempt: number; reason: string; resumeSessionId?: string }
   /** One raw event of the agent's agentiscode `--json` stream (session/text/reasoning/tool/step/result/…). */
   | { kind: 'event'; attempt: number; event: Record<string, unknown> }
 
@@ -286,7 +293,7 @@ export type RunEvent =
   | { t: 'workflow_exit'; ts: string; name: string; workflowPath: string[] }
   | { t: 'agent_start'; ts: string; id: number; label: string; phase: string | null; workflowPath: string[]; model?: string; promptPreview: string }
   | { t: 'agent_tool'; ts: string; id: number; tool: string }
-  | { t: 'agent_retry'; ts: string; id: number; attempt: number; reason: string }
+  | { t: 'agent_retry'; ts: string; id: number; attempt: number; reason: string; resumeSessionId?: string }
   /**
    * One event from the agent's own log (agentiscode `--json` format, see src/runner/claude.ts). LIVE ONLY: delivered to
    * `onEvent` but not written to events.jsonl (the full stream is in agents/<id>/stream.jsonl).

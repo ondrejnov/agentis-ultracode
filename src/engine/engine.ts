@@ -685,8 +685,16 @@ async function runWorkflowImpl(opts: RunOptions, deps: EngineDeps, lock: { relea
         signal: runSignal,
         onProgress: (p) => {
           if (p.kind === 'tool') emit({ t: 'agent_tool', ts: nowIso(), id, tool: p.name })
-          else if (p.kind === 'retry') emit({ t: 'agent_retry', ts: nowIso(), id, attempt: p.attempt, reason: p.reason })
-          else if (p.kind === 'event') emitLive({ t: 'agent_event', ts: nowIso(), id, label, attempt: p.attempt, event: p.event })
+          else if (p.kind === 'retry') {
+            emit({
+              t: 'agent_retry',
+              ts: nowIso(),
+              id,
+              attempt: p.attempt,
+              reason: p.reason,
+              ...(p.resumeSessionId ? { resumeSessionId: p.resumeSessionId } : {}),
+            })
+          } else if (p.kind === 'event') emitLive({ t: 'agent_event', ts: nowIso(), id, label, attempt: p.attempt, event: p.event })
         },
       }
       if (opts.claudeBin) req.bin = opts.claudeBin

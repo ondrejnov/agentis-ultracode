@@ -54,7 +54,7 @@ export interface FakeLogEntry {
   args: string[]
   cwd: string
   prompt: string
-  env: { CLAUDE_CODE_DISABLE_WORKFLOWS: string | null; ULTRACODE_TEST_ENV?: string | null; AGENTISCODE_DIE_WITH_PARENT?: string | null }
+  env: { CLAUDE_CODE_DISABLE_WORKFLOWS: string | null; ULTRACODE_TEST_ENV?: string | null; AGENTISCODE_DIE_WITH_PARENT?: string | null; IS_SANDBOX?: string | null }
   attempt: number
   childPid?: number
 }

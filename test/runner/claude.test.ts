@@ -134,8 +134,11 @@ describe('runClaude – arguments and environment', () => {
     const claude = claudeArgsOf(args)
     assert.equal(argOf(args, '--adapter'), 'claude')
     assert.ok(args.includes('--json'))
-    assert.ok(claude.includes('--no-session-persistence'))
-    assert.equal(argOf(args, '--permission-mode'), 'bypassPermissions')
+    assert.ok(!claude.includes('--no-session-persistence'))
+    assert.equal(argOf(claude, '--debug-file'), join(sb.outDir, 'claude-debug.log'))
+    // bypass = no --permission-mode, --dangerously-skip-permissions goes straight to claude
+    assert.ok(!args.includes('--permission-mode'))
+    assert.ok(claude.includes('--dangerously-skip-permissions'))
     assert.equal(argOf(args, '--disallowed-tools'), 'Workflow,WebFetch')
     assert.equal(argOf(claude, '--allowedTools'), 'Read,Bash(git diff:*)')
     assert.equal(argOf(args, '--model'), 'haiku')
@@ -159,6 +162,7 @@ describe('runClaude – arguments and environment', () => {
     assert.equal(argOf(args, '--permission-mode'), 'dontAsk')
     assert.equal(argOf(args, '--disallowed-tools'), 'Workflow')
     assert.ok(!claude.includes('--allowedTools'))
+    assert.ok(!claude.includes('--dangerously-skip-permissions'))
     assert.ok(!claude.includes('--json-schema'))
     assert.ok(!args.includes('--model'))
   })
@@ -178,6 +182,15 @@ describe('runClaude – arguments and environment', () => {
     const [on, off] = readLog(sb)
     assert.equal(on!.env.AGENTISCODE_DIE_WITH_PARENT, '1')
     assert.equal(off!.env.AGENTISCODE_DIE_WITH_PARENT, '0')
+  })
+
+  it('env: IS_SANDBOX=1 by default, can be overridden', async () => {
+    setup()
+    await runClaude(req('x'))
+    await runClaude(req('y', { env: { IS_SANDBOX: '0' } }))
+    const [on, off] = readLog(sb)
+    assert.equal(on!.env.IS_SANDBOX, '1')
+    assert.equal(off!.env.IS_SANDBOX, '0')
   })
 
   it('req.bin takes precedence over env ULTRACODE_CLAUDE_BIN (and changes nothing in process.env)', async () => {
@@ -339,6 +352,69 @@ describe('runClaude – retry', () => {
     assert.equal(r.attempts, 2)
     assert.equal(r.error?.kind, 'exit')
     assert.match(r.error!.message, /result/)
+  })
+
+  it('exit 0 without a result: the message carries claude\'s exit code from the synthetic result', async () => {
+    setup()
+    const r = await runClaude(req('x [[fake:no-result]]', { maxAttempts: 1 }))
+    assert.match(r.error!.message, /claude exited with code 0/)
+  })
+
+  it('interrupted attempt with progress → the retry resumes the same session with a continuation prompt', async () => {
+    setup()
+    const p = collectProgress()
+    const original = 'review the code [[fake:no-result-times 1]] [[fake:text done]]'
+    const r = await runClaude(req(original, { onProgress: p.push }))
+    assert.equal(r.ok, true)
+    assert.equal(r.text, 'done')
+    assert.equal(r.attempts, 2)
+    const log = readLog(sb)
+    assert.equal(log.length, 2)
+    assert.ok(!log[0]!.args.includes('--resume'))
+    const first = JSON.parse(readFileSync(join(sb.outDir, 'stream.attempt-1.jsonl'), 'utf8').split('\n')[0]!) as { session_id: string }
+    assert.equal(argOf(log[1]!.args, '--resume'), first.session_id)
+    assert.equal(r.sessionId, first.session_id)
+    assert.match(log[1]!.prompt, /interrupted/)
+    assert.ok(!log[1]!.prompt.includes('review the code'))
+    const retry = p.events.find((e) => e.kind === 'retry')
+    assert.ok(retry && retry.kind === 'retry' && retry.resumeSessionId === first.session_id)
+    // prompt.txt keeps the original task
+    assert.equal(readFileSync(join(sb.outDir, 'prompt.txt'), 'utf8'), original)
+  })
+
+  it('resume that finds no session (no model turn) → the next attempt starts over with the original prompt', async () => {
+    setup()
+    const original = 'task [[fake:no-result-times 1]] [[fake:resume-missing]]'
+    const r = await runClaude(req(original, { maxAttempts: 3 }))
+    const log = readLog(sb)
+    assert.equal(log.length, 3)
+    assert.ok(argOf(log[1]!.args, '--resume'))
+    assert.ok(!log[2]!.args.includes('--resume'))
+    assert.equal(log[2]!.prompt, original)
+    // the fresh third attempt is attempt 3 of the original prompt → past no-result-times → success
+    assert.equal(r.ok, true)
+  })
+
+  it('attempt without any model turn (crash at start) is retried fresh, not resumed', async () => {
+    setup()
+    await runClaude(req('x [[fake:fail-times 1]]'))
+    const log = readLog(sb)
+    assert.equal(log.length, 2)
+    assert.ok(!log[1]!.args.includes('--resume'))
+  })
+
+  it('debug log of every attempt is kept (rotated), can be turned off by env', async () => {
+    setup()
+    await runClaude(req('x [[fake:fail-times 1]]'))
+    const log = readLog(sb)
+    assert.equal(argOf(claudeArgsOf(log[0]!.args), '--debug-file'), join(sb.outDir, 'claude-debug.log'))
+    process.env['ULTRACODE_CLAUDE_DEBUG'] = '0'
+    try {
+      await runClaude(req('y'))
+      assert.ok(!claudeArgsOf(readLog(sb).at(-1)!.args).includes('--debug-file'))
+    } finally {
+      delete process.env['ULTRACODE_CLAUDE_DEBUG']
+    }
   })
 
   it('permanent API error (without transient code) is not retried', async () => {

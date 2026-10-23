@@ -117,7 +117,7 @@ export function renderEvent(e: RunEvent, state: RenderState, opts: RenderOptions
     case 'agent_retry': {
       const info = state.agents.get(e.id)
       push(
-        `${indentFor(info?.workflowPath ?? [])}  #${e.id} ${s.yellow('retry  ')} attempt ${e.attempt}: ${e.reason}`,
+        `${indentFor(info?.workflowPath ?? [])}  #${e.id} ${s.yellow('retry  ')} attempt ${e.attempt}${e.resumeSessionId ? ' (resuming session)' : ''}: ${e.reason}`,
       )
       break
     }

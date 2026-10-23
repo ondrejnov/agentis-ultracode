@@ -244,7 +244,7 @@ Subagenti dostávají `CLAUDE_CODE_DISABLE_WORKFLOWS=1`, aby nevznikala rekurziv
 ## Bezpečnost
 
 > [!WARNING]
-> Každý agent běží s `--permission-mode bypassPermissions`. Běží bez dotazů, souběžně a bez dozoru, může
+> Každý agent běží s `--dangerously-skip-permissions` a `IS_SANDBOX=1`. Běží bez dotazů, souběžně a bez dozoru, může
 > číst a měnit libovolné soubory dostupné uživateli, spouštět příkazy a používat síť. Obsah zpracovávaných
 > souborů navíc může obsahovat **prompt injection**. **Spouštěj ultracode v kontejneru nebo VM** s omezeným
 > přístupem k tajemstvím a síti.
@@ -267,7 +267,7 @@ Subagenti dostávají `CLAUDE_CODE_DISABLE_WORKFLOWS=1`, aby nevznikala rekurziv
 | Determinismus (`Date.now`, `Math.random`) | vyhazuje | **stejné** |
 | Limity (souběžnost, 1000 agentů, 4096 položek, vnoření o 1) | ano | **stejné** |
 | Spuštění | nástroj `Workflow` v session | samostatné CLI; každý agent je `agentiscode` → `claude -p` |
-| Oprávnění agentů | podle session | vždy `bypassPermissions` (spouštěj v kontejneru nebo VM) |
+| Oprávnění agentů | podle session | vždy `--dangerously-skip-permissions` (spouštěj v kontejneru nebo VM) |
 | Resume | nezměněný prefix volání | podle obsahu: klíč = prompt, schema, model, effort, cwd a nástroje |
 | Rozpočet | tokeny turnu | `--max-tokens` i `--max-usd` |
 | Volby `agent()` navíc | — | `cwd`, `tools`, `disallowedTools`, `systemPrompt`, `stallMs`, `timeoutMs`, `maxUsd`, `noCache` |

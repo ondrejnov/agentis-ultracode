@@ -122,7 +122,7 @@ interface FakeLog {
   args: string[]
   cwd: string
   prompt: string
-  env: { CLAUDE_CODE_DISABLE_WORKFLOWS: string | null }
+  env: { CLAUDE_CODE_DISABLE_WORKFLOWS: string | null; IS_SANDBOX?: string | null }
   attempt: number
 }
 
@@ -267,7 +267,8 @@ return { fixed: out, spent: budget.spent() }
       assert.equal(e.cwd, sb.cwd)
       assert.equal(e.args[e.args.indexOf('--adapter') + 1], 'claude')
       assert.ok(e.args.includes('--json'))
-      assert.equal(e.args[e.args.indexOf('--permission-mode') + 1], 'bypassPermissions')
+      assert.equal(e.env.IS_SANDBOX, '1')
+      assert.ok(!e.args.includes('--permission-mode'))
       assert.match(e.args[e.args.indexOf('--disallowed-tools') + 1], /(^|,)Workflow(,|$)/)
     }
     const claudeArgs = (e: { args: string[] }) => JSON.parse(e.args[e.args.indexOf('--extra-args-json') + 1]!) as string[]

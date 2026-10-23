@@ -26,7 +26,8 @@
  *    agent log (for `ultracode run --json`).
  *
  * Claude-specific flags are passed through `--extra-args-json` (JSON array appended verbatim to the `claude` argv);
- * the permission mode and disallowed tools via agentiscode's `--permission-mode` / `--disallowed-tools`.
+ * the permission mode and disallowed tools via agentiscode's `--permission-mode` / `--disallowed-tools`. For
+ * `bypassPermissions` no `--permission-mode` is passed and `--dangerously-skip-permissions` goes to claude directly.
  *
  * Note on permissions: `--allowedTools` in `bypassPermissions` mode restricts NOTHING (verified). The tool whitelist
  * is only enforced in `dontAsk`; tool bans (`--disallowedTools`) work in all modes.
@@ -73,6 +74,8 @@ const DEFAULT_EXIT_DRAIN_MS = 2000
 const MAX_LINE_CHARS = 64 * 1024 * 1024
 const STDERR_TAIL_CHARS = 8192
 const INTERNAL_TOOLS = new Set(['StructuredOutput'])
+/** claude's debug log of the current attempt; previous attempts are rotated to `claude-debug.attempt-<n>.log`. */
+const DEBUG_FILE = 'claude-debug.log'
 /** agentiscode's own banner on stderr; it carries the whole argv (system prompt, schema) → kept out of error messages. */
 const AGENTISCODE_BANNER = /^\[agentiscode\] command: .*$/gm
 
@@ -90,6 +93,24 @@ export function resolveClaudeBin(): string {
 }
 
 /** agentiscode `--adapter`: env `ULTRACODE_AGENT_ADAPTER`, otherwise `claude` (schemas etc. are claude-specific). */
+/** claude's `--debug-file` in the agent directory; off with env `ULTRACODE_CLAUDE_DEBUG=0`. */
+export function claudeDebugEnabled(): boolean {
+  const v = (process.env['ULTRACODE_CLAUDE_DEBUG'] ?? '').trim().toLowerCase()
+  return !['0', 'false', 'no', 'off'].includes(v)
+}
+
+/**
+ * Prompt of a retry that resumes an interrupted session: the original task is already in the session's context,
+ * so the agent only gets told to finish it.
+ */
+export function resumePrompt(reason: string): string {
+  return [
+    `Your previous run of this task was interrupted before you returned the final result (${reason}).`,
+    'Continue from where you stopped: do not redo work that is already done, finish the remaining steps of the original task',
+    'and then return the final result exactly in the requested format.',
+  ].join(' ')
+}
+
 export function resolveAgentAdapter(): string {
   const fromEnv = process.env['ULTRACODE_AGENT_ADAPTER']
   return fromEnv && fromEnv.trim() ? fromEnv.trim() : 'claude'
@@ -108,11 +129,12 @@ export function buildClaudeArgs(req: ClaudeRunRequest): string[] {
     '--adapter',
     resolveAgentAdapter(),
     '--json',
-    '--permission-mode',
-    req.permissionMode ?? 'bypassPermissions',
     '--disallowed-tools',
     disallowed.join(','),
   ]
+  // bypass = `--dangerously-skip-permissions` straight to claude (below); other modes via agentiscode's `--permission-mode`.
+  const mode = req.permissionMode ?? 'bypassPermissions'
+  if (mode !== 'bypassPermissions') args.push('--permission-mode', mode)
   if (req.model) args.push('--model', req.model)
   if (req.effort) args.push('--effort', req.effort)
   // live transcript into the Agentis run as a secondary session (the orchestrator's session stays primary)
@@ -122,8 +144,15 @@ export function buildClaudeArgs(req: ClaudeRunRequest): string[] {
     if (req.title?.trim()) args.push('--session-title', req.title.trim())
   }
 
-  // flags agentiscode has no own option for go verbatim to `claude`
-  const claudeArgs: string[] = ['--no-session-persistence']
+  // retry of an interrupted attempt continues its session (the work done so far stays in the agent's context)
+  if (req.resumeSessionId) args.push('--resume', req.resumeSessionId)
+
+  // flags agentiscode has no own option for go verbatim to `claude`.
+  // Sessions are persisted (no `--no-session-persistence`): without the transcript on disk an interrupted attempt
+  // could not be resumed and its whole work would be redone from scratch.
+  const claudeArgs: string[] = []
+  // Explicit even though agentiscode adds it itself when no `--permission-mode` is given (a repeated flag is harmless).
+  if (mode === 'bypassPermissions') claudeArgs.push('--dangerously-skip-permissions')
   const allowed = uniqueNonEmpty(req.allowedTools ?? [])
   if (allowed.length > 0) claudeArgs.push('--allowedTools', allowed.join(','))
   if (req.schema) claudeArgs.push('--json-schema', JSON.stringify(req.schema))
@@ -134,6 +163,7 @@ export function buildClaudeArgs(req: ClaudeRunRequest): string[] {
   if (typeof req.maxBudgetUsd === 'number' && Number.isFinite(req.maxBudgetUsd) && req.maxBudgetUsd > 0) {
     claudeArgs.push('--max-budget-usd', String(req.maxBudgetUsd))
   }
+  if (req.debugFile) claudeArgs.push('--debug-file', req.debugFile)
   if (req.extraArgs && req.extraArgs.length > 0) claudeArgs.push(...req.extraArgs)
   args.push('--extra-args-json', JSON.stringify(claudeArgs))
   return args
@@ -279,6 +309,8 @@ export async function runClaude(req: ClaudeRunRequest): Promise<ClaudeRunResult>
     // Agents are detached; if we die by SIGKILL, the 'exit' hook does not run. agentiscode then terminates itself
     // (PDEATHSIG) together with its claude and claude's descendants. Can be turned off via env ('0').
     AGENTISCODE_DIE_WITH_PARENT: '1',
+    // claude refuses `--dangerously-skip-permissions` as root unless it believes it runs in a sandbox.
+    IS_SANDBOX: '1',
     ...process.env,
     ...(req.env ?? {}),
     // Subagents must not start other workflows (the user's global setting would otherwise recurse).
@@ -288,6 +320,9 @@ export async function runClaude(req: ClaudeRunRequest): Promise<ClaudeRunResult>
   let schemaRetries = 0
   let attempt = 0
   let last: Outcome | null = null
+  /** Session the next attempt continues (set after an interrupted attempt that made progress). */
+  let resumeSessionId: string | undefined
+  let resumeReason = ''
 
   while (attempt < maxAttempts) {
     if (req.signal?.aborted) {
@@ -302,13 +337,19 @@ export async function runClaude(req: ClaudeRunRequest): Promise<ClaudeRunResult>
     if (budgetLeft !== undefined && !(budgetLeft > 0)) {
       return finish(false, attempt - 1, last ?? {}, { kind: 'api', message: `Agent budget exhausted (--max-budget-usd ${req.maxBudgetUsd}).` })
     }
-    const args = buildClaudeArgs({ ...req, maxBudgetUsd: budgetLeft })
+    const args = buildClaudeArgs({
+      ...req,
+      maxBudgetUsd: budgetLeft,
+      ...(resumeSessionId ? { resumeSessionId } : {}),
+      ...(claudeDebugEnabled() ? { debugFile: join(req.outDir, DEBUG_FILE) } : {}),
+    })
 
     const baseUsage = total.usage
     const outcome = await runAttempt({
       req,
       bin,
       args,
+      prompt: resumeSessionId ? resumePrompt(resumeReason) : req.prompt,
       env,
       attempt,
       tun,
@@ -339,7 +380,17 @@ export async function runClaude(req: ClaudeRunRequest): Promise<ClaudeRunResult>
       return finish(false, attempt, outcome, err)
     }
 
-    emit({ kind: 'retry', attempt: attempt + 1, reason: `${err.kind}: ${err.message}` })
+    // Continue the interrupted session when it got somewhere (≥ 1 model turn); otherwise – or when even the resume
+    // produced nothing (e.g. the transcript is missing) – start over with the original prompt.
+    const resumable = err.kind !== 'spawn' && outcome.sessionId !== undefined && outcome.numTurns > 0
+    resumeSessionId = resumable ? outcome.sessionId : undefined
+    resumeReason = resumable ? `${err.kind}: ${truncate(err.message, 300)}` : ''
+    emit({
+      kind: 'retry',
+      attempt: attempt + 1,
+      reason: `${err.kind}: ${err.message}`,
+      ...(resumeSessionId ? { resumeSessionId } : {}),
+    })
     const aborted = await sleepAbortable(tun.backoffMs * attempt, req.signal)
     if (aborted) return finish(false, attempt, outcome, { kind: 'aborted', message: 'Agent run was aborted.' })
   }
@@ -354,6 +405,8 @@ interface AttemptContext {
   req: ClaudeRunRequest
   bin: string
   args: string[]
+  /** stdin of this attempt: the original prompt, or the continuation prompt of a resumed session. */
+  prompt: string
   env: NodeJS.ProcessEnv
   attempt: number
   tun: Tunables
@@ -391,6 +444,8 @@ function runAttempt(ctx: AttemptContext): Promise<Outcome> {
     let exitCode: number | null = null
     let exitSignal: NodeJS.Signals | null = null
     let resultEvent: Json | null = null
+    /** agentiscode's synthesized result: carries claude's exit code / signal (agentiscode ≥ the version that sends them). */
+    let syntheticResult: Json | null = null
     let sessionId: string | undefined
     let stderrTail = ''
     let outBuf = ''
@@ -464,7 +519,11 @@ function runAttempt(ctx: AttemptContext): Promise<Outcome> {
         }
         case 'result': {
           if (resultEvent) return // we take the first result
-          if (o.synthetic === true) return // computed by agentiscode: claude itself produced no result
+          if (o.synthetic === true) {
+            // computed by agentiscode: claude itself produced no result
+            syntheticResult ??= o
+            return
+          }
           resultEvent = o
           clearTimeout(stallTimer)
           clearTimeout(timeoutTimer)
@@ -650,7 +709,7 @@ function runAttempt(ctx: AttemptContext): Promise<Outcome> {
         return fail('exit', `agentiscode rejected the arguments (${how}): ${truncate(stderrText, 600)}`, false)
       }
       if (exitCode === 0 && !exitSignal) {
-        return fail('exit', `Agent ended without a result (missing result event).${tail}`, true)
+        return fail('exit', `Agent ended without a result (missing result event${describeClaudeExit(syntheticResult)}).${tail}`, true)
       }
       return fail('exit', `Agent ended ${how} without a result.${tail}`, true)
     }
@@ -712,7 +771,7 @@ function runAttempt(ctx: AttemptContext): Promise<Outcome> {
 
     child.stdin?.on('error', () => {}) // EPIPE when the process exits before reading the prompt
     try {
-      child.stdin?.end(req.prompt)
+      child.stdin?.end(ctx.prompt)
     } catch {
       // ignore
     }
@@ -891,9 +950,22 @@ function rotateAttemptFiles(outDir: string, attempt: number): void {
     } catch {
       // may not exist
     }
+    try {
+      renameSync(join(outDir, DEBUG_FILE), join(outDir, `claude-debug.attempt-${attempt - 1}.log`))
+    } catch {
+      // may not exist (debug off, claude did not start)
+    }
   }
   writeArtifact(stream, '')
   writeArtifact(stderr, '')
+}
+
+/** `; claude exited with code 0` from agentiscode's synthetic result (empty when the fields are missing). */
+function describeClaudeExit(synthetic: Json | null): string {
+  if (!synthetic) return ''
+  if (typeof synthetic.exit_signal === 'string' && synthetic.exit_signal) return `; claude killed by signal ${synthetic.exit_signal}`
+  if (typeof synthetic.exit_code === 'number') return `; claude exited with code ${synthetic.exit_code}`
+  return ''
 }
 
 /** Sleep interruptible by a signal. Returns true if interrupted by an abort. */
