@@ -322,7 +322,7 @@ let report: {
   priorities: Array<{ rank: number; title: string; gids: string[]; rationale: string }>
   duplicateGroups?: string[][]
 } | null = null
-let synthBudgetHit = false
+let synthLimitHit = false
 try {
   report = await agent<{
     summary: string
@@ -342,10 +342,11 @@ ${JSON.stringify(confirmed.map((f) => ({ gid: f.gid, file: f.file, line: f.line,
     { label: 'synthesize:report', phase: 'Synthesize', schema: REPORT_SCHEMA, effort: 'high', disallowedTools: READONLY },
   )
 } catch (e) {
-  // budget exhausted (code BUDGET_EXCEEDED): confirmed findings must not be lost because of a missing summary
-  if (e === null || typeof e !== 'object' || (e as { code?: unknown }).code !== 'BUDGET_EXCEEDED') throw e
-  synthBudgetHit = true
-  log('Budget exhausted before synthesis; returning confirmed findings without a summary.')
+  // agent limit reached (code AGENT_LIMIT): confirmed findings must not be lost because of a missing summary.
+  // Anything else (including USAGE_LIMIT, which needs a resume) keeps propagating.
+  if (e === null || typeof e !== 'object' || (e as { code?: unknown }).code !== 'AGENT_LIMIT') throw e
+  synthLimitHit = true
+  log('Agent limit reached before synthesis; returning confirmed findings without a summary.')
 }
 
 // Drop references to non-existent IDs (the LLM must not make them up).
@@ -360,6 +361,6 @@ const cleanedReport = report
     }
   : null
 
-if (!cleanedReport && !synthBudgetHit) log('Synthesis failed; returning confirmed findings without a summary.')
+if (!cleanedReport && !synthLimitHit) log('Synthesis failed; returning confirmed findings without a summary.')
 
-return { stats: { ...stats, ...(synthBudgetHit ? { budgetExceeded: true } : {}) }, confirmed, report: cleanedReport }
+return { stats: { ...stats, ...(synthLimitHit ? { agentLimitExceeded: true } : {}) }, confirmed, report: cleanedReport }

@@ -164,8 +164,11 @@ export async function runCommand(ctx: CommandContext, argv: string[], mode: 'run
   } else if (summary.status !== 'completed' && summary.error) {
     errorLine(ctx, summary.error)
   }
-  if (summary.budgetExceeded && quiet) {
-    errorLine(ctx, 'Budget was exceeded, the result is partial.')
+  if (summary.agentLimitExceeded && quiet) {
+    errorLine(ctx, 'The agent limit (--max-agents) was reached, the result is partial.')
+  }
+  if (summary.usageLimitHit && quiet) {
+    errorLine(ctx, `The usage limit was exhausted; after it resets, continue with: ultracode resume ${summary.runId}`)
   }
 
   if (asJson) {

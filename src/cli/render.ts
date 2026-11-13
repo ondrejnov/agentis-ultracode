@@ -159,6 +159,20 @@ function kv(label: string, value: string): string {
   return `${label}:`.padEnd(10) + value
 }
 
+/** Suffix of the Status line: why the run stopped early / is partial. */
+function statusFlags(summary: RunSummary, s: Style): string {
+  let out = ''
+  if (summary.usageLimitHit) out += s.yellow('  (usage limit exhausted)')
+  if (summary.agentLimitExceeded) out += s.yellow('  (agent limit reached)')
+  return out
+}
+
+/** After an exhausted usage limit: how to continue (resume reuses the agents that finished). */
+function usageLimitHint(summary: RunSummary, s: Style): string[] {
+  if (!summary.usageLimitHit || summary.status === 'running') return []
+  return [kv('Resume', `${s.bold(`ultracode resume ${summary.runId}`)}  ${s.dim('(after the usage limit resets)')}`)]
+}
+
 function totalsLines(t: RunTotals, s: Style): string[] {
   const agents = [agentsText(t.agents)]
   const extra: string[] = []
@@ -181,7 +195,8 @@ export function renderSummary(summary: RunSummary, style: Style): string[] {
   const lines: string[] = []
   lines.push(s.bold('-- Summary --'))
   lines.push(kv('Run', `${summary.runId}  ${summary.name}`))
-  lines.push(kv('Status', `${statusColor(summary.status)}${summary.budgetExceeded ? s.yellow('  (budget exceeded)') : ''}`))
+  lines.push(kv('Status', `${statusColor(summary.status)}${statusFlags(summary, s)}`))
+  lines.push(...usageLimitHint(summary, s))
   lines.push(kv('Duration', formatDuration(summary.durationMs)))
   lines.push(...totalsLines(summary.totals, s))
   if (summary.error) lines.push(s.red(kv('Error', summary.error)))
@@ -334,7 +349,8 @@ export function renderStatus(input: StatusRenderInput): string[] {
       : summary.durationMs
 
   lines.push(`${s.bold('Run')} ${summary.runId}  ${s.bold(summary.name)}`)
-  lines.push(kv('Status', `${statusColor(summary.status)}${summary.budgetExceeded ? s.yellow('  (budget exceeded)') : ''}`))
+  lines.push(kv('Status', `${statusColor(summary.status)}${statusFlags(summary, s)}`))
+  lines.push(...usageLimitHint(summary, s))
   lines.push(kv('Duration', `${formatDuration(duration)}${summary.status === 'running' ? s.dim(' (running)') : ''}`))
   lines.push(kv('Script', summary.scriptPath))
   lines.push(kv('Folder', summary.runDir))

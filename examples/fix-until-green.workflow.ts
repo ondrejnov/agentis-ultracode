@@ -136,7 +136,7 @@ const CONFIRM_SCHEMA = {
 
 const history: RoundRecord[] = []
 const fixLog: Array<{ round: number; group: string; report: FixReport | null }> = []
-let status: 'green' | 'no-progress' | 'max-rounds' | 'budget' | 'error' = 'max-rounds'
+let status: 'green' | 'no-progress' | 'max-rounds' | 'agent-limit' | 'error' = 'max-rounds'
 let error: string | undefined
 let lastRun: RunReport | null = null
 let best = Number.POSITIVE_INFINITY
@@ -252,9 +252,11 @@ ${RULES}`,
     if (present(reports).length === 0) log(`Round ${round}: no fixer returned a result.`)
   }
 } catch (e) {
-  // script error or exhausted budget (code BUDGET_EXCEEDED): return what was done
+  // script error or reached agent limit (code AGENT_LIMIT): return what was done.
+  // An exhausted usage limit (USAGE_LIMIT) must fail the run, so that `ultracode resume` continues after the reset.
   const code = e !== null && typeof e === 'object' ? (e as { code?: unknown }).code : undefined
-  status = code === 'BUDGET_EXCEEDED' ? 'budget' : 'error'
+  if (code === 'USAGE_LIMIT') throw e
+  status = code === 'AGENT_LIMIT' ? 'agent-limit' : 'error'
   error = e instanceof Error ? e.message : String(e)
   log(`Loop interrupted: ${error}`)
 }

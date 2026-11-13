@@ -1,6 +1,6 @@
 /**
  * Orchestrates one workflow run: finds and validates the script, creates the run directory, implements `ScriptHooks`
- * (limits, budget, journal cache, concurrency semaphore, runner), writes events/journal/run.json
+ * (agent limit, usage-limit stop, spending counters, journal cache, concurrency semaphore, runner), writes events/journal/run.json
  * and returns a `RunSummary` at the end.
  *
  * `runWorkflow` does NOT throw for script or agent failures (it returns a summary with status `failed`/`aborted`);
@@ -13,9 +13,10 @@ import { availableParallelism } from 'node:os'
 import { basename, extname, join, relative, resolve } from 'node:path'
 import {
   AbortedError,
-  BudgetExceededError,
+  AgentLimitError,
   ScriptValidationError,
   UltracodeError,
+  UsageLimitError,
   WorkflowNotFoundError,
 } from '../errors.ts'
 import { type AgentisReporterFactory, type AgentisWorkflowReporter, agentisReporterFromEnv } from './agentis-report.ts'
@@ -254,8 +255,6 @@ function pathKey(path: string[]): string {
 
 // ───────────────────────── main functions ─────────────────────────
 
-/** Is the process with the given pid alive? (EPERM = it exists, we just lack the permission to signal it.) */
-
 /**
  * Lock on the run directory against a concurrent `resume` (two processes would overwrite each other's run.json and agent artifacts).
  * A lock held by a dead pid (killed process) is overwritten. Returns a release function.
@@ -449,7 +448,10 @@ async function runWorkflowImpl(opts: RunOptions, deps: EngineDeps, lock: { relea
 
   // ── 4) run state ──
   const totals: RunTotals = emptyTotals()
-  let budgetExceeded = false
+  let agentLimitExceeded = false
+  /** The agent account's usage limit is exhausted: the run stops (see `stopForUsageLimit`). Starts false on every resume. */
+  let usageLimitHit = false
+  let usageLimitDetail = ''
   let status: RunStatus = 'running'
   let runError: string | undefined
   let runResult: unknown
@@ -517,7 +519,8 @@ async function runWorkflowImpl(opts: RunOptions, deps: EngineDeps, lock: { relea
     }
     if (status === 'completed') s.result = runResult === undefined ? null : runResult
     if (runError !== undefined) s.error = runError
-    if (budgetExceeded) s.budgetExceeded = true
+    if (agentLimitExceeded) s.agentLimitExceeded = true
+    if (usageLimitHit) s.usageLimitHit = true
     return s
   }
   const runJson = new StateFileWriter(join(runDir, 'run.json'), currentSummary, onWriteError('run.json'))
@@ -544,6 +547,9 @@ async function runWorkflowImpl(opts: RunOptions, deps: EngineDeps, lock: { relea
   // ── 5) hooks ──
   const internalAbort = new AbortController()
   const runSignal: AbortSignal = userSignal ? AbortSignal.any([userSignal, internalAbort.signal]) : internalAbort.signal
+  // aborts running agents (and semaphore waiters) once the usage limit is exhausted, without aborting the script itself
+  const usageLimitAbort = new AbortController()
+  const agentSignal: AbortSignal = AbortSignal.any([runSignal, usageLimitAbort.signal])
   const concurrencyLimit = resolveConcurrency(eff.concurrency)
   const agentis = opts.agentis === undefined ? resolveAgentisTelemetry() : opts.agentis
   if (agentis) {
@@ -564,12 +570,36 @@ async function runWorkflowImpl(opts: RunOptions, deps: EngineDeps, lock: { relea
     return null
   }
 
-  const budgetError = (message: string, call: HookCall): BudgetExceededError => {
-    if (!budgetExceeded) {
-      budgetExceeded = true
+  const agentLimitError = (message: string, call: HookCall): AgentLimitError => {
+    if (!agentLimitExceeded) {
+      agentLimitExceeded = true
       emit({ t: 'log', ts: nowIso(), message: `Limit exceeded: ${message}`, workflowPath: call.workflowPath })
     }
-    return new BudgetExceededError(message)
+    return new AgentLimitError(message)
+  }
+
+  const usageLimitError = (): UsageLimitError =>
+    new UsageLimitError(
+      `${usageLimitDetail} The run was stopped; agents that finished are kept in the journal. ` +
+        `After the usage limit resets, continue with: ultracode resume ${runId}`,
+    )
+
+  /**
+   * The first agent that failed on an exhausted usage limit stops the run: running agents are aborted (their unfinished
+   * work is not journaled anyway), agents waiting for a slot do not start, and every further `agent()` throws UsageLimitError.
+   */
+  const stopForUsageLimit = (detail: string, call: HookCall): void => {
+    if (usageLimitHit) return
+    usageLimitHit = true
+    usageLimitDetail = /[.!?]$/.test(detail.trim()) ? detail.trim() : `${detail.trim()}.`
+    emit({
+      t: 'log',
+      ts: nowIso(),
+      message: `Usage limit exhausted, stopping the run: ${usageLimitDetail} Resume after the limit resets: ultracode resume ${runId}`,
+      workflowPath: call.workflowPath,
+    })
+    usageLimitAbort.abort()
+    void runJson.request()
   }
 
   const publishBudget = (): void => {
@@ -587,12 +617,12 @@ async function runWorkflowImpl(opts: RunOptions, deps: EngineDeps, lock: { relea
       throw new UltracodeError('UNSUPPORTED_OPTION', 'agent(): the `isolation` option (worktree) is not supported in v1; split the work between agents by path (partitions).')
     }
 
-    // (1) agent limit and budget
+    // (1) usage-limit stop and agent limit (the limit counts every call, cached ones included)
+    if (usageLimitHit) throw usageLimitError()
     if (agentCalls >= maxAgents) {
-      throw budgetError(`Agent limit of ${maxAgents} per run exceeded.`, call)
+      throw agentLimitError(`Agent limit of ${maxAgents} per run exceeded.`, call)
     }
     agentCalls++
-    // the budget is checked only just before the real start (after the cache): an already paid result must not break resume
 
     // effective values
     const model = aopts.model ?? eff.model
@@ -640,12 +670,14 @@ async function runWorkflowImpl(opts: RunOptions, deps: EngineDeps, lock: { relea
     // (3) concurrency semaphore
     let release: () => void
     try {
-      release = await semaphore.acquire(runSignal)
+      release = await semaphore.acquire(agentSignal)
     } catch {
+      if (usageLimitHit && !runSignal.aborted) throw usageLimitError()
       return null // aborted while waiting
     }
     try {
       if (runSignal.aborted) return null
+      if (usageLimitHit) throw usageLimitError()
 
       // (4) start the agent
       const id = ++agentSeq
@@ -655,7 +687,7 @@ async function runWorkflowImpl(opts: RunOptions, deps: EngineDeps, lock: { relea
         prompt,
         cwd: agentCwd,
         outDir: join(runDir, 'agents', String(id)),
-        signal: runSignal,
+        signal: agentSignal,
         onProgress: (p) => {
           if (p.kind === 'tool') emit({ t: 'agent_tool', ts: nowIso(), id, tool: p.name })
           else if (p.kind === 'retry') {
@@ -705,7 +737,7 @@ async function runWorkflowImpl(opts: RunOptions, deps: EngineDeps, lock: { relea
           toolCalls: 0,
           durationMs: Date.now() - t0,
           attempts: 0,
-          error: { kind: runSignal.aborted ? 'aborted' : 'spawn', message: (err as Error)?.message ?? String(err) },
+          error: { kind: agentSignal.aborted ? 'aborted' : 'spawn', message: (err as Error)?.message ?? String(err) },
         }
       }
 
@@ -732,7 +764,7 @@ async function runWorkflowImpl(opts: RunOptions, deps: EngineDeps, lock: { relea
         errorText = r.error ? `${r.error.kind}: ${r.error.message}` : 'agent failed'
       }
 
-      // (5) journal (ok only), totals, budget, events
+      // (5) journal (ok only), totals, spending counters, events
       if (ok) {
         const entry: JournalEntry = {
           key,
@@ -772,6 +804,9 @@ async function runWorkflowImpl(opts: RunOptions, deps: EngineDeps, lock: { relea
       })
       publishBudget()
       void runJson.request()
+      if (!ok && r.error?.kind === 'usage_limit') stopForUsageLimit(r.error.message, call)
+      // also an agent aborted because another one hit the usage limit; a user abort stays null
+      if (!ok && usageLimitHit && !runSignal.aborted) throw usageLimitError()
       return ok ? value : null
     } finally {
       release()
@@ -895,8 +930,10 @@ async function runWorkflowImpl(opts: RunOptions, deps: EngineDeps, lock: { relea
     runError = 'Run was aborted.'
   } else if (scriptFailed) {
     status = 'failed'
-    runError = describeError(scriptError)
-    if (errorCode(scriptError) === 'BUDGET_EXCEEDED') budgetExceeded = true
+    const code = errorCode(scriptError)
+    // the usage-limit message (with the resume hint) is the whole story; a script stack would only obscure it
+    runError = code === 'USAGE_LIMIT' ? (scriptError as Error).message : describeError(scriptError)
+    if (code === 'AGENT_LIMIT') agentLimitExceeded = true
   } else {
     status = 'completed'
   }
@@ -918,7 +955,7 @@ async function runWorkflowImpl(opts: RunOptions, deps: EngineDeps, lock: { relea
   await journalWriter.flush()
   await runJson.request()
 
-  // An invalid script before the first agent is a usage error; if it only surfaces in a nested workflow after agents have spent budget,
+  // An invalid script before the first agent is a usage error; if it only surfaces in a nested workflow after agents have spent tokens,
   // the run ends as failed with its result (otherwise the spending would be lost and no output produced).
   if (scriptFailed && scriptError instanceof ScriptValidationError && agentCalls === 0) throw scriptError
   return currentSummary()

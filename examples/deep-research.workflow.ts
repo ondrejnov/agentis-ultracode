@@ -191,7 +191,7 @@ const SYNTH_SCHEMA = {
 const normalizeKey = (s: string): string =>
   s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim().replace(/\s+/g, ' ').slice(0, 160)
 
-const isBudgetError = (e: unknown): boolean => e !== null && typeof e === 'object' && (e as { code?: unknown }).code === 'BUDGET_EXCEEDED'
+const isAgentLimitError = (e: unknown): boolean => e !== null && typeof e === 'object' && (e as { code?: unknown }).code === 'AGENT_LIMIT'
 
 const isHttpUrl = (u: unknown): u is string => typeof u === 'string' && /^https?:\/\/\S+$/i.test(u)
 
@@ -363,9 +363,9 @@ Do not modify any files.`,
     { label: `critic:r${round}`, phase: 'Critic', schema: CRITIC_SCHEMA, effort: 'medium', disallowedTools: READONLY },
     )
   } catch (e) {
-    if (!isBudgetError(e)) throw e
-    stoppedBecause = 'budget'
-    log('Budget exhausted during completeness assessment; continuing with synthesis from verified claims.')
+    if (!isAgentLimitError(e)) throw e
+    stoppedBecause = 'agent-limit'
+    log('Agent limit reached during completeness assessment; continuing with synthesis from verified claims.')
     break
   }
   if (!critic) {
@@ -385,12 +385,12 @@ Do not modify any files.`,
 // disputed claims go into synthesis on purpose (as disputed); rejected ones are no longer in `verified`
 const usable = verified
 if (usable.length === 0) {
-  const outOfBudget = stoppedBecause === 'budget'
+  const limitHit = stoppedBecause === 'agent-limit'
   return {
     question: QUESTION,
     answer: null,
-    note: outOfBudget ? 'Budget exhausted before any claim could be verified.' : 'No claim could be verified.',
-    stats: { rounds: roundsDone, stoppedBecause: outOfBudget ? 'budget' : stoppedBecause, sweepFailures, dropped: dropped.length },
+    note: limitHit ? 'Agent limit reached before any claim could be verified.' : 'No claim could be verified.',
+    stats: { rounds: roundsDone, stoppedBecause, sweepFailures, dropped: dropped.length },
     dropped,
   }
 }
@@ -401,7 +401,7 @@ const byId = new Map(claims.map((c) => [c.id, c]))
 
 phase('Synthesize')
 let synth: { answer: string; caveats: string[]; openQuestions: string[] } | null = null
-let synthBudgetHit = false
+let synthLimitHit = false
 try {
   synth = await agent<{ answer: string; caveats: string[]; openQuestions: string[] }>(
   `Write the final answer to this research question, in ${LANGUAGE}:
@@ -420,17 +420,17 @@ Do not modify any files.`,
     { label: 'synthesize:answer', phase: 'Synthesize', schema: SYNTH_SCHEMA, effort: 'high', disallowedTools: READONLY },
   )
 } catch (e) {
-  if (!isBudgetError(e)) throw e
-  synthBudgetHit = true
-  stoppedBecause = 'budget'
-  log('Budget exhausted before synthesis; returning verified claims.')
+  if (!isAgentLimitError(e)) throw e
+  synthLimitHit = true
+  stoppedBecause = 'agent-limit'
+  log('Agent limit reached before synthesis; returning verified claims.')
 }
 
 if (!synth) {
   return {
     question: QUESTION,
     answer: null,
-    note: synthBudgetHit ? 'Budget exhausted before synthesis; returning verified claims.' : 'Synthesis failed; returning verified claims.',
+    note: synthLimitHit ? 'Agent limit reached before synthesis; returning verified claims.' : 'Synthesis failed; returning verified claims.',
     claims: claims.map((c) => ({ id: c.id, status: c.status, claim: c.candidate.claim, source: c.candidate.sourceUrl })),
     stats: { rounds: roundsDone, stoppedBecause, sweepFailures, dropped: dropped.length },
   }

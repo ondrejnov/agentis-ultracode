@@ -3,7 +3,7 @@
  */
 
 import { fileURLToPath } from 'node:url'
-import { AbortedError, BudgetExceededError, ScriptValidationError, UltracodeError } from '../errors.ts'
+import { AbortedError, AgentLimitError, ScriptValidationError, UltracodeError, UsageLimitError } from '../errors.ts'
 import type { AgentOptions, HookCall, LoadedScript, WorkflowMeta } from '../types.ts'
 
 export interface SerializedError {
@@ -96,8 +96,11 @@ const NATIVE_ERRORS: Record<string, ErrorConstructor | undefined> = {
 export function reviveError(s: SerializedError): Error {
   let err: Error
   switch (s.code) {
-    case 'BUDGET_EXCEEDED':
-      err = new BudgetExceededError(s.message)
+    case 'AGENT_LIMIT':
+      err = new AgentLimitError(s.message)
+      break
+    case 'USAGE_LIMIT':
+      err = new UsageLimitError(s.message)
       break
     case 'ABORTED':
       err = new AbortedError(s.message)

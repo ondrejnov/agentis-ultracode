@@ -28,10 +28,20 @@ export class DeterminismError extends UltracodeError {
   }
 }
 
-/** A token/USD/agent cap was exceeded; further `agent()` calls are no longer allowed. */
-export class BudgetExceededError extends UltracodeError {
+/** The per-run agent limit (`--max-agents`) was reached; further `agent()` calls are no longer allowed. */
+export class AgentLimitError extends UltracodeError {
   constructor(message: string) {
-    super('BUDGET_EXCEEDED', message)
+    super('AGENT_LIMIT', message)
+  }
+}
+
+/**
+ * The usage/subscription limit of the agent account is exhausted. The run stops: this and every later `agent()` call
+ * throws; `ultracode resume <runId>` continues (from the journal) after the limit resets.
+ */
+export class UsageLimitError extends UltracodeError {
+  constructor(message: string) {
+    super('USAGE_LIMIT', message)
   }
 }
 

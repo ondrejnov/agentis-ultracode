@@ -1,7 +1,7 @@
 /**
  * E2E: real process `node bin/ultracode.mjs …` + real engine, script host and runner on top of fake-claude.
  * Verifies the behaviour from the user's/Agentis' point of view: stdout = JSON, exit codes, run directory, resume after a kill,
- * budget, validation and the concurrency limit (from the fake-claude log).
+ * agent limit, usage limit, validation and the concurrency limit (from the fake-claude log).
  */
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
@@ -458,7 +458,7 @@ return r
     assert.ok(persisted.some((e) => e.t === 'agent_start'))
   })
 
-  it('--max-agents: exceeding the agent limit = budget error', async () => {
+  it('--max-agents: exceeding the agent limit = AGENT_LIMIT, partial result', async () => {
     const sb = makeSandbox()
     sb.script(
       'many.workflow.ts',
@@ -470,9 +470,31 @@ return r
     const r = await run(sb, ['run', 'many', '--cwd', sb.cwd, '--max-agents', '2', '--concurrency', '1', '--json'])
     assert.equal(r.code, 0, r.stderr)
     const s = summaryOf(r.stdout)
-    assert.equal(s.budgetExceeded, true)
+    assert.equal(s.agentLimitExceeded, true)
     assert.deepEqual(s.result, ['a0', 'a1', null, null])
     assert.equal(readFakeLog(sb).length, 2)
+  })
+
+  it('exhausted usage limit: the run stops and fails with usageLimitHit and a resume hint; later agents never start', async () => {
+    const sb = makeSandbox()
+    sb.script(
+      'quota.workflow.ts',
+      `export const meta = { name: 'quota', description: 'usage limit' }
+const r = await parallel([0, 1, 2, 3].map((i) => () => agent('Q' + i + (i === 1 ? ' [[fake:usage-limit]]' : ' [[fake:text q' + i + ']]'))))
+return r
+`,
+    )
+    const r = await run(sb, ['run', 'quota', '--cwd', sb.cwd, '--concurrency', '1', '--json'])
+    assert.equal(r.code, 1, r.stderr)
+    const s = summaryOf(r.stdout)
+    assert.equal(s.status, 'failed')
+    assert.equal(s.usageLimitHit, true)
+    assert.match(s.error, /^Usage limit exhausted \(HTTP 429\)/)
+    assert.ok(s.error.includes(`ultracode resume ${s.runId}`), s.error)
+    // Q0 finished, Q1 hit the limit, Q2/Q3 never started (not retried either)
+    assert.deepEqual(readFakeLog(sb).map((l) => l.prompt.slice(0, 2)), ['Q0', 'Q1'])
+    const runJson = JSON.parse(readFileSync(join(runDirs(sb)[0], 'run.json'), 'utf8'))
+    assert.equal(runJson.usageLimitHit, true)
   })
 
   it('concurrency does not exceed --concurrency (and uses it)', async () => {

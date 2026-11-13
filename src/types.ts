@@ -97,8 +97,11 @@ export interface AgentOptions {
 
 // ───────────────────────── claude runner (module 1) ─────────────────────────
 
-/** An exceeded agent budget (`--max-budget-usd`) and HTTP errors are reported as `api`, invalid CLI arguments as `exit`. */
-export type ClaudeErrorKind = 'stall' | 'timeout' | 'exit' | 'api' | 'schema' | 'aborted' | 'spawn'
+/**
+ * An exceeded agent budget (`--max-budget-usd`) and HTTP errors are reported as `api`, invalid CLI arguments as `exit`.
+ * An exhausted usage/subscription limit of the account is `usage_limit` (never retried; the engine stops the run).
+ */
+export type ClaudeErrorKind = 'stall' | 'timeout' | 'exit' | 'api' | 'usage_limit' | 'schema' | 'aborted' | 'spawn'
 
 /**
  * Existing Agentis run to which every agent attaches its session as a secondary one (agentiscode `--task-id`/`--run-id`).
@@ -289,7 +292,10 @@ export interface RunSummary {
   result?: unknown
   error?: string
   totals: RunTotals
-  budgetExceeded?: boolean
+  /** The agent limit (`--max-agents`) was reached; the result is partial. (Older run.json files: `budgetExceeded`.) */
+  agentLimitExceeded?: boolean
+  /** The usage/subscription limit of the agent account was exhausted and the run was stopped; `resume` continues. */
+  usageLimitHit?: boolean
 }
 
 export type RunEvent =

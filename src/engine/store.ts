@@ -86,7 +86,9 @@ function normalizeSummary(raw: unknown, dirName: string, runDir: string): RunSum
   }
   if ('result' in raw) summary.result = raw.result
   if (typeof raw.error === 'string') summary.error = raw.error
-  if (raw.budgetExceeded === true) summary.budgetExceeded = true
+  // `budgetExceeded` = the same flag in run.json files written before the rename
+  if (raw.agentLimitExceeded === true || raw.budgetExceeded === true) summary.agentLimitExceeded = true
+  if (raw.usageLimitHit === true) summary.usageLimitHit = true
   return summary
 }
 

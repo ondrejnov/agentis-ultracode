@@ -40,7 +40,7 @@ describe('store', () => {
     try {
       writeRun(p.cwd, 'wf_aaaaaaaa-001', { 'run.json': runJson('wf_aaaaaaaa-001', '2026-01-01T10:00:00.000Z') })
       writeRun(p.cwd, 'wf_bbbbbbbb-002', { 'run.json': runJson('wf_bbbbbbbb-002', '2026-01-03T10:00:00.000Z', { status: 'failed', error: 'x' }) })
-      writeRun(p.cwd, 'wf_cccccccc-003', { 'run.json': runJson('wf_cccccccc-003', '2026-01-02T10:00:00.000Z', { result: { a: 1 }, budgetExceeded: true }) })
+      writeRun(p.cwd, 'wf_cccccccc-003', { 'run.json': runJson('wf_cccccccc-003', '2026-01-02T10:00:00.000Z', { result: { a: 1 }, budgetExceeded: true, usageLimitHit: true }) })
       writeRun(p.cwd, 'wf_corrupt0-004', { 'run.json': '{"runId": "wf_corru' }) // truncated JSON, no events
       writeRun(p.cwd, 'wf_empty000-005', {})
       writeRun(p.cwd, 'wf_badshape-006', { 'run.json': JSON.stringify({ hello: 'world' }) })
@@ -51,7 +51,11 @@ describe('store', () => {
       assert.equal(runs[0].status, 'failed')
       assert.equal(runs[0].error, 'x')
       assert.deepEqual(runs[1].result, { a: 1 })
-      assert.equal(runs[1].budgetExceeded, true)
+      // legacy field `budgetExceeded` (run.json before the rename) is read as agentLimitExceeded
+      assert.equal(runs[1].agentLimitExceeded, true)
+      assert.equal(runs[1].usageLimitHit, true)
+      assert.equal(runs[2].agentLimitExceeded, undefined)
+      assert.equal(runs[2].usageLimitHit, undefined)
       assert.equal(runs[2].totals.usage.outputTokens, 2)
     } finally {
       p.cleanup()

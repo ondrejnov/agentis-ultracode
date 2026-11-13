@@ -85,14 +85,16 @@ type AgentOptionsWithSchema = AgentOptions & { schema: WorkflowJsonSchema }
  * Runs one agent (`agentiscode` → `claude -p`). Without `schema` returns the final text; with `schema` a validated object.
  * Returns `null` when the agent fails terminally (after retry/stall restarts) or is aborted – ALWAYS before
  * use, filter with `.filter(Boolean)` / handle `null`.
- * Throws only on a script error (invalid schema, exceeded budget, …).
+ * Throws only on a script error (invalid schema, …), when the agent limit is reached (`code === 'AGENT_LIMIT'`),
+ * or when the usage limit of the agent account is exhausted (`code === 'USAGE_LIMIT'`): then this and every later
+ * `agent()` throws and the run stops; `ultracode resume <runId>` continues after the limit resets.
  */
 declare function agent<T = any>(prompt: string, opts: AgentOptionsWithSchema): Promise<T | null>
 declare function agent<T = string>(prompt: string, opts?: AgentOptions): Promise<T | null>
 
 /**
  * Runs thunks concurrently and waits for all of them (BARRIER). A thunk that throws yields `null`.
- * The function never rejects. Max 4096 items.
+ * Rejects only with a `USAGE_LIMIT` error (exhausted usage limit, rethrown after all thunks settle). Max 4096 items.
  */
 declare function parallel<T>(thunks: Array<() => Promise<T>>): Promise<Array<T | null>>
 
@@ -100,7 +102,7 @@ declare function parallel<T>(thunks: Array<() => Promise<T>>): Promise<Array<T |
  * Sends each item independently through all stages (WITHOUT a barrier between stages) – the default choice for multi-step work.
  * Each stage receives `(previousResult, originalItem, index)`. A stage that throws gives the item
  * `null` and the remaining stages are skipped for it. The result is an array in the same order as `items`.
- * Max 4096 items.
+ * Rejects only with a `USAGE_LIMIT` error (exhausted usage limit). Max 4096 items.
  */
 declare function pipeline<I, A>(items: I[], s1: (item: I, original: I, index: number) => Promise<A> | A): Promise<Array<A | null>>
 declare function pipeline<I, A, B>(items: I[], s1: (item: I, original: I, index: number) => Promise<A> | A, s2: (prev: A, original: I, index: number) => Promise<B> | B): Promise<Array<B | null>>
@@ -133,7 +135,7 @@ declare const budget: {
 }
 
 /**
- * Runs another workflow inline and returns its return value. Shares limits, the agent counter and the budget.
+ * Runs another workflow inline and returns its return value. Shares the agent limit, the agent counter and the spending counters.
  * Nesting is limited to one level (workflow() inside a child throws an error).
  */
 declare function workflow(nameOrRef: string | { scriptPath: string }, args?: any): Promise<any>

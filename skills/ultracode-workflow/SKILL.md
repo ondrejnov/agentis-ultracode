@@ -181,8 +181,13 @@ and `c = await parallel(b.map(...))`? The middle transformation does not need a 
   about completeness.
 - Script errors (invalid schema, unsupported option, exceeded agent limit) are **thrown** by `agent()`. For a loop
   that must not lose intermediate state, wrap it in `try/catch` and return a partial result; the agent-limit error has
-  `e.code === 'BUDGET_EXCEEDED'` (see `examples/fix-until-green.workflow.ts`). Inside `parallel`/`pipeline`
-  every exception becomes `null` (and is logged).
+  `e.code === 'AGENT_LIMIT'` (see `examples/fix-until-green.workflow.ts`). Inside `parallel`/`pipeline`
+  every exception becomes `null` (and is logged) — except `USAGE_LIMIT`.
+- **Exhausted usage limit** (the account's subscription/usage limit, "You've hit your limit · resets …"): the runtime
+  stops the run. Running agents are aborted, waiting ones never start, and this and every later `agent()` throws
+  `e.code === 'USAGE_LIMIT'`; `parallel`/`pipeline` rethrow it after their items settle instead of returning `null`.
+  The run ends `failed` with `usageLimitHit: true`; after the limit resets, `ultracode resume <runId>` reuses the
+  finished agents. A catch-all `try/catch` must **rethrow** `USAGE_LIMIT` (otherwise the run "completes" with holes).
 
 ### Overlapping writes (partitions)
 
@@ -326,10 +331,10 @@ A cheap trial run without a real model: `ULTRACODE_CLAUDE_BIN=<repo>/test/fixtur
 - **stdout** = JSON of the script's return value (`return …`), only when the run is `completed` (exit 0).
   With `--json` stdout is a JSON Lines stream instead: run events (`run_start`, `agent_start`, `agent_done`, …),
   `agent_event` lines with each agent's own log (`{t, id, label, attempt, event}`, agentiscode format) and as the last
-  line `{"t":"summary","summary":{ runId, name, status, result, error, totals, budgetExceeded, runDir, … }}`
+  line `{"t":"summary","summary":{ runId, name, status, result, error, totals, agentLimitExceeded, usageLimitHit, runDir, … }}`
   (also for a failed run).
 - **stderr** = progress for a human (phases, agents, log()).
-- **Exit codes:** 0 completed · 1 run failed (script error, agent limit) · 2 incorrect usage / invalid script /
+- **Exit codes:** 0 completed · 1 run failed (script error, agent limit, exhausted usage limit) · 2 incorrect usage / invalid script /
   unknown workflow · 130 aborted.
 - A failed run has empty stdout — find the summary and error in `ultracode status <runId> --json`
   or in `.ultracode/runs/<runId>/run.json`; the result of a completed run is also in `result.json`.
@@ -339,7 +344,8 @@ The run directory `.ultracode/runs/<runId>/`: `run.json`, `script.ts` (copy), `a
 `journal.jsonl` (completed agents), `result.json`, `agents/<n>/` (`prompt.txt`, `stream.jsonl`, `stderr.txt`, `result.json`).
 
 **Verify the result before handing it to the user:** how many items failed (`null`), how many were "unverified",
-whether the agent limit was hit (`budgetExceeded`), and whether the script reported any cuts. Present a partial result as partial.
+whether the agent limit was hit (`agentLimitExceeded`), whether the usage limit stopped the run (`usageLimitHit` → tell the
+user to `ultracode resume <runId>` after the limit resets), and whether the script reported any cuts. Present a partial result as partial.
 
 ## 9. Pre-run checklist
 
@@ -364,7 +370,7 @@ whether the agent limit was hit (`budgetExceeded`), and whether the script repor
 | **`agentType`** (custom subagent types)                                                   | likewise rejected with an error; control the agent's behavior with the prompt and `systemPrompt`                                                                                        |
 | **Input during a run** (an agent cannot ask a human, the script has no `AskUserQuestion`) | runs are unattended; resolve ambiguities before the run or in `args`; agents are instructed to "make a reasonable assumption"                                                           |
 | Pausing/restarting a single agent, TUI, interactive cancellation of an agent              | `Ctrl+C` cancels the whole run; then `resume`                                                                                                                                           |
-| Waiting for the usage limit                                                               | when the limit is exhausted the agent fails → `null`; after the limit resets, `resume`                                                                                                  |
+| Waiting for the usage limit to reset                                                      | when the limit is exhausted the run stops (`USAGE_LIMIT`, status `failed`, `usageLimitHit`); after the limit resets, `ultracode resume <runId>` continues from the journal            |
 | File system / shell in the script                                                         | everything goes through an agent (e.g. "run the command and return the exit code")                                                                                                      |
 | Writing to `args`/state between runs                                                      | return the value and pass it to the next run via `--args`                                                                                                                               |
 | `workflow()` nesting deeper than 1 level                                                  | combine the results in the parent script                                                                                                                                                |
@@ -384,4 +390,6 @@ whether the agent limit was hit (`budgetExceeded`), and whether the script repor
 | Resume runs everything again                  | the prompt contains a changing value / upstream changed             | stable prompts; this is just the cache                         |
 | `agent(): … is not supported in version 1`    | `isolation` or `agentType` used                                     | see section 10                                                 |
 | The synthesis is shallow or invents things    | input too large or free text                                        | group/cut, schema, IDs in code and references from the data    |
-| `BUDGET_EXCEEDED`                             | agent limit (`--max-agents`)                                        | raise the limit or narrow the work; `resume` finishes the rest |
+| `AGENT_LIMIT`                                 | agent limit (`--max-agents`)                                        | raise the limit or narrow the work; `resume` finishes the rest |
+| `USAGE_LIMIT`, run `failed`, `usageLimitHit`  | the account's usage/subscription limit is exhausted                 | wait for the reset, then `ultracode resume <runId>`            |
+| `USAGE_LIMIT` but the run "completed" with holes | a catch-all `try/catch` swallowed the usage-limit error          | rethrow `e.code === 'USAGE_LIMIT'` in catch-all handlers       |

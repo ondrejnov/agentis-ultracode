@@ -28,6 +28,7 @@
  * EXTENSIONS (superset of the contract, nothing above is changed):
  *   [[fake:apierror 529]]       like apierror, but with api_error_status 529 (transient error; another code = another status)
  *   [[fake:apierror-times N]]   the first N attempts fail with API error 529 (transient), the next ones succeed
+ *   [[fake:usage-limit]]        result is_error with HTTP 429 "You've hit your limit · resets 5pm" (exhausted subscription limit), exit 1
  *   [[fake:input 42]]           input_tokens (default 10)
  *   [[fake:cache 100 50]]       cache_read_input_tokens, cache_creation_input_tokens (default 0 0)
  *   [[fake:turns 7]]            num_turns (default 1 + number of tools)
@@ -396,7 +397,20 @@ async function main() {
   const apiTimes = num('apierror-times', 0)
   const wantsApiError = has('apierror') || (apiTimes > 0 && attempt <= apiTimes)
 
-  if (wantsApiError) {
+  if (has('usage-limit')) {
+    emit(
+      {
+        ...base,
+        subtype: 'success',
+        is_error: true,
+        api_error_status: 429,
+        terminal_reason: 'api_error',
+        result: "You've hit your limit · resets 5pm (Europe/Prague)",
+      },
+      { newline: !has('no-newline') },
+    )
+    exitCode = exitCode || 1
+  } else if (wantsApiError) {
     const rawStatus = has('apierror') ? String(val('apierror')).trim().split(/\s+/)[0] : ''
     const explicit = rawStatus === '' ? NaN : Number(rawStatus)
     const status = Number.isFinite(explicit) ? explicit : apiTimes > 0 ? 529 : null

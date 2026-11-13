@@ -3,8 +3,11 @@ import assert from 'node:assert/strict'
 import {
   DEFAULT_SUBAGENT_SYSTEM_PROMPT,
   buildClaudeArgs,
+  isRateLimitError,
   isTransientApiError,
+  isUsageLimitError,
   resolveClaudeBin,
+  retryDelayMs,
 } from '../../src/runner/claude.ts'
 
 const ENV_KEYS = ['ULTRACODE_CLAUDE_BIN', 'ULTRACODE_AGENT_BIN', 'ULTRACODE_AGENT_ADAPTER'] as const
@@ -134,5 +137,68 @@ describe('isTransientApiError', () => {
     assert.equal(isTransientApiError(429, "You've hit your limit · resets 5pm"), false)
     assert.equal(isTransientApiError(429, 'Credit balance is too low'), false)
     assert.equal(isTransientApiError(401, 'Invalid API key'), false)
+  })
+})
+
+describe('isUsageLimitError', () => {
+  it('usage/subscription limit phrases', () => {
+    for (const t of [
+      "You've hit your limit · resets 5pm (Europe/Prague)",
+      "You've hit your weekly limit · resets Mon 9am",
+      'Claude AI usage limit reached|1760000000',
+      '5-hour limit reached ∙ resets 3am',
+      'Weekly limit reached',
+      'You have reached your specified API usage limits. You will regain access on 2026-12-01.',
+    ]) {
+      assert.equal(isUsageLimitError(t), true, t)
+    }
+  })
+  it('not auth errors, credit balance or ordinary rate limiting', () => {
+    for (const t of [
+      'Invalid API key · Please run /login',
+      'Credit balance is too low',
+      'API Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"Number of request tokens has exceeded your per-minute rate limit"}}',
+      "You've hit your rate limit, slow down",
+      'API Error: 529 overloaded_error',
+      'Agent exhausted the maximum number of turns',
+    ]) {
+      assert.equal(isUsageLimitError(t), false, t)
+    }
+  })
+})
+
+describe('retry backoff', () => {
+  it('isRateLimitError: HTTP 429/529 or overload/rate-limit text', () => {
+    assert.equal(isRateLimitError(429, 'x'), true)
+    assert.equal(isRateLimitError(529, 'x'), true)
+    assert.equal(isRateLimitError(null, 'API Error: Overloaded'), true)
+    assert.equal(isRateLimitError(null, 'rate_limit_error'), true)
+    assert.equal(isRateLimitError(null, 'Too Many Requests'), true)
+    assert.equal(isRateLimitError(500, 'Internal server error'), false)
+    assert.equal(isRateLimitError(null, 'ECONNRESET'), false)
+  })
+  it('equal jitter: between half and the whole ceiling (base × attempt, ×5 for rate limits)', () => {
+    assert.equal(retryDelayMs(1000, 1, false, () => 0), 500)
+    assert.equal(retryDelayMs(1000, 1, false, () => 1), 1000)
+    assert.equal(retryDelayMs(1000, 2, false, () => 0.5), 1500)
+    assert.equal(retryDelayMs(1000, 1, true, () => 0), 2500)
+    assert.equal(retryDelayMs(1000, 2, true, () => 1), 10_000)
+    for (let i = 0; i < 200; i++) {
+      const d = retryDelayMs(2000, 3, false)
+      assert.ok(d >= 3000 && d <= 6000, String(d))
+      const r = retryDelayMs(2000, 3, true)
+      assert.ok(r >= 15_000 && r <= 30_000, String(r))
+    }
+    // out-of-range random values are clamped
+    assert.equal(retryDelayMs(1000, 1, false, () => 7), 1000)
+    assert.equal(retryDelayMs(1000, 1, false, () => -1), 500)
+  })
+  it('jitter spreads concurrent retries', () => {
+    const delays = new Set(Array.from({ length: 16 }, () => retryDelayMs(2000, 1, true)))
+    assert.ok(delays.size > 1)
+  })
+  it('base 0 (ULTRACODE_RETRY_BACKOFF_MS=0) means no wait', () => {
+    assert.equal(retryDelayMs(0, 1, false), 0)
+    assert.equal(retryDelayMs(0, 3, true), 0)
   })
 })

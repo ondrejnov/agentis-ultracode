@@ -106,11 +106,23 @@ describe('run: output and exit codes', () => {
     assert.doesNotMatch(bad.err(), /Phase/)
   })
 
-  it('exceeded budget is reported in the summary', async () => {
+  it('reached agent limit is reported in the summary', async () => {
     const cap = makeIO()
-    const eng = fakeEngine(makeSummary({ budgetExceeded: true, result: 1 }))
+    const eng = fakeEngine(makeSummary({ agentLimitExceeded: true, result: 1 }))
     assert.equal(await main(['run', 'demo'], cap.io, { runWorkflow: eng.runWorkflow }), 0)
-    assert.match(cap.err(), /budget exceeded/)
+    assert.match(cap.err(), /agent limit reached/)
+    assert.doesNotMatch(cap.err(), /budget/i)
+  })
+
+  it('exhausted usage limit: summary flag and resume hint; -q prints the hint too; exit 1', async () => {
+    const summary = makeSummary({ status: 'failed', usageLimitHit: true, error: 'Usage limit exhausted (HTTP 429): You have hit your limit.' })
+    const cap = makeIO()
+    assert.equal(await main(['run', 'demo'], cap.io, { runWorkflow: fakeEngine(summary).runWorkflow }), 1)
+    assert.match(cap.err(), /failed {2}\(usage limit exhausted\)/)
+    assert.match(cap.err(), new RegExp(`Resume: +ultracode resume ${summary.runId} +\\(after the usage limit resets\\)`))
+    const quiet = makeIO()
+    assert.equal(await main(['run', 'demo', '-q'], quiet.io, { runWorkflow: fakeEngine(summary).runWorkflow }), 1)
+    assert.match(quiet.err(), new RegExp(`ultracode resume ${summary.runId}`))
   })
 })
 

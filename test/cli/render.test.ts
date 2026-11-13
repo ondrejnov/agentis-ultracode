@@ -153,13 +153,13 @@ describe('renderEvent (snapshots without colors)', () => {
         status: 'failed',
         durationMs: 65_000,
         totals: makeSummary().totals,
-        error: 'Budget exceeded',
+        error: 'Agent limit of 3 per run exceeded.',
       }),
     ])
     assert.deepEqual(lines, [
       'ultracode wf_2  demo  (resumed)',
       '== End: failed  1m05s  3 agents  $0.0421',
-      '   Budget exceeded',
+      '   Agent limit of 3 per run exceeded.',
     ])
   })
 
@@ -193,17 +193,25 @@ describe('renderSummary', () => {
     ])
   })
 
-  it('failed run with an error and an exceeded budget', () => {
+  it('failed run with an error and a reached agent limit', () => {
     const s = makeSummary({
       status: 'failed',
       error: 'Script threw an error',
-      budgetExceeded: true,
+      agentLimitExceeded: true,
     })
     s.totals.failedAgents = 2
     const lines = renderSummary(s, plain)
-    assert.ok(lines.includes('Status:   failed  (budget exceeded)'))
+    assert.ok(lines.includes('Status:   failed  (agent limit reached)'))
+    assert.ok(!lines.some((l) => l.startsWith('Resume:')))
     assert.ok(lines.includes('Agents:   3 agents (from cache 1, failed 2)'))
     assert.ok(lines.includes('Error:    Script threw an error'))
+  })
+
+  it('exhausted usage limit: status flag and resume hint', () => {
+    const s = makeSummary({ status: 'failed', usageLimitHit: true, error: 'Usage limit exhausted.' })
+    const lines = renderSummary(s, plain)
+    assert.ok(lines.includes('Status:   failed  (usage limit exhausted)'), lines.join('\n'))
+    assert.ok(lines.includes(`Resume:   ultracode resume ${s.runId}  (after the usage limit resets)`), lines.join('\n'))
   })
 })
 
@@ -299,6 +307,13 @@ describe('digestEvents + renderStatus', () => {
       style: plain,
     })
     assert.ok(lines.includes('Result:   {"ok":true}'))
+  })
+
+  it('status of a run stopped by the usage limit shows the flag and the resume hint', () => {
+    const summary = makeSummary({ status: 'failed', usageLimitHit: true, agentLimitExceeded: true })
+    const lines = renderStatus({ summary, digest: digestEvents([]), nowMs: 0, style: plain })
+    assert.ok(lines.includes('Status:   failed  (usage limit exhausted)  (agent limit reached)'), lines.join('\n'))
+    assert.ok(lines.includes(`Resume:   ultracode resume ${summary.runId}  (after the usage limit resets)`), lines.join('\n'))
   })
 })
 

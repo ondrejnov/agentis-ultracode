@@ -11,6 +11,7 @@ import type { EngineDeps, ParsedScriptLike } from '../../src/engine/engine.ts'
 import { EMPTY_USAGE } from '../../src/types.ts'
 import type {
   AgentOptions,
+  ClaudeErrorKind,
   ClaudeRunRequest,
   ClaudeRunResult,
   ClaudeRunner,
@@ -56,6 +57,8 @@ export interface StubRunnerOptions {
   costUsd?: number
   /** Returns an error message → the agent fails (ok:false). */
   fail?: (req: ClaudeRunRequest, n: number) => string | undefined
+  /** Error kind of a `fail` (default `exit`). */
+  failKind?: (req: ClaudeRunRequest, n: number) => ClaudeErrorKind
   /** Custom answer; default `out:<prompt>` or `{ value: <prompt> }` with a schema. */
   respond?: (req: ClaudeRunRequest, n: number) => unknown
   /** Throws an exception instead of returning a result. */
@@ -114,7 +117,7 @@ export function makeRunner(o: StubRunnerOptions = {}): StubRunner {
       const tokens = typeof o.outputTokens === 'function' ? o.outputTokens(req) : (o.outputTokens ?? 10)
       const usage = { inputTokens: 5, outputTokens: tokens, cacheReadTokens: 0, cacheCreationTokens: 0 }
       if (failMsg !== undefined) {
-        return { ...base, ok: false, usage, costUsd: o.costUsd ?? 0, error: { kind: 'exit', message: failMsg } }
+        return { ...base, ok: false, usage, costUsd: o.costUsd ?? 0, error: { kind: o.failKind?.(req, n) ?? 'exit', message: failMsg } }
       }
       const answer = o.respond ? o.respond(req, n) : req.schema ? { value: req.prompt } : `out:${req.prompt}`
       req.onProgress?.({ kind: 'tool', name: 'Read' })

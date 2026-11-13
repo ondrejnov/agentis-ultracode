@@ -26,8 +26,12 @@ example run `php8-upgrade-wf_003aa2c5-8ce.js` (21 agents, `agent → pipeline(fi
    If an upstream agent's output changes, the prompt of downstream agents changes and they run again automatically (same effect as in Claude Code).
 2. **`agent()` returns `null`** on a terminal failure (after retry/stall restarts) and on abort, just like in Claude Code;
    the script must handle `null`. Script errors (invalid schema, exceeded agent limit) throw.
-3. **No token/cost budget**: `budget` exposes only spending counters. The agent limit (`--max-agents`) is a hard cap: once reached, the next `agent()` throws `BudgetExceededError`
-   (inside `parallel`/`pipeline` it turns into `null`, the run finishes with a partial result and `budgetExceeded: true`).
+3. **No token/cost budget**: `budget` exposes only spending counters. The agent limit (`--max-agents`) is a hard cap: once reached, the next `agent()` throws `AgentLimitError`
+   (code `AGENT_LIMIT`; inside `parallel`/`pipeline` it turns into `null`, the run finishes with a partial result and `agentLimitExceeded: true`).
+   **An exhausted usage/subscription limit stops the run** instead of producing `null` holes: the runner reports it as error kind `usage_limit`
+   (not retried); the engine aborts running agents, does not start waiting ones, and this and every later `agent()` throws `UsageLimitError`
+   (code `USAGE_LIMIT`, rethrown by `parallel`/`pipeline` after their items settle). Unless the script catches it, the run ends `failed` with
+   `usageLimitHit: true` and an error pointing to `ultracode resume <runId>`, which reuses the journaled agents after the limit resets.
 4. **Subagents have workflows disabled** (`CLAUDE_CODE_DISABLE_WORKFLOWS=1` + `--disallowedTools Workflow`), otherwise the user's global
    `ultracode` setting would run recursive workflows from the children.
 5. **Subagents inherit CLAUDE.md, skills, and MCP** from the project (we do not use `--bare`). Their sessions are persisted
@@ -109,4 +113,4 @@ as `agent_event` by `ultracode run --json`.
 ## Scope of v1 / out of scope
 
 V1: everything above. **Out of v1** (in the "Next steps" section of `README.md`): worktree isolation, pause/restart of an individual agent,
-TUI/web dashboard, prompt-cache staggering, waiting for the usage limit, Agentis YAML integration, `agentType` (custom subagents).
+TUI/web dashboard, prompt-cache staggering, automatic waiting for the usage limit to reset (v1 stops the run, `resume` continues), Agentis YAML integration, `agentType` (custom subagents).

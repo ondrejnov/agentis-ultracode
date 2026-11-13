@@ -128,7 +128,8 @@ ignored with a warning in the log.
   and `--allowedTools …`), the prompt goes to stdin, and the environment has `CLAUDE_CODE_DISABLE_WORKFLOWS=1` and `IS_SANDBOX=1`.
 - It inherits the project's `CLAUDE.md`, skills, and MCP from `cwd` (`--bare` is not used).
 - Default system prompt: the final message is returned to the script, not to a human; return only data and ask nothing; stay within the given scope.
-- Attempts: up to 3 on a stall (`stallMs`), a transient API error (408/409/425/429/5xx, network errors, overload), or exit without a result (not when the usage limit is exhausted, the login is invalid, or the prompt is too long); the delay is `ULTRACODE_RETRY_BACKOFF_MS × attempt` (default 2 s). If the schema is not met, one retry.
+- Attempts: up to 3 on a stall (`stallMs`), a transient API error (408/409/425/429/5xx, network errors, overload), or exit without a result (not when the login is invalid or the prompt is too long). The delay has random jitter (between half and all of `ULTRACODE_RETRY_BACKOFF_MS × attempt`, default 2 s), and rate-limit/overload failures (HTTP 429/529, "overloaded", "rate limit") wait 5× longer, so concurrent agents do not retry in lockstep. If the schema is not met, one retry.
+  An **exhausted usage/subscription limit** ("You've hit your limit · resets …") is never retried: it stops the whole run (section 11).
   No retry: exceeded `timeoutMs`, exceeded `maxUsd`, exhausted turns, abort.
   A retry of an attempt that already did some work (≥ 1 model turn) **resumes the same claude session** with a short
   "continue where you stopped" prompt, so the work done so far is not repeated; the `agent_retry` event then has
@@ -161,7 +162,8 @@ log(`${ok.length}/${items.length} done`)
 - Runs all thunks concurrently and waits for all of them. The result has the order of the input.
 - A thunk that throws (or whose `agent()` throws) gives `null`; the error is logged (the first 10).
 - It never rejects because of a thunk error; it rejects only for incorrect use (`TypeError` when it is not an array,
-  `RangeError` above the item limit).
+  `RangeError` above the item limit) and with a `USAGE_LIMIT` error (exhausted usage limit, see section 11), which it
+  rethrows once all thunks have settled instead of turning it into `null`.
 - An already-resolved `Promise` instead of a thunk is tolerantly awaited, but the thunk is the correct form (it controls the moment of start).
 - The number of concurrently running agents is limited globally (see limits), not by the number of thunks.
 
@@ -184,6 +186,7 @@ const out = await pipeline(
   Time = the slowest single chain, not the sum of the slowest stages.
 - A stage receives `(previousResult, originalItem, index)`; the first stage receives `(item, item, index)`.
 - **A stage that throws:** the item is `null` in the result and the remaining stages are skipped for it.
+  Exception: a `USAGE_LIMIT` error (exhausted usage limit) is rethrown by `pipeline` once all items have settled.
 - **A stage that returns `null`** (typically a failed `agent()`): `null` is passed to the next stage as `prev` →
   handle it (`prev ? … : null`).
 - The result is an array in the same order as `items`; `null` at a position = the item failed.
@@ -223,7 +226,7 @@ budget.remaining()    // always Infinity
   `total` and `remaining()` exist only so that scripts written for Claude Code keep working — a loop guarded by
   `budget.total && …` never runs here, so give loops their own cap (rounds, items).
 - The only run-wide limit is the number of agents (`--max-agents`): once reached, every further `agent()` throws an error
-  with `code === 'BUDGET_EXCEEDED'` and the run is marked `budgetExceeded`. Agents already running finish.
+  with `code === 'AGENT_LIMIT'` and the run is marked `agentLimitExceeded`. Agents already running finish.
 
 ## 8. `workflow(nameOrRef, args?)`
 
@@ -233,7 +236,7 @@ const sub2 = await workflow({ scriptPath: '/abs/path/x.workflow.ts' })  // by pa
 ```
 
 - Runs another script inline and returns its return value. It shares concurrency, the agent counter,
-  the budget, and run cancellation.
+  the spending counters, and run cancellation.
 - `args` become the child's `args` global. The child is validated the same way as the root (invalid → error).
 - **Nesting only one level deep**: `workflow()` inside a child throws an error.
 - An unknown name / unreadable path / syntax error in the child throws — catch with `try/catch` if you want to continue.
@@ -277,7 +280,8 @@ Agents above the concurrency limit wait in a queue; a batch of 100 items therefo
 | invalid schema / option / prompt | `agent()` throws `TypeError`; the script crashes unless caught |
 | agent failed after all attempts | `agent()` returns `null`; `totals.failedAgents`++; event `agent_done` with `error` |
 | abort (Ctrl+C, SIGTERM) | agents are killed including their children; the run is `aborted`, exit 130; `agent()` returns `null` |
-| agent limit reached | `agent()` throws error `BUDGET_EXCEEDED`; in `parallel`/`pipeline` it becomes `null` |
+| agent limit reached | `agent()` throws error `AGENT_LIMIT`; in `parallel`/`pipeline` it becomes `null`; `agentLimitExceeded: true` |
+| usage/subscription limit exhausted | the run stops: running agents are aborted, waiting ones do not start, this and every later `agent()` throws `USAGE_LIMIT` (`parallel`/`pipeline` rethrow it after their items settle); unless caught, the run is `failed`, exit 1, `usageLimitHit: true`, and the error says to run `ultracode resume <runId>` after the limit resets (finished agents come from the journal) |
 | exception in the script | run `failed`, exit 1, `error` in `run.json`; completed agents are in the journal for resume |
 | `DeterminismError` | same as an exception in the script |
 | script waits on a Promise that is never resolved | error "Script stalled" |
@@ -314,5 +318,5 @@ in the schema. Consequences:
 ## 14. What is not supported
 
 `isolation: 'worktree'`, `agentType`, input during the run (an agent cannot ask), pausing/restarting a single
-agent, TUI/web dashboard, waiting for the usage limit (the agent fails → `null`), staggering of the prompt cache, nesting
+agent, TUI/web dashboard, automatic waiting for the usage limit to reset (the run stops with `USAGE_LIMIT`; `resume` it later), staggering of the prompt cache, nesting
 `workflow()` deeper than 1, access to files and the shell from the script. For solutions see section 10 of `SKILL.md`.

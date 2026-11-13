@@ -3,7 +3,9 @@ import { availableParallelism } from 'node:os'
 import { describe, test } from 'node:test'
 import { resolveAgentisTelemetry, resolveConcurrency, runWorkflow } from '../../src/engine/engine.ts'
 import { Semaphore } from '../../src/engine/semaphore.ts'
-import { eventsOf, journalOf, makeProject, makeRunner, scriptDeps } from './helpers.ts'
+import { eventsOf, journalOf, makeProject, makeRunner, readJsonFile, scriptDeps } from './helpers.ts'
+import type { ScriptApi } from './helpers.ts'
+import { join } from 'node:path'
 
 describe('concurrency (semaphore)', () => {
   test('opts.concurrency is really respected (and used)', async () => {
@@ -99,7 +101,7 @@ describe('concurrency (semaphore)', () => {
 })
 
 describe('agent limit', () => {
-  test('maxAgents: the next call throws BudgetExceededError, becomes null in parallel(), and the run finishes', async () => {
+  test('maxAgents: the next call throws AgentLimitError, becomes null in parallel(), and the run finishes', async () => {
     const p = makeProject()
     try {
       const stub = makeRunner()
@@ -108,7 +110,7 @@ describe('agent limit', () => {
         scriptDeps(async (api) => api.parallel(Array.from({ length: 5 }, (_, i) => () => api.agent(`p${i}`)))),
       )
       assert.equal(summary.status, 'completed')
-      assert.equal(summary.budgetExceeded, true)
+      assert.equal(summary.agentLimitExceeded, true)
       assert.equal(stub.calls.length, 3)
       assert.deepEqual(summary.result, ['out:p0', 'out:p1', 'out:p2', null, null])
       assert.equal(summary.totals.agents, 3)
@@ -117,7 +119,7 @@ describe('agent limit', () => {
     }
   })
 
-  test('maxAgents: uncaught error in script → failed with budgetExceeded', async () => {
+  test('maxAgents: uncaught error in script → failed with agentLimitExceeded', async () => {
     const p = makeProject()
     try {
       const stub = makeRunner()
@@ -129,7 +131,7 @@ describe('agent limit', () => {
         }),
       )
       assert.equal(summary.status, 'failed')
-      assert.equal(summary.budgetExceeded, true)
+      assert.equal(summary.agentLimitExceeded, true)
       assert.match(summary.error ?? '', /Agent limit of 2 per run exceeded/)
       assert.equal(stub.calls.length, 2)
     } finally {
@@ -137,6 +139,115 @@ describe('agent limit', () => {
     }
   })
 
+})
+
+describe('usage limit', () => {
+  /** Starts a..e at once (allSettled, so no error is lost), then calls one more agent: the outcome of each is recorded. */
+  const body = async (api: ScriptApi) => {
+    const settled = await Promise.allSettled(['a', 'b', 'c', 'd', 'e'].map((x) => api.agent(x)))
+    const first = settled.map((r) => (r.status === 'fulfilled' ? r.value : `throw:${(r.reason as { code?: string }).code}`))
+    const after = await api.agent('after')
+    return { first, after }
+  }
+  const limitRunner = () =>
+    makeRunner({
+      delayMs: (req) => (req.prompt === 'b' ? 20 : req.prompt === 'c' ? 5000 : 0),
+      fail: (req) => (req.prompt === 'b' ? "Usage limit exhausted (HTTP 429): You've hit your limit · resets 5pm" : undefined),
+      failKind: () => 'usage_limit',
+    })
+
+  test('first usage_limit failure stops the run: running agents aborted, waiters never start, agent() throws USAGE_LIMIT', async () => {
+    const p = makeProject()
+    try {
+      const stub = limitRunner()
+      const t0 = Date.now()
+      let first: unknown
+      const summary = await runWorkflow(
+        { workflow: p.script(), cwd: p.cwd, runner: stub.runner, concurrency: 2 },
+        scriptDeps(async (api) => {
+          const settled = await Promise.allSettled(['a', 'b', 'c', 'd', 'e'].map((x) => api.agent(x)))
+          first = settled.map((r) => (r.status === 'fulfilled' ? r.value : `throw:${(r.reason as { code?: string }).code}`))
+          await api.agent('after')
+          return 'never'
+        }),
+      )
+      assert.ok(Date.now() - t0 < 4000, 'the slow agent c must have been aborted')
+      assert.deepEqual(first, ['out:a', 'throw:USAGE_LIMIT', 'throw:USAGE_LIMIT', 'throw:USAGE_LIMIT', 'throw:USAGE_LIMIT'])
+      // d and e were waiting for a slot and never started; 'after' never reached the runner
+      assert.deepEqual(stub.prompts(), ['a', 'b', 'c'])
+      assert.equal(summary.status, 'failed')
+      assert.equal(summary.usageLimitHit, true)
+      assert.equal(summary.agentLimitExceeded, undefined)
+      assert.match(summary.error ?? '', /^Usage limit exhausted \(HTTP 429\): You've hit your limit · resets 5pm\. The run was stopped/)
+      assert.ok((summary.error ?? '').includes(`ultracode resume ${summary.runId}`), summary.error)
+      assert.equal(readJsonFile(join(summary.runDir, 'run.json')).usageLimitHit, true)
+      assert.deepEqual(journalOf(summary).map((j) => j.label), ['a'])
+      const stops = eventsOf(summary).filter((e) => e.t === 'log' && /Usage limit exhausted, stopping the run/.test(e.message))
+      assert.equal(stops.length, 1)
+    } finally {
+      p.cleanup()
+    }
+  })
+
+  test('resume after the limit resets reuses journaled agents and completes', async () => {
+    const p = makeProject()
+    try {
+      const file = p.script()
+      const s1 = await runWorkflow({ workflow: file, cwd: p.cwd, runner: limitRunner().runner, concurrency: 2 }, scriptDeps(body))
+      assert.equal(s1.status, 'failed')
+      assert.equal(s1.usageLimitHit, true)
+
+      const stub2 = makeRunner()
+      const s2 = await runWorkflow({ workflow: file, cwd: p.cwd, runner: stub2.runner, resumeRunId: s1.runId }, scriptDeps(body))
+      assert.equal(s2.status, 'completed', s2.error)
+      assert.equal(s2.usageLimitHit, undefined)
+      assert.equal(readJsonFile(join(s2.runDir, 'run.json')).usageLimitHit, undefined)
+      assert.deepEqual(s2.result, { first: ['out:a', 'out:b', 'out:c', 'out:d', 'out:e'], after: 'out:after' })
+      assert.equal(s2.totals.cachedAgents, 1)
+      assert.deepEqual(stub2.prompts().sort(), ['after', 'b', 'c', 'd', 'e'])
+    } finally {
+      p.cleanup()
+    }
+  })
+
+  test('a script that catches USAGE_LIMIT and returns completes, still flagged usageLimitHit', async () => {
+    const p = makeProject()
+    try {
+      const stub = makeRunner({ fail: () => 'Usage limit exhausted: limit reached', failKind: () => 'usage_limit' })
+      const summary = await runWorkflow(
+        { workflow: p.script(), cwd: p.cwd, runner: stub.runner },
+        scriptDeps(async (api) => {
+          try {
+            await api.agent('x')
+            return 'no throw'
+          } catch (e) {
+            return (e as { code?: string }).code
+          }
+        }),
+      )
+      assert.equal(summary.status, 'completed')
+      assert.equal(summary.result, 'USAGE_LIMIT')
+      assert.equal(summary.usageLimitHit, true)
+    } finally {
+      p.cleanup()
+    }
+  })
+
+  test('other agent failures (api, exit) keep returning null and do not stop the run', async () => {
+    const p = makeProject()
+    try {
+      const stub = makeRunner({ fail: (req) => (req.prompt === 'x' ? 'API error (HTTP 429): rate limited' : undefined), failKind: () => 'api' })
+      const summary = await runWorkflow(
+        { workflow: p.script(), cwd: p.cwd, runner: stub.runner },
+        scriptDeps(async (api) => [await api.agent('x'), await api.agent('y')]),
+      )
+      assert.equal(summary.status, 'completed')
+      assert.deepEqual(summary.result, [null, 'out:y'])
+      assert.equal(summary.usageLimitHit, undefined)
+    } finally {
+      p.cleanup()
+    }
+  })
 })
 
 describe('budget', () => {

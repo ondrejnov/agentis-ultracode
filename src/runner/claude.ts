@@ -19,6 +19,8 @@
  *    Schema…" (arrives as `stderr` events), synthetic result.
  *  - API errors: `result` with `is_error:true`, exit 1. `subtype` is often still `success`; `api_error_status` tells them
  *    apart (HTTP code or missing on a network error). Exceeded budget: `subtype:"error_max_budget_usd"`.
+ *    An exhausted usage/subscription limit ("You've hit your limit · resets …", "… usage limit reached") is its own
+ *    kind `usage_limit` (not retried; the engine stops the run, `resume` continues after the reset).
  *  - agentiscode writes `[agentiscode] command: …` and its own argument errors to its real stderr.
  *  - `cost_usd` is only in the `result` event → for killed attempts the cost is unknown (counted as 0),
  *    but tokens are still counted from the `step` snapshots.
@@ -62,6 +64,8 @@ const MAX_TIMER_MS = 2_147_483_647
 const DEFAULT_MAX_ATTEMPTS = 3
 const MAX_ATTEMPTS_CAP = 6
 const DEFAULT_BACKOFF_MS = 2000
+/** Rate-limit/overload failures (HTTP 429/529, "overloaded", "rate limit") back off this many times longer than other retries. */
+const RATE_LIMIT_BACKOFF_FACTOR = 5
 /** After SIGTERM we wait this many ms for exit, then SIGKILL the whole group. */
 const DEFAULT_KILL_GRACE_MS = 3000
 /** After SIGKILL we wait this many ms for 'close', then give up and release the pipes (child outside the group). */
@@ -92,7 +96,6 @@ export function resolveClaudeBin(): string {
   return 'agentiscode'
 }
 
-/** agentiscode `--adapter`: env `ULTRACODE_AGENT_ADAPTER`, otherwise `claude` (schemas etc. are claude-specific). */
 /** claude's `--debug-file` in the agent directory; off with env `ULTRACODE_CLAUDE_DEBUG=0`. */
 export function claudeDebugEnabled(): boolean {
   const v = (process.env['ULTRACODE_CLAUDE_DEBUG'] ?? '').trim().toLowerCase()
@@ -111,6 +114,7 @@ export function resumePrompt(reason: string): string {
   ].join(' ')
 }
 
+/** agentiscode `--adapter`: env `ULTRACODE_AGENT_ADAPTER`, otherwise `claude` (schemas etc. are claude-specific). */
 export function resolveAgentAdapter(): string {
   const fromEnv = process.env['ULTRACODE_AGENT_ADAPTER']
   return fromEnv && fromEnv.trim() ? fromEnv.trim() : 'claude'
@@ -194,6 +198,8 @@ interface Outcome {
   numTurns: number
   toolCalls: number
   error?: { kind: ClaudeErrorKind; message: string }
+  /** HTTP status of a failed API call (`api_error_status` of the result event), when known. */
+  httpStatus?: number
   /** May the attempt be retried? */
   retryable: boolean
 }
@@ -391,7 +397,8 @@ export async function runClaude(req: ClaudeRunRequest): Promise<ClaudeRunResult>
       reason: `${err.kind}: ${err.message}`,
       ...(resumeSessionId ? { resumeSessionId } : {}),
     })
-    const aborted = await sleepAbortable(tun.backoffMs * attempt, req.signal)
+    const rateLimited = err.kind === 'api' && isRateLimitError(outcome.httpStatus ?? null, err.message)
+    const aborted = await sleepAbortable(retryDelayMs(tun.backoffMs, attempt, rateLimited), req.signal)
     if (aborted) return finish(false, attempt, outcome, { kind: 'aborted', message: 'Agent run was aborted.' })
   }
 
@@ -693,12 +700,19 @@ function runAttempt(ctx: AttemptContext): Promise<Outcome> {
           return fail('api', `Agent exhausted the maximum number of turns: ${text}`, false)
         }
         const status = typeof res.api_error_status === 'number' ? res.api_error_status : null
+        const httpStatus = status !== null ? { httpStatus: status } : {}
+        if (isUsageLimitError(text)) {
+          return { ...fail('usage_limit', `Usage limit exhausted${status ? ` (HTTP ${status})` : ''}: ${truncate(text, 600)}`, false), ...httpStatus }
+        }
         const transient = isTransientApiError(status, text)
-        return fail('api', `API error${status ? ` (HTTP ${status})` : ''}: ${truncate(text, 600)}`, transient)
+        return { ...fail('api', `API error${status ? ` (HTTP ${status})` : ''}: ${truncate(text, 600)}`, transient), ...httpStatus }
       }
 
       // no result event
       const how = exitSignal ? `by signal ${exitSignal}` : `with code ${exitCode}`
+      if (isUsageLimitError(stderrText)) {
+        return fail('usage_limit', `Usage limit exhausted (agent ended ${how}): ${truncate(stderrText, 600)}`, false)
+      }
       if (/is not a valid JSON Schema/i.test(stderrText)) {
         return fail('schema', `claude rejected the schema: ${truncate(stderrText, 600)}`, false)
       }
@@ -806,6 +820,33 @@ function describeResultError(res: Json): string {
   if (Array.isArray(res.errors) && res.errors.length > 0) return res.errors.map(String).join('; ')
   if (typeof res.subtype === 'string') return res.subtype
   return 'unknown error'
+}
+
+/**
+ * Is the error an exhausted usage/subscription limit of the account (Claude subscription 5-hour/weekly limit, API usage limit)?
+ * Every further agent would fail the same way until the limit resets, so the engine stops the run. Deliberately narrow:
+ * ordinary rate limiting (429 "rate limit"), auth errors and a low credit balance do not match.
+ */
+export function isUsageLimitError(text: string): boolean {
+  return /usage limits?\b|hit your (?:(?!rate\b)[\w-]+ )?limit|\b(?:5-hour|session|weekly|opus|sonnet) limit reached|subscription limit/i.test(text)
+}
+
+/** Is it a rate-limit/overload failure (HTTP 429/529, "overloaded", "rate limit")? Those get a longer retry backoff. */
+export function isRateLimitError(status: number | null, text: string): boolean {
+  if (status === 429 || status === 529) return true
+  return /overloaded|rate.?limit|too many requests/i.test(text)
+}
+
+/**
+ * Delay before retry attempt `attempt + 1`, with "equal jitter": half of the ceiling is fixed, the other half random, so
+ * agents that failed together (e.g. 16 agents hitting 429 at once) do not retry in lockstep, yet each waits at least half.
+ * Ceiling = `baseMs × attempt`, `× RATE_LIMIT_BACKOFF_FACTOR` for rate-limit/overload failures. `baseMs` 0 = no wait.
+ */
+export function retryDelayMs(baseMs: number, attempt: number, rateLimited: boolean, random: () => number = Math.random): number {
+  const ceiling = baseMs * Math.max(1, attempt) * (rateLimited ? RATE_LIMIT_BACKOFF_FACTOR : 1)
+  if (!(ceiling > 0)) return 0
+  const r = Math.min(1, Math.max(0, random()))
+  return Math.round(ceiling / 2 + (r * ceiling) / 2)
 }
 
 /**

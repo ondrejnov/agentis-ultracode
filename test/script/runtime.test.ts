@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { BudgetExceededError, ScriptValidationError } from '../../src/errors.ts'
+import { AgentLimitError, ScriptValidationError, UsageLimitError } from '../../src/errors.ts'
 import { BUDGET_SLOTS } from '../../src/types.ts'
 import { META, budgetBuffer, deferred, makeHooks, run, runWithMeta, waitFor } from './helpers.ts'
 
@@ -270,10 +270,10 @@ return [r instanceof Object, r.list instanceof Array, Array.isArray(r.list), r.l
     assert.deepEqual(res.value, [true, true, true, [2, 4], ['a']])
   })
 
-  it('hook error (BudgetExceededError) appears in the script as an Error with the same message and code', async () => {
+  it('hook error (AgentLimitError) appears in the script as an Error with the same message and code', async () => {
     const m = makeHooks({
       agent: () => {
-        throw new BudgetExceededError('Budget exhausted: 100/100 tokens')
+        throw new AgentLimitError('Agent limit of 100 per run exceeded.')
       },
     })
     const res = await run(
@@ -281,22 +281,49 @@ return [r instanceof Object, r.list instanceof Array, Array.isArray(r.list), r.l
       { hooks: m.hooks },
     )
     assert.deepEqual(res.value, {
-      msg: 'Budget exhausted: 100/100 tokens',
-      code: 'BUDGET_EXCEEDED',
-      name: 'BudgetExceededError',
+      msg: 'Agent limit of 100 per run exceeded.',
+      code: 'AGENT_LIMIT',
+      name: 'AgentLimitError',
       isError: true,
     })
   })
 
-  it('uncaught hook error fails the script as BudgetExceededError (instanceof and code)', async () => {
+  it('hook error (UsageLimitError) appears in the script with code USAGE_LIMIT', async () => {
+    const m = makeHooks({
+      agent: () => {
+        throw new UsageLimitError('Usage limit exhausted. ultracode resume wf_x')
+      },
+    })
+    const res = await run(
+      `try { await agent('x'); return 'did not throw' } catch (e) { return { msg: e.message, code: e.code, name: e.name } }\n`,
+      { hooks: m.hooks },
+    )
+    assert.deepEqual(res.value, { msg: 'Usage limit exhausted. ultracode resume wf_x', code: 'USAGE_LIMIT', name: 'UsageLimitError' })
+  })
+
+  it('uncaught UsageLimitError crosses the worker boundary back as UsageLimitError (instanceof and code)', async () => {
     const m = makeHooks({
       agent: async () => {
-        throw new BudgetExceededError('limit')
+        throw new UsageLimitError('limit gone')
       },
     })
     await assert.rejects(run("await agent('x')\n", { hooks: m.hooks }), (e: unknown) => {
-      assert.ok(e instanceof BudgetExceededError)
-      assert.equal(e.code, 'BUDGET_EXCEEDED')
+      assert.ok(e instanceof UsageLimitError)
+      assert.equal(e.code, 'USAGE_LIMIT')
+      assert.equal(e.message, 'limit gone')
+      return true
+    })
+  })
+
+  it('uncaught hook error fails the script as AgentLimitError (instanceof and code)', async () => {
+    const m = makeHooks({
+      agent: async () => {
+        throw new AgentLimitError('limit')
+      },
+    })
+    await assert.rejects(run("await agent('x')\n", { hooks: m.hooks }), (e: unknown) => {
+      assert.ok(e instanceof AgentLimitError)
+      assert.equal(e.code, 'AGENT_LIMIT')
       assert.equal(e.message, 'limit')
       return true
     })
@@ -310,6 +337,30 @@ return [r instanceof Object, r.list instanceof Array, Array.isArray(r.list), r.l
 })
 
 describe('parallel', () => {
+  it('USAGE_LIMIT is not swallowed into null: parallel rejects with it after all thunks settle (also from a nested parallel)', async () => {
+    let slowDone = false
+    const m = makeHooks({
+      agent: async (prompt) => {
+        if (prompt === 'limit') throw new UsageLimitError('usage gone')
+        if (prompt === 'slow') {
+          await new Promise((r) => setTimeout(r, 30))
+          slowDone = true
+        }
+        return 'ok:' + prompt
+      },
+    })
+    const res = await run(
+      `const out = []
+try { await parallel([() => agent('a'), () => agent('limit'), () => agent('slow')]) } catch (e) { out.push(e.code, e.name) }
+try { await parallel([() => parallel([() => agent('limit')]), () => agent('b')]) } catch (e) { out.push(e.code) }
+return out\n`,
+      { hooks: m.hooks },
+    )
+    assert.deepEqual(res.value, ['USAGE_LIMIT', 'UsageLimitError', 'USAGE_LIMIT'])
+    assert.ok(slowDone, 'parallel waited for the other thunks')
+    assert.ok(!m.logs().some((l) => /usage gone/.test(l)), m.logs().join('\n'))
+  })
+
   it('keeps result order even when completed in reverse; a thunk that throws → null, does not throw', async () => {
     const gates = [deferred<string>(), deferred<string>(), deferred<string>()]
     const m = makeHooks({ agent: (prompt) => gates[Number(prompt)]!.promise })
@@ -489,15 +540,37 @@ describe('pipeline', () => {
     await assert.rejects(run("await pipeline([1], 'not-a-function')\n"), /stage 1 must be a function/)
   })
 
-  it('agent() inside pipeline: budget error → null for the item, the run completes', async () => {
+  it('agent() inside pipeline: agent-limit error → null for the item, the run completes', async () => {
     const m = makeHooks({
       agent: (prompt) => {
-        if (prompt.endsWith('2')) throw new BudgetExceededError('cap')
+        if (prompt.endsWith('2')) throw new AgentLimitError('cap')
         return 'ok:' + prompt
       },
     })
     const res = await run("return await pipeline([1, 2, 3], (i) => agent('p' + i))\n", { hooks: m.hooks })
     assert.deepEqual(res.value, ['ok:p1', null, 'ok:p3'])
+  })
+
+  it('USAGE_LIMIT inside pipeline is not swallowed: later stages are skipped and pipeline rejects after all items settle', async () => {
+    let settledP3 = false
+    const m = makeHooks({
+      agent: async (prompt) => {
+        if (prompt === 'p2') throw new UsageLimitError('usage gone')
+        if (prompt === 'p3') {
+          await new Promise((r) => setTimeout(r, 30))
+          settledP3 = true
+        }
+        return 'ok:' + prompt
+      },
+    })
+    const res = await run(
+      `try { await pipeline([1, 2, 3], (i) => agent('p' + i), (prev) => agent('second:' + prev)); return 'no throw' } catch (e) { return e.code }\n`,
+      { hooks: m.hooks },
+    )
+    assert.equal(res.value, 'USAGE_LIMIT')
+    assert.ok(settledP3, 'pipeline waited for the other items')
+    assert.ok(!m.prompts().includes('second:ok:p3'), m.prompts().join(','))
+    assert.ok(!m.logs().some((l) => /usage gone/.test(l)), 'not reported as an ordinary null failure')
   })
 })
 

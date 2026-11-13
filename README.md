@@ -192,6 +192,7 @@ Co si z ukázky odnést:
   a ověření jednoho nečeká na dohledání ostatních.
 - **`null` znamená selhání.** `agent()` nevyhazuje výjimku; když agent selže i po opakovaných pokusech,
   vrátí `null`. Skript to musí ošetřit a selhání započítat do výsledku, aby výsledek nepředstíral úplnost.
+  Výjimkou je vyčerpaný usage limit účtu: ten běh zastaví (viz níže), místo aby z něj byly samé `null`.
 - **`return`** je výsledek běhu. Vypíše se jako JSON na stdout a uloží do `result.json`.
 
 Hotové příklady jsou v adresáři [`examples/`](examples/):
@@ -231,6 +232,12 @@ argumentu chybu. Čas nebo náhodu předej přes `args`.
 
 **Limit je tvrdý.** `--max-agents` běh po překročení ukončí. Hotovou práci neztratíš:
 zvyš limit a pokračuj přes `resume`.
+
+**Vyčerpaný usage limit běh zastaví.** Když agent narazí na vyčerpaný usage/subscription limit účtu
+(„You've hit your limit · resets …“), runtime běžící agenty přeruší, čekající už nespustí a toto i každé další
+`agent()` vyhodí chybu s kódem `USAGE_LIMIT` (ani `parallel`/`pipeline` ji nepřevedou na `null`). Běh skončí jako
+`failed` s `usageLimitHit: true` a chybou s návodem; po resetu limitu pokračuj přes `ultracode resume <runId>`,
+dokončení agenti se vezmou z journalu. Běžný rate limit (HTTP 429/529) se dál opakuje s delší pauzou.
 
 ## API skriptu
 
@@ -348,7 +355,7 @@ diagram. Plánované agenty a šipky mezi nimi lze deklarovat v `meta.phases[].a
 Každý běh se zapisuje do `<cwd>/.ultracode/runs/<runId>/`:
 
 ```text
-run.json         shrnutí a stav běhu (průběžně aktualizovaný): status, totals, error, budgetExceeded
+run.json         shrnutí a stav běhu (průběžně aktualizovaný): status, totals, error, agentLimitExceeded, usageLimitHit
 script.ts        kopie spuštěného skriptu
 args.json        vstup
 options.json     volby běhu (model, effort, limity), které zdědí `resume`
@@ -425,7 +432,7 @@ V pořadí, v jakém dávají smysl:
 2. **`agentType`**: vlastní typy subagentů (system prompt, nástroje, model).
 3. **TUI nebo web dashboard**: živý strom fází a agentů místo `status` a `logs`.
 4. **Stagger prompt-cache**: rozložení startu agentů se sdíleným prefixem, aby se cache zahřála jednou.
-5. **Čekání na usage limit**: pauza běhu a automatické pokračování místo `null` u agentů.
+5. **Čekání na usage limit**: automatické pokračování po resetu limitu (dnes se běh zastaví a pokračuje se ručně přes `resume`).
 6. **Pauza a restart jednotlivého agenta.**
 
 ## Známá omezení

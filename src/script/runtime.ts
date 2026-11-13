@@ -165,6 +165,14 @@ export function installRuntime(bridge: RuntimeBridge, cfg: RuntimeConfig): void 
     }
   }
 
+  /**
+   * Errors that stop the whole run instead of turning into `null` (exhausted usage limit, code USAGE_LIMIT): every further
+   * agent() would fail the same way, so `parallel`/`pipeline` wait for their items to settle and then rethrow the first one.
+   */
+  function isRunStopping(e: any): boolean {
+    return !!e && typeof e === 'object' && e.code === 'USAGE_LIMIT'
+  }
+
   function checkCount(who: string, count: number): void {
     if (count > cfg.maxItems) {
       throw new RangeError(who + ': too many items (' + count + '), maximum is ' + cfg.maxItems + '. Split the work into batches.')
@@ -175,6 +183,7 @@ export function installRuntime(bridge: RuntimeBridge, cfg: RuntimeConfig): void 
     if (!isArray(thunks)) throw new TypeError('parallel(): expects an array of functions (thunks), e.g. parallel(items.map((x) => () => agent(...)))')
     checkCount('parallel()', (thunks as unknown[]).length)
     const failures = failureReporter('parallel()')
+    let stop: { error: unknown } | null = null
     // All thunks are started synchronously in order; a failure of one is just null in its position.
     // A ready Promise instead of a function is awaited leniently (otherwise its result would be silently lost).
     const results = await promiseAll(
@@ -182,12 +191,14 @@ export function installRuntime(bridge: RuntimeBridge, cfg: RuntimeConfig): void 
         try {
           return typeof thunk === 'function' ? await thunk() : await thunk
         } catch (e) {
-          failures.add('item ' + index, e)
+          if (isRunStopping(e)) stop = stop || { error: e }
+          else failures.add('item ' + index, e)
           return null
         }
       }),
     )
     failures.flush()
+    if (stop) throw (stop as { error: unknown }).error
     return results
   }
 
@@ -198,15 +209,18 @@ export function installRuntime(bridge: RuntimeBridge, cfg: RuntimeConfig): void 
       if (typeof stages[s] !== 'function') throw new TypeError('pipeline(): stage ' + (s + 1) + ' must be a function (prev, original, index)')
     }
     const failures = failureReporter('pipeline()')
+    let stop: { error: unknown } | null = null
     // Each item passes through the stages independently – no barrier between stages.
     const results = await promiseAll(
       arrayFrom(items as unknown[], async (item: unknown, index: number) => {
         let current: unknown = item
         for (let s = 0; s < stages.length; s++) {
+          if (stop) return null // the run is stopping: later stages would only fail the same way
           try {
             current = await (stages[s] as Function)(current, item, index)
           } catch (e) {
-            failures.add('item ' + index + ', stage ' + (s + 1), e)
+            if (isRunStopping(e)) stop = stop || { error: e }
+            else failures.add('item ' + index + ', stage ' + (s + 1), e)
             return null
           }
         }
@@ -214,6 +228,7 @@ export function installRuntime(bridge: RuntimeBridge, cfg: RuntimeConfig): void 
       }),
     )
     failures.flush()
+    if (stop) throw (stop as { error: unknown }).error
     return results
   }
 

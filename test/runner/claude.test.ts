@@ -457,6 +457,40 @@ describe('runClaude – retry', () => {
     assert.equal(r.attempts, 2)
   })
 
+  it('exhausted usage limit → kind usage_limit, not retried', async () => {
+    setup()
+    const r = await runClaude(req('x [[fake:usage-limit]]', { maxAttempts: 3 }))
+    assert.equal(r.ok, false)
+    assert.equal(r.error?.kind, 'usage_limit')
+    assert.equal(r.attempts, 1)
+    assert.match(r.error!.message, /HTTP 429/)
+  })
+
+  it('rate-limit/overload failures back off longer than other transient failures', async () => {
+    setup()
+    process.env['ULTRACODE_RETRY_BACKOFF_MS'] = '100'
+    /** ms between the `retry` progress event and the start of the next attempt (≈ the backoff wait). */
+    const gap = async (prompt: string): Promise<number> => {
+      let retryAt = 0
+      let gapMs = -1
+      const r = await runClaude(
+        req(prompt, {
+          maxAttempts: 2,
+          onProgress: (e) => {
+            if (e.kind === 'retry') retryAt = Date.now()
+            else if (e.kind === 'start' && e.attempt === 2) gapMs = Date.now() - retryAt
+          },
+        }),
+      )
+      assert.equal(r.ok, true)
+      return gapMs
+    }
+    const overloaded = await gap('x [[fake:apierror-times 1]]') // HTTP 529: ceiling 100 × 1 × 5 = 500, at least 250
+    const crashed = await gap('y [[fake:fail-times 1]]') // exit: ceiling 100, at most 100
+    assert.ok(overloaded >= 240, `529 backoff ${overloaded} ms`)
+    assert.ok(crashed >= 40 && crashed < 240, `exit backoff ${crashed} ms`)
+  })
+
   it('backoff grows with the attempt and is interruptible by abort', async () => {
     setup()
     process.env['ULTRACODE_RETRY_BACKOFF_MS'] = '60000'

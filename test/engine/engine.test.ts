@@ -36,7 +36,8 @@ describe('runWorkflow: basic run', () => {
       assert.equal(summary.totals.toolCalls, 2)
       assert.equal(summary.totals.usage.outputTokens, 20)
       assert.ok(Math.abs(summary.totals.costUsd - 0.002) < 1e-9)
-      assert.equal(summary.budgetExceeded, undefined)
+      assert.equal(summary.agentLimitExceeded, undefined)
+      assert.equal(summary.usageLimitHit, undefined)
       assert.ok(summary.durationMs >= 0)
       assert.ok(Date.parse(summary.endedAt) >= Date.parse(summary.startedAt))
 

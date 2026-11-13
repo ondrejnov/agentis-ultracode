@@ -571,6 +571,11 @@ if (notes.length === MAX_ROUNDS) log(`Stopped at the cap of ${MAX_ROUNDS} rounds
 
 `budget.spent()` / `budget.spentUsd()` are informational counters (useful in `log()` and in the returned stats).
 
+When the agent limit is reached, `agent()` throws with `code === 'AGENT_LIMIT'`; a loop that should return what it has
+so far may catch exactly that code. Do not swallow `USAGE_LIMIT` (exhausted usage limit of the account) in a catch-all
+handler: rethrow it, so the run ends `failed` and `ultracode resume <runId>` can continue after the limit resets
+(see `examples/fix-until-green.workflow.ts`).
+
 ## 12. Hybrid: scout inline, then fan-out
 
 The best workflows start with *you* determining the scope using ordinary tools and passing it to the script:

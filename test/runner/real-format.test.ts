@@ -88,6 +88,15 @@ describe('real stream: errors', () => {
     assert.ok(r.costUsd > 0)
   })
 
+  it('exhausted usage limit (HTTP 429 "hit your limit") → usage_limit, no retry', async () => {
+    // stream modelled on the apierror sample with the subscription-limit message claude prints when the limit is exhausted
+    const r = await replay('sample-stream-usage-limit.jsonl', 1, { maxAttempts: 3 })
+    assert.equal(r.ok, false)
+    assert.equal(r.error?.kind, 'usage_limit')
+    assert.equal(r.attempts, 1)
+    assert.match(r.error!.message, /^Usage limit exhausted \(HTTP 429\): You've hit your limit · resets 5pm/)
+  })
+
   it('network error without HTTP code (ECONNREFUSED) is transient → retried', async () => {
     const r = await replay('sample-stream-api-retry.jsonl', 1, { maxAttempts: 2 })
     assert.equal(r.ok, false)

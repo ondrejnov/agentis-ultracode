@@ -21,10 +21,14 @@ const ERRORS_PATH = join(ROOT, 'src', 'errors.ts')
 type RunScriptFn = (req: any) => Promise<{ meta: unknown; value: any }>
 
 let runScript: RunScriptFn | null = null
-let BudgetExceededError: new (message: string) => Error = Error
+type ErrorCtor = new (message: string) => Error
+let AgentLimitError: ErrorCtor = Error
+let UsageLimitError: ErrorCtor = Error
 if (existsSync(HOST_PATH)) {
   runScript = ((await import(pathToFileURL(HOST_PATH).href)) as { runScript: RunScriptFn }).runScript
-  BudgetExceededError = ((await import(pathToFileURL(ERRORS_PATH).href)) as { BudgetExceededError: typeof BudgetExceededError }).BudgetExceededError
+  const errors = (await import(pathToFileURL(ERRORS_PATH).href)) as { AgentLimitError: ErrorCtor; UsageLimitError: ErrorCtor }
+  AgentLimitError = errors.AgentLimitError
+  UsageLimitError = errors.UsageLimitError
 }
 const SKIP = runScript ? false : 'src/script/host.ts does not exist yet (SCRIPT module); the integrator will run this test'
 
@@ -239,28 +243,30 @@ describe('audit-routes (real host, mock agents)', { skip: SKIP }, () => {
     assert.equal(r.value.stats.confirmed, 1)
   })
 
-  test('budget exhausted before synthesis: confirmed findings are returned (not failed) with budgetExceeded', async () => {
-    const r = await run(
-      'audit-routes',
-      { root: 'src' },
-      (c, i, view) => {
-        if (c.label.startsWith('synthesize:')) {
-          view![0] = 1_000_000
-          throw new BudgetExceededError('Output token budget exhausted (1000000 of 1000000).')
-        }
-        return base(c, i, view)
-      },
-      { total: 1_000_000 },
-    )
+  test('agent limit reached before synthesis: confirmed findings are returned (not failed) with agentLimitExceeded', async () => {
+    const r = await run('audit-routes', { root: 'src' }, (c, i, view) => {
+      if (c.label.startsWith('synthesize:')) throw new AgentLimitError('Agent limit of 10 per run exceeded.')
+      return base(c, i, view)
+    })
     assert.equal(r.value.report, null)
     assert.equal(r.value.confirmed.length, 1)
     assert.equal(r.value.confirmed[0].gid, 'F1')
     assert.equal(r.value.stats.confirmed, 1)
-    assert.equal(r.value.stats.budgetExceeded, true)
-    assert.ok(r.logs.some((l) => /budget/i.test(l)), r.logs.join('\n'))
+    assert.equal(r.value.stats.agentLimitExceeded, true)
+    assert.ok(r.logs.some((l) => /agent limit/i.test(l)), r.logs.join('\n'))
   })
 
-  test('a non-budget synthesis error keeps propagating', async () => {
+  test('an exhausted usage limit during synthesis fails the script (resume continues later)', async () => {
+    await assert.rejects(
+      run('audit-routes', {}, (c, i, v) => {
+        if (c.label.startsWith('synthesize:')) throw new UsageLimitError('usage limit exhausted')
+        return base(c, i, v)
+      }),
+      (e: any) => e.code === 'USAGE_LIMIT',
+    )
+  })
+
+  test('a non-agent-limit synthesis error keeps propagating', async () => {
     await assert.rejects(
       run('audit-routes', {}, (c, i, v) => {
         if (c.label.startsWith('synthesize:')) throw new Error('something else')
@@ -389,18 +395,18 @@ describe('fix-until-green (real host, mock agents)', { skip: SKIP }, () => {
     assert.deepEqual(r.value.confirmation.suspicious, ['skipped test'])
   })
 
-  test('a script error inside the loop (e.g. budget) returns a partial result, not an exception', async () => {
+  test('a script error inside the loop (e.g. agent limit) returns a partial result, not an exception', async () => {
     const r = await run('fix-until-green', { command: 'x' }, (c) => {
       if (c.label.startsWith('run:')) return { exitCode: 1, totalFailures: 2, failures: [failure('a', 'a.ts')] }
-      if (c.label.startsWith('fix:')) throw new BudgetExceededError('Output token budget exhausted.')
+      if (c.label.startsWith('fix:')) throw new AgentLimitError('Agent limit of 5 per run exceeded.')
       return undefined
     })
     // a thunk in parallel() turns the exception into null → the loop continues and ends on no-progress
-    assert.ok(['no-progress', 'budget'].includes(r.value.status), r.value.status)
+    assert.ok(['no-progress', 'agent-limit'].includes(r.value.status), r.value.status)
     assert.ok(r.value.history.length >= 2)
   })
 
-  test('a script error other than budget ends as error with history', async () => {
+  test('a script error other than the agent limit ends as error with history', async () => {
     const r = await run('fix-until-green', { command: 'x' }, (c) => {
       if (c.label.startsWith('run:')) throw new Error('something went wrong')
       return undefined
@@ -409,13 +415,24 @@ describe('fix-until-green (real host, mock agents)', { skip: SKIP }, () => {
     assert.match(r.value.error, /went wrong/)
   })
 
-  test('error in the runner (outside parallel) ends as budget/error with history', async () => {
+  test('agent limit in the runner (outside parallel) ends as agent-limit with history', async () => {
     const r = await run('fix-until-green', { command: 'x' }, (c) => {
-      if (c.label.startsWith('run:')) throw new BudgetExceededError('Output token budget exhausted (10 of 10).')
+      if (c.label.startsWith('run:')) throw new AgentLimitError('Agent limit of 10 per run exceeded.')
       return undefined
     })
-    assert.equal(r.value.status, 'budget')
-    assert.match(r.value.error, /budget/)
+    assert.equal(r.value.status, 'agent-limit')
+    assert.match(r.value.error, /Agent limit/)
+  })
+
+  test('an exhausted usage limit is not swallowed by the loop: the script fails with USAGE_LIMIT', async () => {
+    await assert.rejects(
+      run('fix-until-green', { command: 'x' }, (c) => {
+        if (c.label.startsWith('run:')) return { exitCode: 1, totalFailures: 2, failures: [failure('a', 'a.ts')] }
+        if (c.label.startsWith('fix:')) throw new UsageLimitError('usage limit exhausted')
+        return undefined
+      }),
+      (e: any) => e.code === 'USAGE_LIMIT',
+    )
   })
 
   test('missing command', async () => {
@@ -523,31 +540,23 @@ describe('deep-research (real host, mock agents)', { skip: SKIP }, () => {
     assert.equal(r.value.claims.length, 1)
   })
 
-  test('budget exhausted during synthesis: verified claims returned, stoppedBecause budget (not exception)', async () => {
-    const r = await run(
-      'deep-research',
-      { question: 'Q' },
-      (c, i, view) => {
-        if (c.label.startsWith('synthesize:')) {
-          view![0] = 1_000_000
-          throw new BudgetExceededError('Output token budget exhausted (1000000 of 1000000).')
-        }
-        return base(c, i, view)
-      },
-      { total: 1_000_000 },
-    )
+  test('agent limit reached during synthesis: verified claims returned, stoppedBecause agent-limit (not exception)', async () => {
+    const r = await run('deep-research', { question: 'Q' }, (c, i, view) => {
+      if (c.label.startsWith('synthesize:')) throw new AgentLimitError('Agent limit of 10 per run exceeded.')
+      return base(c, i, view)
+    })
     assert.equal(r.value.answer, null)
     assert.equal(r.value.claims.length, 1)
-    assert.equal(r.value.stats.stoppedBecause, 'budget')
-    assert.match(r.value.note, /budget/i)
+    assert.equal(r.value.stats.stoppedBecause, 'agent-limit')
+    assert.match(r.value.note, /agent limit/i)
   })
 
-  test('critic throws a budget error: ends with budget and synthesis runs from what is there', async () => {
+  test('critic throws an agent-limit error: ends with agent-limit and synthesis runs from what is there', async () => {
     const r = await run('deep-research', { question: 'Q', rounds: 2 }, (c, i, v) => {
-      if (c.label.startsWith('critic:')) throw new BudgetExceededError('Output token budget exhausted (10 of 10).')
+      if (c.label.startsWith('critic:')) throw new AgentLimitError('Agent limit of 10 per run exceeded.')
       return base(c, i, v)
     })
-    assert.equal(r.value.stats.stoppedBecause, 'budget')
+    assert.equal(r.value.stats.stoppedBecause, 'agent-limit')
     assert.ok(r.value.answer)
   })
 
