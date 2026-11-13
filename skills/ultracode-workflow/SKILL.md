@@ -57,51 +57,54 @@ File `.ultracode/workflows/<name>.workflow.ts`:
 /// <reference path="../workflow.d.ts" />
 
 export const meta = {
-  name: 'find-flaky-tests',
-  description: 'Finds flaky tests and proposes fixes',
-  whenToUse: 'When CI sometimes fails without a code change.',
+  name: "find-flaky-tests",
+  description: "Finds flaky tests and proposes fixes",
+  whenToUse: "When CI sometimes fails without a code change.",
   phases: [
-    { title: 'Scan', detail: 'find candidates in the log' },
-    { title: 'Fix', detail: 'one agent per test' },
+    { title: "Scan", detail: "find candidates in the log" },
+    { title: "Fix", detail: "one agent per test" },
   ],
-}
+};
 
 interface Flaky {
-  test: string
-  file: string
+  test: string;
+  file: string;
 }
 
-const present = <T>(xs: Array<T | null>): T[] => xs.filter((x): x is T => x !== null)
+const present = <T>(xs: Array<T | null>): T[] =>
+  xs.filter((x): x is T => x !== null);
 
-phase('Scan')
+phase("Scan");
 const scan = await agent<{ tests: Flaky[] }>(
-  'In the CI log in the ./ci-logs directory, find the tests that failed and passed after a retry. Do not modify anything. Return their name and file.',
+  "In the CI log in the ./ci-logs directory, find the tests that failed and passed after a retry. Do not modify anything. Return their name and file.",
   {
-    label: 'scan',
+    label: "scan",
     schema: {
-      type: 'object',
+      type: "object",
       properties: {
         tests: {
-          type: 'array',
+          type: "array",
           items: {
-            type: 'object',
-            properties: { test: { type: 'string' }, file: { type: 'string' } },
-            required: ['test', 'file'],
+            type: "object",
+            properties: { test: { type: "string" }, file: { type: "string" } },
+            required: ["test", "file"],
           },
         },
       },
-      required: ['tests'],
+      required: ["tests"],
     },
   },
-)
-if (!scan) throw new Error('Scan failed, nothing to fix.')
+);
+if (!scan) throw new Error("Scan failed, nothing to fix.");
 
-const results = await pipeline(
-  scan.tests,
-  (t: Flaky) => agent(`Fix the flaky test ${t.test} in file ${t.file}. Edit only this file.`, { label: `fix:${t.test}`, phase: 'Fix' }),
-)
+const results = await pipeline(scan.tests, (t: Flaky) =>
+  agent(
+    `Fix the flaky test ${t.test} in file ${t.file}. Edit only this file.`,
+    { label: `fix:${t.test}`, phase: "Fix" },
+  ),
+);
 
-return { found: scan.tests.length, fixed: present(results).length }
+return { found: scan.tests.length, fixed: present(results).length };
 ```
 
 Notes on the skeleton:
@@ -118,16 +121,16 @@ Notes on the skeleton:
 
 ## 4. Choosing the shape
 
-| I want… | Use | Watch out |
-| --- | --- | --- |
-| process N items through multiple steps (audit → verification, fix → review) | `pipeline(items, stage1, stage2…)` | the default choice, no barrier between stages |
-| have ALL results before the next step (dedup, early exit, comparison) | `await parallel(...)` | only when stage N really needs cross-context |
-| independent confirmation of a finding | N skeptics, each refutes; survives if most say "not refuted" | `Default to refuted=true if uncertain`; quorum on `null` |
-| a wide solution space | panel: N independent attempts → judges → synthesis | the attempts must come from different angles |
-| an unknown number of findings | loop-until-dry (K rounds in a row with nothing new) | dedup against ALL seen, not just confirmed ones |
-| different ways of searching | multi-modal sweep + completeness critic | each searcher is blind to the others — that is intentional |
-| fix to green | loop run → fix, stop after 2 rounds without progress | fix and measurement by different agents; round cap |
-| scale depth according to budget | `while (budget.total && budget.remaining() > …)` | without `budget.total`, `remaining()` is `Infinity` |
+| I want…                                                                     | Use                                                          | Watch out                                                  |
+| --------------------------------------------------------------------------- | ------------------------------------------------------------ | ---------------------------------------------------------- |
+| process N items through multiple steps (audit → verification, fix → review) | `pipeline(items, stage1, stage2…)`                           | the default choice, no barrier between stages              |
+| have ALL results before the next step (dedup, early exit, comparison)       | `await parallel(...)`                                        | only when stage N really needs cross-context               |
+| independent confirmation of a finding                                       | N skeptics, each refutes; survives if most say "not refuted" | `Default to refuted=true if uncertain`; quorum on `null`   |
+| a wide solution space                                                       | panel: N independent attempts → judges → synthesis           | the attempts must come from different angles               |
+| an unknown number of findings                                               | loop-until-dry (K rounds in a row with nothing new)          | dedup against ALL seen, not just confirmed ones            |
+| different ways of searching                                                 | multi-modal sweep + completeness critic                      | each searcher is blind to the others — that is intentional |
+| fix to green                                                                | loop run → fix, stop after 2 rounds without progress         | fix and measurement by different agents; round cap         |
+| scale depth according to budget                                             | `while (budget.total && budget.remaining() > …)`             | without `budget.total`, `remaining()` is `Infinity`        |
 
 **Barrier smell test:** did you write `a = await parallel(...)`, then `b = transform(a)` (flatten, filter, map)
 and `c = await parallel(b.map(...))`? The middle transformation does not need a barrier →
@@ -151,6 +154,9 @@ and `c = await parallel(b.map(...))`? The middle transformation does not need a 
   function calls, spread, templates with `${}`. `name`: `[A-Za-z0-9][A-Za-z0-9_.-]*`.
 - It must be the first statement of the script (only comments and `/// <reference>` may precede it).
 - Every `phase('X')` and `phase: 'X'` in `agent()` corresponds to a title in `meta.phases`; every title is used somewhere.
+- Optional `phases[i].agents: [{ label, detail?, inputs? }]` declares the agents of a phase for the diagram in Agentis:
+  `label` = the literal `label` of the `agent()` call, `inputs` = labels whose output goes into this agent's prompt.
+  Declare it when the data flow between agents matters to the reader (fan-in reviews, verify-after-implement).
 
 ### Schema
 
@@ -296,7 +302,9 @@ Other useful commands (after the run): `ultracode status audit-1`, `ultracode lo
 and result of a specific agent), `ultracode list` (runs and available workflows).
 
 Inside an Agentis task (env `AGENTIS_TASK_ID`, `AGENTIS_RUN_ID`, `AGENTIS_ENDPOINT`) every agent also shows up live in the
-task's run as a secondary session titled `[Phase] label #id` — meaningful `label`s pay off there.
+task's run as a secondary session titled `[Phase] label #id` — meaningful `label`s pay off there. The workflow itself
+appears there as an "Ultracode" card with a diagram of phases and agents (planned agents from `meta.phases[].agents`
+are visible before they start, arrows come from `inputs`), so `phase()` titles and `label`s are what the user sees.
 Off with `ULTRACODE_AGENTIS_TELEMETRY=0`.
 
 **Resuming** (after Ctrl+C, a crash, an exhausted budget, agent failures):
@@ -337,7 +345,7 @@ whether the budget was exceeded (`budgetExceeded`), and whether the script repor
 ## 9. Pre-run checklist
 
 - [ ] `ultracode validate` passes without errors; I understood the warnings.
-- [ ] `meta` is a pure literal, `phases` match `phase()` and `phase:`.
+- [ ] `meta` is a pure literal, `phases` match `phase()` and `phase:`; declared `agents` labels match the `agent()` labels.
 - [ ] Every `agent()` result is handled for `null` (`present()`, `if (!x)`); failures are counted in the result.
 - [ ] No barrier that `pipeline` could replace (smell test).
 - [ ] No two concurrent agents write to the same files; partitions are disjoint and checked by code.
@@ -351,30 +359,30 @@ whether the budget was exceeded (`budgetExceeded`), and whether the script repor
 
 ## 10. What the runtime CANNOT do
 
-| Missing | Consequence / workaround |
-| --- | --- |
-| **Worktree isolation** (`isolation: 'worktree'`) | `agent()` rejects the option with an error (TypeError "… is not supported in version 1") and the script crashes; split the work by disjoint paths (partitions), or serialize the agents |
-| **`agentType`** (custom subagent types) | likewise rejected with an error; control the agent's behavior with the prompt and `systemPrompt` |
-| **Input during a run** (an agent cannot ask a human, the script has no `AskUserQuestion`) | runs are unattended; resolve ambiguities before the run or in `args`; agents are instructed to "make a reasonable assumption" |
-| Pausing/restarting a single agent, TUI, interactive cancellation of an agent | `Ctrl+C` cancels the whole run; then `resume` |
-| Waiting for the usage limit | when the limit is exhausted the agent fails → `null`; after the limit resets, `resume` |
-| File system / shell in the script | everything goes through an agent (e.g. "run the command and return the exit code") |
-| Writing to `args`/state between runs | return the value and pass it to the next run via `--args` |
-| `workflow()` nesting deeper than 1 level | combine the results in the parent script |
+| Missing                                                                                   | Consequence / workaround                                                                                                                                                                |
+| ----------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Worktree isolation** (`isolation: 'worktree'`)                                          | `agent()` rejects the option with an error (TypeError "… is not supported in version 1") and the script crashes; split the work by disjoint paths (partitions), or serialize the agents |
+| **`agentType`** (custom subagent types)                                                   | likewise rejected with an error; control the agent's behavior with the prompt and `systemPrompt`                                                                                        |
+| **Input during a run** (an agent cannot ask a human, the script has no `AskUserQuestion`) | runs are unattended; resolve ambiguities before the run or in `args`; agents are instructed to "make a reasonable assumption"                                                           |
+| Pausing/restarting a single agent, TUI, interactive cancellation of an agent              | `Ctrl+C` cancels the whole run; then `resume`                                                                                                                                           |
+| Waiting for the usage limit                                                               | when the limit is exhausted the agent fails → `null`; after the limit resets, `resume`                                                                                                  |
+| File system / shell in the script                                                         | everything goes through an agent (e.g. "run the command and return the exit code")                                                                                                      |
+| Writing to `args`/state between runs                                                      | return the value and pass it to the next run via `--args`                                                                                                                               |
+| `workflow()` nesting deeper than 1 level                                                  | combine the results in the parent script                                                                                                                                                |
 
 ## 11. What most often goes wrong
 
-| Symptom | Cause | Fix |
-| --- | --- | --- |
-| `TypeError: Cannot read properties of null` | an `agent()` result used without handling `null` | `if (!r) …`, `present(results)` |
-| The result looks complete but part is missing | failed agents silently dropped by `.filter(Boolean)` | count `failed`, log it, return it |
-| The run is slow, as if serial | `for (…) await agent()` or a barrier in the middle | `parallel`/`pipeline`, smell test |
-| Fixes overwrite each other | partition overlap, no owner for a file | disjoint partitions + a check in code |
-| A "read-only" agent changed a file | relying on `tools`, not `disallowedTools` | `disallowedTools` + a sentence in the prompt |
-| Verification confirms everything | the skeptic was not supposed to refute / got the author's reasoning | `Default to refuted=true`, an independent lens |
-| The loop does not end / is expensive | no cap, the measurement is done by an agent that may lie | round cap + stop on "no progress", measure deterministically |
-| `phase … is not listed in meta.phases` | a typo in the title | copy the titles |
-| Resume runs everything again | the prompt contains a changing value / upstream changed | stable prompts; this is just the cache |
-| `agent(): … is not supported in version 1` | `isolation` or `agentType` used | see section 10 |
-| The synthesis is shallow or invents things | input too large or free text | group/cut, schema, IDs in code and references from the data |
-| `BUDGET_EXCEEDED` | token/USD/agent limit | raise the limit or narrow the work; `resume` finishes the rest |
+| Symptom                                       | Cause                                                               | Fix                                                            |
+| --------------------------------------------- | ------------------------------------------------------------------- | -------------------------------------------------------------- |
+| `TypeError: Cannot read properties of null`   | an `agent()` result used without handling `null`                    | `if (!r) …`, `present(results)`                                |
+| The result looks complete but part is missing | failed agents silently dropped by `.filter(Boolean)`                | count `failed`, log it, return it                              |
+| The run is slow, as if serial                 | `for (…) await agent()` or a barrier in the middle                  | `parallel`/`pipeline`, smell test                              |
+| Fixes overwrite each other                    | partition overlap, no owner for a file                              | disjoint partitions + a check in code                          |
+| A "read-only" agent changed a file            | relying on `tools`, not `disallowedTools`                           | `disallowedTools` + a sentence in the prompt                   |
+| Verification confirms everything              | the skeptic was not supposed to refute / got the author's reasoning | `Default to refuted=true`, an independent lens                 |
+| The loop does not end / is expensive          | no cap, the measurement is done by an agent that may lie            | round cap + stop on "no progress", measure deterministically   |
+| `phase … is not listed in meta.phases`        | a typo in the title                                                 | copy the titles                                                |
+| Resume runs everything again                  | the prompt contains a changing value / upstream changed             | stable prompts; this is just the cache                         |
+| `agent(): … is not supported in version 1`    | `isolation` or `agentType` used                                     | see section 10                                                 |
+| The synthesis is shallow or invents things    | input too large or free text                                        | group/cut, schema, IDs in code and references from the data    |
+| `BUDGET_EXCEEDED`                             | token/USD/agent limit                                               | raise the limit or narrow the work; `resume` finishes the rest |

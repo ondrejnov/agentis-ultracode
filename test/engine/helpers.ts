@@ -209,6 +209,8 @@ export function makeApi(req: RunScriptRequest, path: string[] = ['test-wf']): Sc
 export function scriptDeps(body: (api: ScriptApi, req: RunScriptRequest) => Promise<unknown> | unknown, extra: EngineDeps = {}): EngineDeps {
   return {
     parseScript: stubParse,
+    // never report into a real Agentis (tests may run inside an Agentis run with AGENTIS_ENDPOINT set)
+    agentisReporter: () => null,
     runScript: async (req): Promise<RunScriptResult> => {
       const meta = stubParse(req.source, req.filename).meta ?? { name: 'test-wf', description: '' }
       const value = await body(makeApi(req, [meta.name]), req)

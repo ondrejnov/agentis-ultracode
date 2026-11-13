@@ -44,10 +44,20 @@ export type PermissionMode = 'bypassPermissions' | 'acceptEdits' | 'auto' | 'don
 
 // ───────────────────────── workflow script ─────────────────────────
 
+/** A planned agent of a phase in `meta.phases[].agents` – a node of the workflow diagram in Agentis. */
+export interface PhaseAgentMeta {
+  /** Matches `agent(…, { label })`; every run with this label is shown in this node. */
+  label: string
+  detail?: string
+  /** Labels of agents whose output this agent gets (arrows in the diagram). */
+  inputs?: string[]
+}
+
 export interface PhaseMeta {
   title: string
   detail?: string
   model?: string
+  agents?: PhaseAgentMeta[]
 }
 
 /** `export const meta = {...}` in a script. MUST be a pure literal (no variables/calls/spread/templates with ${}). */

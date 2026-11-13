@@ -18,6 +18,7 @@ import {
   UltracodeError,
   WorkflowNotFoundError,
 } from '../errors.ts'
+import { type AgentisReporterFactory, type AgentisWorkflowReporter, agentisReporterFromEnv } from './agentis-report.ts'
 import {
   type AgentisTelemetryTarget,
   BUDGET_SLOTS,
@@ -66,6 +67,8 @@ export interface EngineDeps {
   parseScript?: (source: string, filename: string) => ParsedScriptLike
   /** How long to wait after an abort for the script/agents to finish before the run is closed (default 10 000 ms). */
   abortGraceMs?: number
+  /** Factory of the workflow reporter into the Agentis transcript (default from env, see agentis-report.ts). */
+  agentisReporter?: AgentisReporterFactory
 }
 
 export const DEFAULT_MAX_AGENTS = 1000
@@ -487,10 +490,12 @@ async function runWorkflowImpl(opts: RunOptions, deps: EngineDeps, lock: { relea
   // after the run is closed (run_end) nothing more is written — delayed calls from a hanging script/agent must not
   // add events after run_end or overwrite the final run.json
   let closed = false
+  let reporter: AgentisWorkflowReporter | null = null
   const emit = (e: RunEvent): void => {
     if (closed) return
     void events.append(e)
     safeCallback(e)
+    reporter?.onEvent(e)
   }
   /** Only to the listener (high-volume agent log; the agent's own stream.jsonl keeps it on disk). */
   const emitLive = (e: RunEvent): void => {
@@ -542,6 +547,10 @@ async function runWorkflowImpl(opts: RunOptions, deps: EngineDeps, lock: { relea
   const runSignal: AbortSignal = userSignal ? AbortSignal.any([userSignal, internalAbort.signal]) : internalAbort.signal
   const concurrencyLimit = resolveConcurrency(eff.concurrency)
   const agentis = opts.agentis === undefined ? resolveAgentisTelemetry() : opts.agentis
+  if (agentis) {
+    const onReportError = (message: string) => safeCallback({ t: 'log', ts: nowIso(), message: `Warning: ${message}`, workflowPath: [meta.name] })
+    reporter = (deps.agentisReporter ?? agentisReporterFromEnv(process.env, onReportError))(agentis)
+  }
   const semaphore = new Semaphore(concurrencyLimit)
   // USD budget: sum of the caps allocated to running agents (reservations), so that concurrent agents do not each draw the whole remainder.
   let reservedUsd = 0
@@ -943,6 +952,7 @@ async function runWorkflowImpl(opts: RunOptions, deps: EngineDeps, lock: { relea
   }
   emit({ t: 'run_end', ts: endedAt, status, durationMs, totals: cloneTotals(totals), ...(runError !== undefined ? { error: runError } : {}) })
   closed = true
+  await reporter?.flush()
   await events.flush()
   await journalWriter.flush()
   await runJson.request()

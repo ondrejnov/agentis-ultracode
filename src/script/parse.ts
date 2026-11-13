@@ -13,7 +13,7 @@
 
 import { stripTypeScriptTypes } from 'node:module'
 import { Script } from 'node:vm'
-import type { PhaseMeta, WorkflowMeta } from '../types.ts'
+import type { PhaseAgentMeta, PhaseMeta, WorkflowMeta } from '../types.ts'
 import { LiteralError, nodeToValue, parseLiteral } from './meta-literal.ts'
 import type { LiteralNode } from './meta-literal.ts'
 import { buildLineIndex, lineOfOffset, scanSource } from './scan.ts'
@@ -109,6 +109,7 @@ function validateMeta(
   lineOf: (offset: number) => number,
   diags: ScriptDiagnostic[],
   titleOffsets: Map<string, number>,
+  labelOffsets: Map<string, number>,
 ): WorkflowMeta | null {
   const errors0 = diags.filter((d) => d.level === 'error').length
   const err = (message: string, offset: number): void => {
@@ -181,6 +182,8 @@ function validateMeta(
           } else if (p.key === 'detail' || p.key === 'model') {
             if (p.value.kind !== 'string') err(`meta.phases[${idx}].${p.key} must be a string`, p.value.start)
             else phase[p.key] = p.value.value
+          } else if (p.key === 'agents') {
+            phase.agents = parsePhaseAgents(p.value, `meta.phases[${idx}].agents`, err, warn, labelOffsets)
           } else {
             warn(`meta.phases[${idx}]: unknown key “${p.key}” (ignored)`, p.keyStart)
           }
@@ -194,11 +197,80 @@ function validateMeta(
         }
       })
       out.phases = list
+      checkAgentGraph(list, labelOffsets, warn)
     }
   }
 
   const errors1 = diags.filter((d) => d.level === 'error').length
   return errors1 > errors0 ? null : out
+}
+
+/** `meta.phases[i].agents` = array of `{ label, detail?, inputs? }`. */
+function parsePhaseAgents(
+  node: LiteralNode,
+  path: string,
+  err: (message: string, offset: number) => void,
+  warn: (message: string, offset: number) => void,
+  labelOffsets: Map<string, number>,
+): PhaseAgentMeta[] {
+  const shape = '{ label, detail?, inputs? }'
+  if (node.kind !== 'array') {
+    err(`${path} must be an array of objects ${shape}`, node.start)
+    return []
+  }
+  const list: PhaseAgentMeta[] = []
+  node.items.forEach((item, idx) => {
+    if (item.kind !== 'object') {
+      err(`${path}[${idx}] must be an object ${shape}`, item.start)
+      return
+    }
+    const agent: PhaseAgentMeta = { label: '' }
+    for (const p of item.props) {
+      if (p.key === 'label') {
+        if (p.value.kind !== 'string' || p.value.value.trim() === '') err(`${path}[${idx}].label must be a non-empty string`, p.value.start)
+        else agent.label = p.value.value
+      } else if (p.key === 'detail') {
+        if (p.value.kind !== 'string') err(`${path}[${idx}].detail must be a string`, p.value.start)
+        else agent.detail = p.value.value
+      } else if (p.key === 'inputs') {
+        if (p.value.kind !== 'array' || p.value.items.some((x) => x.kind !== 'string' || x.value === '')) {
+          err(`${path}[${idx}].inputs must be an array of agent labels`, p.value.start)
+        } else agent.inputs = p.value.items.map((x) => (x as { value: string }).value)
+      } else {
+        warn(`${path}[${idx}]: unknown key “${p.key}” (ignored)`, p.keyStart)
+      }
+    }
+    if (!item.props.some((p) => p.key === 'label')) err(`${path}[${idx}].label is required`, item.start)
+    if (agent.label === '') return
+    if (labelOffsets.has(agent.label)) warn(`meta: agent label “${agent.label}” is declared more than once`, item.start)
+    else labelOffsets.set(agent.label, item.start)
+    list.push(agent)
+  })
+  return list
+}
+
+/** `inputs` must point to declared labels and must not form a cycle (warnings – the diagram is only a visualization). */
+function checkAgentGraph(phases: PhaseMeta[], labelOffsets: Map<string, number>, warn: (message: string, offset: number) => void): void {
+  const inputsOf = new Map<string, string[]>()
+  for (const phase of phases) for (const a of phase.agents ?? []) if (!inputsOf.has(a.label)) inputsOf.set(a.label, a.inputs ?? [])
+  for (const [label, inputs] of inputsOf) {
+    for (const input of inputs) {
+      if (!inputsOf.has(input)) warn(`meta: agent “${label}” has input “${input}”, which is not a declared agent label`, labelOffsets.get(label) ?? 0)
+    }
+  }
+  const state = new Map<string, 'visiting' | 'done'>()
+  const visit = (label: string): boolean => {
+    if (state.get(label) === 'done') return false
+    if (state.get(label) === 'visiting') return true
+    state.set(label, 'visiting')
+    const cyclic = (inputsOf.get(label) ?? []).some((input) => inputsOf.has(input) && visit(input))
+    state.set(label, 'done')
+    return cyclic
+  }
+  for (const label of inputsOf.keys()) {
+    if (state.has(label)) continue
+    if (visit(label)) warn(`meta: agent inputs form a cycle (through “${label}”)`, labelOffsets.get(label) ?? 0)
+  }
 }
 
 /** Finds the `export const meta = {…}`. statement. Never throws; writes errors to `diags`. */
@@ -333,7 +405,9 @@ function staticChecks(
   masked: string,
   meta: WorkflowMeta | null,
   metaExportStart: number | null,
+  metaEnd: number | null,
   titleOffsets: Map<string, number>,
+  labelOffsets: Map<string, number>,
   lineOf: (offset: number) => number,
   diags: ScriptDiagnostic[],
 ): void {
@@ -417,6 +491,23 @@ function staticChecks(
       }
     }
   }
+
+  // { label: 'X' } versus meta.phases[].agents
+  if (labelOffsets.size === 0) return
+  const labels = new Set<string>()
+  let dynamicLabel = false
+  for (const at of findWord(masked, 'label')) {
+    if (metaExportStart !== null && metaEnd !== null && at >= metaExportStart && at < metaEnd) continue
+    const after = skipWs(masked, at + 5)
+    if (masked[after] !== ':') continue
+    const value = readStringAt(src, skipWs(masked, after + 1))
+    if (value === undefined) dynamicLabel = true
+    else labels.add(value)
+  }
+  if (dynamicLabel) return
+  for (const [label, at] of labelOffsets) {
+    if (!labels.has(label)) warn(`meta.phases declares agent “${label}”, but no agent() call uses label: '${label}'`, at)
+  }
 }
 
 export function parseScript(source: string, filename: string): ParsedScript {
@@ -446,10 +537,11 @@ export function parseScript(source: string, filename: string): ParsedScript {
   const stmt = locateMeta(src, masked, lineOf, diagnostics)
   let meta: WorkflowMeta | null = null
   const titleOffsets = new Map<string, number>()
-  if (stmt?.node) meta = validateMeta(stmt.node, lineOf, diagnostics, titleOffsets)
+  const labelOffsets = new Map<string, number>()
+  if (stmt?.node) meta = validateMeta(stmt.node, lineOf, diagnostics, titleOffsets, labelOffsets)
 
   // 2) forbidden constructs and warnings
-  staticChecks(src, masked, meta, stmt ? stmt.exportStart : null, titleOffsets, lineOf, diagnostics)
+  staticChecks(src, masked, meta, stmt ? stmt.exportStart : null, stmt ? stmt.end : null, titleOffsets, labelOffsets, lineOf, diagnostics)
 
   // 3) conversion to executable code
   let body = src

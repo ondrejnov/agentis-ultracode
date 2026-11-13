@@ -336,6 +336,13 @@ tokeny), s titulkem `[Fáze] label #id` a rodičovskou session orchestrátoru. V
 srozumitelné `label`. Vypnutí: `ULTRACODE_AGENTIS_TELEMETRY=0`. Vyžaduje `agentiscode` s volbami
 `--session-title` a `--parent-session-id`.
 
+Samotné workflow se do přepisu zapisuje také: ultracode průběžně posílá snapshot stavu (název, stav, fáze
+s počty agentů, cena, chyba) přes JSON-RPC `run.ultracode_event` (token z `AGENTIS_API_TOKEN` / `AGENTIS_TOKEN`).
+Agentis z něj vykreslí kartu „Ultracode“ v session orchestrátoru nad jeho agenty; resume aktualizuje tutéž kartu.
+Součástí snapshotu je `diagram` – obecný JSON (skupiny = fáze, uzly = agenti, hrany), který karta vykreslí jako
+diagram. Plánované agenty a šipky mezi nimi lze deklarovat v `meta.phases[].agents: [{ label, detail?, inputs? }]`
+(`inputs` = labely agentů, jejichž výstup agent dostává); kontrakt je v `src/engine/diagram.ts`.
+
 ## Záznam běhu
 
 Každý běh se zapisuje do `<cwd>/.ultracode/runs/<runId>/`:
@@ -363,7 +370,7 @@ se podívej na konkrétního agenta přes `ultracode logs <runId> --agent <n>`.
 | --- | --- | --- |
 | `ULTRACODE_AGENT_BIN` | spustitelný soubor agenta; starší alias `ULTRACODE_CLAUDE_BIN` | `agentiscode` z `PATH` |
 | `ULTRACODE_AGENT_ADAPTER` | hodnota `agentiscode --adapter` (`claude`, `claude-p`) | `claude` |
-| `ULTRACODE_AGENTIS_TELEMETRY` | `0`, `false`, `no` nebo `off` vypne živý přepis subagentů v Agentisu | zapnuto |
+| `ULTRACODE_AGENTIS_TELEMETRY` | `0`, `false`, `no` nebo `off` vypne živý přepis subagentů i karty workflow v Agentisu | zapnuto |
 | `ULTRACODE_MAX_CONCURRENCY` | maximální počet souběžných agentů (přebíjí `--concurrency`) | `min(16, CPU−2)` |
 | `ULTRACODE_WORKFLOWS_DIR` | další adresáře s workflow (oddělené `:`) | — |
 | `ULTRACODE_RETRY_BACKOFF_MS` | základ prodlevy mezi pokusy (× číslo pokusu) | `2000` |

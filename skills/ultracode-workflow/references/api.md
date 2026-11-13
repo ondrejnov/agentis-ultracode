@@ -51,13 +51,18 @@ export const meta = {
   description: 'Find flaky tests',   // required, non-empty, one sentence
   whenToUse: 'When to use the workflow',  // optional
   phases: [                          // optional
-    { title: 'Scan', detail: '…' },  // title required; detail, model optional
-    { title: 'Fix', detail: '…', model: 'sonnet' },
+    { title: 'Scan', detail: '…' },  // title required; detail, model, agents optional
+    { title: 'Fix', detail: '…', model: 'sonnet', agents: [
+      { label: 'fixer', detail: 'one per test' },        // label required; detail, inputs optional
+      { label: 'verify', inputs: ['fixer'] },            // inputs = labels whose output this agent gets
+    ] },
   ],
 }
 
 phase('Scan')
 phase('Fix')
+const fix = await agent('Fix the flaky test …', { label: 'fixer' })
+await agent(`Verify the fix: ${fix}`, { label: 'verify' })
 ```
 
 | Rule | Consequence when violated |
@@ -70,8 +75,15 @@ phase('Fix')
 | `phase('X')` or `phase: 'X'` with a title that is not in `meta.phases` | warning |
 | a title in `meta.phases` that the script never uses | warning (not reported if a dynamic `phase(variable)` exists somewhere) |
 | duplicate title in `meta.phases` | warning |
+| `meta.phases[i].agents[j]` without a non-empty `label`, `inputs` not an array of strings | validation error |
+| the same agent `label` declared twice | warning |
+| `inputs` with a label that is not declared, or `inputs` forming a cycle | warning |
+| a declared agent `label` that no `agent(…, { label: '…' })` literal uses | warning (not reported if a dynamic `label: variable` exists somewhere) |
 
 `meta.phases[i].model` is informational (it is displayed); the actual model is set by `agent({ model })`.
+`meta.phases[i].agents` is informational too: it only draws the workflow diagram in Agentis (planned nodes before the agents
+start, arrows from `inputs`). Every run of `agent()` with that `label` is shown in the node; agents not declared get their
+own node at run time. Phases whose agents have no `inputs` between them are joined by a "barrier" arrow.
 The workflow name = `meta.name`; the file is looked up by file name (`<name>.workflow.ts`), so keep them identical.
 
 ## 3. `agent(prompt, opts?)`

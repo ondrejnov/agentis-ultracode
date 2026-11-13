@@ -410,3 +410,36 @@ describe('scanSource', () => {
     assert.ok(s.masked.includes('1 + '))
   })
 })
+
+describe('parseScript: meta.phases[].agents', () => {
+  const withAgents = (agents: string, body = "phase('A'); phase('B')\nawait agent('x', { label: 'scan' }); await agent('y', { label: 'fix' })\n") =>
+    `export const meta = { name: 'wf', description: 'd', phases: [ { title: 'A', agents: [ { label: 'scan', detail: 'scanner' } ] }, { title: 'B', agents: [ ${agents} ] } ] }\n${body}`
+
+  it('parses agents with detail and inputs', () => {
+    const r = parseScript(withAgents("{ label: 'fix', inputs: ['scan'] }"), 'x.ts')
+    assert.equal(r.ok, true)
+    assert.deepEqual(r.meta?.phases, [
+      { title: 'A', agents: [{ label: 'scan', detail: 'scanner' }] },
+      { title: 'B', agents: [{ label: 'fix', inputs: ['scan'] }] },
+    ])
+    assert.deepEqual(r.diagnostics, [])
+  })
+
+  it('rejects an agent without label and invalid inputs', () => {
+    assert.ok(hasError(withAgents("{ detail: 'x' }"), /agents\[0\]\.label is required/))
+    assert.ok(hasError(withAgents("{ label: 'fix', inputs: 'scan' }"), /inputs must be an array of agent labels/))
+  })
+
+  it('warns about unknown inputs, cycles, duplicates and labels not used by any agent() call', () => {
+    const msgs = (src: string) => warnings(src).map((d) => d.message).join('\n')
+    assert.match(msgs(withAgents("{ label: 'fix', inputs: ['nope'] }")), /input “nope”, which is not a declared agent label/)
+    assert.match(msgs(withAgents("{ label: 'fix', inputs: ['fix'] }")), /form a cycle/)
+    assert.match(msgs(withAgents("{ label: 'scan' }, { label: 'fix' }")), /“scan” is declared more than once/)
+    assert.match(msgs(withAgents("{ label: 'fix' }, { label: 'docs' }")), /declares agent “docs”, but no agent\(\) call uses label: 'docs'/)
+  })
+
+  it('does not report unused labels when the script builds labels dynamically', () => {
+    const body = "phase('A'); phase('B')\nfor (const f of ['a']) await agent('x', { label: `fix ${f}` })\n"
+    assert.doesNotMatch(warnings(withAgents("{ label: 'fix' }", body)).map((d) => d.message).join('\n'), /no agent\(\) call uses/)
+  })
+})

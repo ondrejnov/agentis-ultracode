@@ -23,11 +23,21 @@ interface WorkflowJsonSchema {
   [key: string]: unknown
 }
 
+/** A planned agent of a phase – a node of the workflow diagram in Agentis. */
+interface WorkflowAgentMeta {
+  /** Must exactly match `label` in `agent(…, { label })`; all runs with this label are shown in this node. */
+  label: string
+  detail?: string
+  /** Labels of agents whose output this agent gets (arrows in the diagram). */
+  inputs?: string[]
+}
+
 interface WorkflowPhaseMeta {
   /** Must exactly match the title in `phase('…')`. */
   title: string
   detail?: string
   model?: string
+  agents?: WorkflowAgentMeta[]
 }
 
 /** `export const meta` – a plain literal: no variables, function calls, spread or templates with ${}. */
