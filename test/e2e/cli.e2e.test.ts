@@ -419,45 +419,6 @@ return { a, c, b }
     assert.equal(enter.name, 'child')
   })
 
-  it('--max-usd: sequential loop ends with a budget error (exit 1, budgetExceeded), concurrent parallel finishes partially', async () => {
-    const sb = makeSandbox()
-    sb.script(
-      'seq.workflow.ts',
-      `export const meta = { name: 'seq', description: 'loop over budget' }
-const done: string[] = []
-for (let i = 0; i < 6; i++) {
-  const r = await agent('Step ' + i + ' [[fake:cost 0.02]] [[fake:text r' + i + ']]', { label: 'step ' + i })
-  done.push(r)
-}
-return done
-`,
-    )
-    const r = await run(sb, ['run', 'seq', '--cwd', sb.cwd, '--max-usd', '0.03', '--concurrency', '1', '--json'])
-    assert.equal(r.code, 1, r.stderr)
-    const summary = summaryOf(r.stdout)
-    assert.equal(summary.status, 'failed')
-    assert.equal(summary.budgetExceeded, true)
-    assert.equal(summary.totals.agents, 2)
-    assert.ok(Math.abs(summary.totals.costUsd - 0.04) < 1e-9, `costUsd=${summary.totals.costUsd}`)
-    assert.match(summary.error, /budget|USD/i)
-    assert.equal(readFakeLog(sb).length, 2)
-
-    // parallel: items after the budget is exhausted are null, the run completes with a partial result
-    sb.script(
-      'par.workflow.ts',
-      `export const meta = { name: 'par', description: 'parallel over budget' }
-const r = await parallel([0, 1, 2, 3, 4].map((i) => () => agent('P' + i + ' [[fake:cost 0.02]] [[fake:text p' + i + ']]')))
-return r
-`,
-    )
-    const p = await run(sb, ['run', 'par', '--cwd', sb.cwd, '--max-usd', '0.03', '--concurrency', '1', '--json'])
-    assert.equal(p.code, 0, p.stderr)
-    const ps = summaryOf(p.stdout)
-    assert.equal(ps.status, 'completed')
-    assert.equal(ps.budgetExceeded, true)
-    assert.deepEqual(ps.result, ['p0', 'p1', null, null, null])
-  })
-
   it('--json streams run events and every agent\'s own log as JSON Lines, ending with the summary', async () => {
     const sb = makeSandbox()
     sb.script(

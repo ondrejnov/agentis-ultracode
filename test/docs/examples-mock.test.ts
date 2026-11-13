@@ -43,7 +43,7 @@ interface Outcome {
   logs: string[]
 }
 
-/** Third argument: shared budget buffer [spent, total, spentUsd, totalUsd] (the handler simulates spending with it). */
+/** Third argument: shared budget buffer [spent, spentUsd] (the handler simulates spending with it). */
 type Handler = (call: Call, index: number, budgetView?: Float64Array) => unknown
 
 function minimal(schema: any): unknown {
@@ -72,7 +72,6 @@ function metaOf(name: string): { name: string; phases: Array<{ title: string }> 
 interface BudgetInit {
   total?: number
   spent?: number
-  totalUsd?: number
   spentUsd?: number
 }
 
@@ -84,12 +83,10 @@ async function run(name: string, args: unknown, handler: Handler, budget: Budget
   const logs: string[] = []
   const declared = new Set(metaOf(name).phases.map((p) => p.title))
 
-  const budgetBuffer = new SharedArrayBuffer(4 * 8)
+  const budgetBuffer = new SharedArrayBuffer(2 * 8)
   const view = new Float64Array(budgetBuffer)
   view[0] = budget.spent ?? 0
-  view[1] = budget.total ?? -1
-  view![2] =budget.spentUsd ?? 0
-  view[3] = budget.totalUsd ?? -1
+  view[1] = budget.spentUsd ?? 0
 
   const hooks = {
     async agent(prompt: string, opts: any) {
@@ -242,18 +239,18 @@ describe('audit-routes (real host, mock agents)', { skip: SKIP }, () => {
     assert.equal(r.value.stats.confirmed, 1)
   })
 
-  test('USD budget exhausted before synthesis: confirmed findings are returned (not failed) with budgetExceeded', async () => {
+  test('budget exhausted before synthesis: confirmed findings are returned (not failed) with budgetExceeded', async () => {
     const r = await run(
       'audit-routes',
       { root: 'src' },
       (c, i, view) => {
         if (c.label.startsWith('synthesize:')) {
-          view![2] =1
-          throw new BudgetExceededError('USD budget exhausted (1.0000 of 1).')
+          view![0] = 1_000_000
+          throw new BudgetExceededError('Output token budget exhausted (1000000 of 1000000).')
         }
         return base(c, i, view)
       },
-      { totalUsd: 1 },
+      { total: 1_000_000 },
     )
     assert.equal(r.value.report, null)
     assert.equal(r.value.confirmed.length, 1)
@@ -421,14 +418,6 @@ describe('fix-until-green (real host, mock agents)', { skip: SKIP }, () => {
     assert.match(r.value.error, /budget/)
   })
 
-  test('budget below threshold ends the loop before another round', async () => {
-    const r = await run('fix-until-green', { command: 'x' }, (c) =>
-      c.label.startsWith('run:') ? { exitCode: 1, totalFailures: 2, failures: [failure('a', 'a.ts')] } : undefined,
-    { total: 1_000_000, spent: 990_000 })
-    assert.equal(r.value.status, 'budget')
-    assert.equal(byLabel(r, 'fix:').length, 0)
-  })
-
   test('missing command', async () => {
     await assert.rejects(run('fix-until-green', {}, () => undefined), /args\.command/)
     await assert.rejects(run('fix-until-green', undefined, () => undefined), /args\.command/)
@@ -540,54 +529,17 @@ describe('deep-research (real host, mock agents)', { skip: SKIP }, () => {
       { question: 'Q' },
       (c, i, view) => {
         if (c.label.startsWith('synthesize:')) {
-          view![2] =1
-          throw new BudgetExceededError('USD budget exhausted (1.0000 of 1).')
+          view![0] = 1_000_000
+          throw new BudgetExceededError('Output token budget exhausted (1000000 of 1000000).')
         }
         return base(c, i, view)
       },
-      { totalUsd: 1 },
+      { total: 1_000_000 },
     )
     assert.equal(r.value.answer, null)
     assert.equal(r.value.claims.length, 1)
     assert.equal(r.value.stats.stoppedBecause, 'budget')
     assert.match(r.value.note, /budget/i)
-  })
-
-  test('USD budget below threshold ends research before another round (stoppedBecause budget)', async () => {
-    const r = await run(
-      'deep-research',
-      { question: 'Q', rounds: 3 },
-      (c, i, view) => {
-        if (c.label.startsWith('critic:')) {
-          view![2] =9.5 // 0.5 USD left of 10
-          return { complete: false, missing: [{ aspect: 'a', why: 'w', suggestedQuery: 'q' }] }
-        }
-        return base(c, i, view)
-      },
-      { totalUsd: 10 },
-    )
-    assert.equal(byLabel(r, 'sweep:r2:').length, 0)
-    assert.equal(r.value.stats.stoppedBecause, 'budget')
-    assert.ok(r.value.answer, 'synthesis from verified claims runs')
-  })
-
-  test('budget exhausted already during sweeps: answer null with reason budget, not "dry"/"rounds"', async () => {
-    const r = await run(
-      'deep-research',
-      { question: 'Q' },
-      (c, i, view) => {
-        if (c.label.startsWith('sweep:')) {
-          view![2] =1
-          throw new BudgetExceededError('USD budget exhausted (1.0000 of 1).')
-        }
-        return base(c, i, view)
-      },
-      { totalUsd: 1 },
-    )
-    assert.equal(r.value.answer, null)
-    assert.equal(r.value.stats.stoppedBecause, 'budget')
-    assert.match(r.value.note, /budget/i)
-    assert.equal(byLabel(r, 'synthesize:').length, 0)
   })
 
   test('critic throws a budget error: ends with budget and synthesis runs from what is there', async () => {

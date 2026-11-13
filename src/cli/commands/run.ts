@@ -9,7 +9,6 @@ import {
   parseCommandLine,
   parseEffort,
   parsePositiveInt,
-  parsePositiveNumber,
   str,
 } from '../options.ts'
 import { createRenderState, renderEvent, renderSummary } from '../render.ts'
@@ -87,8 +86,6 @@ export async function runCommand(ctx: CommandContext, argv: string[], mode: 'run
   const argsInfo = readArgs(ctx, v)
   const concurrency = parsePositiveInt('concurrency', str(v.concurrency))
   const maxAgents = parsePositiveInt('max-agents', str(v['max-agents']))
-  const maxOutputTokens = parsePositiveInt('max-tokens', str(v['max-tokens']))
-  const maxUsd = parsePositiveNumber('max-usd', str(v['max-usd']))
   const effort = parseEffort(str(v.effort))
   const model = str(v.model)
   const runId = str(v['run-id'])
@@ -150,8 +147,6 @@ export async function runCommand(ctx: CommandContext, argv: string[], mode: 'run
   if (runId !== undefined) opts.runId = runId
   if (concurrency !== undefined) opts.concurrency = concurrency
   if (maxAgents !== undefined) opts.maxAgents = maxAgents
-  if (maxOutputTokens !== undefined) opts.maxOutputTokens = maxOutputTokens
-  if (maxUsd !== undefined) opts.maxUsd = maxUsd
   if (model !== undefined) opts.model = model
   if (effort !== undefined) opts.effort = effort
   if (deps.signal) opts.signal = deps.signal

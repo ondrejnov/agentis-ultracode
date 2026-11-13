@@ -92,7 +92,7 @@ describe('renderEvent (snapshots without colors)', () => {
       ev('agent_done', { id: 2, ok: true, cached: true, durationMs: 1, usage: USAGE, costUsd: 0, toolCalls: 0 }),
       ev('agent_start', { id: 3, label: 'scan-c', phase: 'Scan', workflowPath: ['demo'], promptPreview: 'x', model: 'haiku' }),
       ev('agent_done', { id: 3, ok: false, cached: false, durationMs: 5000, usage: USAGE, costUsd: 0.5, toolCalls: 1, error: 'exit 1: boom' }),
-      ev('budget', { spentOutputTokens: 1200, spentUsd: 0.5, limitOutputTokens: 5000, limitUsd: 2 }),
+      ev('budget', { spentOutputTokens: 1200, spentUsd: 0.5 }),
     ]
     assert.deepEqual(renderAll(events), [
       'ultracode wf_1  demo',
@@ -107,7 +107,6 @@ describe('renderEvent (snapshots without colors)', () => {
       '  #3 start   scan-c  [haiku]',
       '  #3 FAILED  scan-c  5.0 s  $0.5000',
       '         exit 1: boom',
-      '  budget: 1.2k / 5k output tokens (24 %)  |  $0.5000 / $2.00',
     ])
   })
 
@@ -142,7 +141,7 @@ describe('renderEvent (snapshots without colors)', () => {
   it('multi-line log is aligned; budget without limits is not printed', () => {
     const lines = renderAll([
       ev('log', { message: 'a\nb', workflowPath: ['w'] }),
-      ev('budget', { spentOutputTokens: 5, spentUsd: 0, limitOutputTokens: null, limitUsd: null }),
+      ev('budget', { spentOutputTokens: 5, spentUsd: 0 }),
     ])
     assert.deepEqual(lines, ['[log] a', '      b'])
   })

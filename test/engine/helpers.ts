@@ -178,7 +178,7 @@ export interface ScriptApi {
   log(message: string): void
   parallel<T>(thunks: Array<() => Promise<T>>): Promise<Array<T | null>>
   args: any
-  budget: { spent(): number; spentUsd(): number; total: number | null; totalUsd: number | null }
+  budget: { spent(): number; spentUsd(): number; total: null }
   hooks: RunScriptRequest['hooks']
   path: string[]
   signal?: AbortSignal
@@ -195,9 +195,8 @@ export function makeApi(req: RunScriptRequest, path: string[] = ['test-wf']): Sc
     args: req.args,
     budget: {
       spent: () => view[0],
-      spentUsd: () => view[2],
-      total: view[1] < 0 ? null : view[1],
-      totalUsd: view[3] < 0 ? null : view[3],
+      spentUsd: () => view[1],
+      total: null,
     },
     hooks: req.hooks,
     path,

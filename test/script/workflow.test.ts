@@ -86,20 +86,20 @@ return { c, parentArgs: args }\n`,
   })
 
   it('shares the budget with the parent (same SharedArrayBuffer)', async () => {
-    const buf = budgetBuffer({ total: 500, spent: 120 })
+    const buf = budgetBuffer({ spent: 120 })
     const view = new Float64Array(buf, 0, BUDGET_SLOTS)
     const m = hooksWith(
-      { sub: child("const before = budget.spent()\nawait agent('x')\nreturn [before, budget.spent(), budget.remaining()]\n") },
+      { sub: child("const before = budget.spent()\nawait agent('x')\nreturn [before, budget.spent()]\n") },
       () => {
         view[0]! += 80
         return 'ok'
       },
     )
     const res = await run(
-      "const c = await workflow('sub')\nreturn [c, budget.spent(), budget.total]\n",
+      "const c = await workflow('sub')\nreturn [c, budget.spent()]\n",
       { hooks: m.hooks, budget: buf },
     )
-    assert.deepEqual(res.value, [[120, 200, 300], 200, 500])
+    assert.deepEqual(res.value, [[120, 200], 200])
   })
 
   it('several children concurrently in parallel(); each has the correct workflowPath', async () => {

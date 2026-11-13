@@ -20,7 +20,7 @@ Use it when:
 
 - the work can be split into **many independent pieces** (files, modules, claims, findings) and one context could not hold them,
 - you want **confidence in the result**: independent votes, skeptics, a panel, a completeness critic,
-- a **loop until a condition is met** is needed (tests green, no new findings, budget),
+- a **loop until a condition is met** is needed (tests green, no new findings),
 - the user explicitly asks for a workflow / ultracode.
 
 Do not use it when:
@@ -42,7 +42,7 @@ more finders, 3–5 votes, synthesis, a critic. Do not waste: each agent costs t
 2. **Choose the shape** (section 4 and `references/patterns.md`): what branches, what verifies, what synthesizes.
 3. **Write the file** `.ultracode/workflows/<name>.workflow.ts` (`<name>` = `meta.name`).
 4. **Validate:** `ultracode validate .ultracode/workflows/<name>.workflow.ts` (exit 2 = error).
-5. **Go through the checklist** (section 9). If in doubt, first run on a small input with `--max-usd`.
+5. **Go through the checklist** (section 9). If in doubt, first run on a small input with `--max-agents`.
 6. **Run it in the foreground and wait until it ends:** `ultracode run <name> --args '{...}'` as a plain blocking
    Bash call — never in the background (no `&`, `nohup`, `setsid`, `run_in_background`). Never finish your turn while
    the run is unfinished (section 7).
@@ -130,7 +130,6 @@ Notes on the skeleton:
 | an unknown number of findings                                               | loop-until-dry (K rounds in a row with nothing new)          | dedup against ALL seen, not just confirmed ones            |
 | different ways of searching                                                 | multi-modal sweep + completeness critic                      | each searcher is blind to the others — that is intentional |
 | fix to green                                                                | loop run → fix, stop after 2 rounds without progress         | fix and measurement by different agents; round cap         |
-| scale depth according to budget                                             | `while (budget.total && budget.remaining() > …)`             | without `budget.total`, `remaining()` is `Infinity`        |
 
 **Barrier smell test:** did you write `a = await parallel(...)`, then `b = transform(a)` (flatten, filter, map)
 and `c = await parallel(b.map(...))`? The middle transformation does not need a barrier →
@@ -180,8 +179,8 @@ and `c = await parallel(b.map(...))`? The middle transformation does not need a 
   `x.field`. Accessing a property of `null` crashes the whole script.
 - Distinguish "failed" from "nothing": log the failure and count it in the result (`failed: n`), so the result does not lie
   about completeness.
-- Script errors (invalid schema, unsupported option, exceeded budget) are **thrown** by `agent()`. For a loop
-  that must not lose intermediate state, wrap it in `try/catch` and return a partial result; a budget error has
+- Script errors (invalid schema, unsupported option, exceeded agent limit) are **thrown** by `agent()`. For a loop
+  that must not lose intermediate state, wrap it in `try/catch` and return a partial result; the agent-limit error has
   `e.code === 'BUDGET_EXCEEDED'` (see `examples/fix-until-green.workflow.ts`). Inside `parallel`/`pipeline`
   every exception becomes `null` (and is logged).
 
@@ -255,15 +254,15 @@ Further principles:
 ultracode validate .ultracode/workflows/audit-routes.workflow.ts
 
 # run by name (searched in .ultracode/workflows/ up the tree, ~/.ultracode/workflows, $ULTRACODE_WORKFLOWS_DIR)
-ultracode run audit-routes --args '{"root":"src/api","votes":3}' --max-usd 15
+ultracode run audit-routes --args '{"root":"src/api","votes":3}' --max-agents 40
 
 # or by path, args from a file
 ultracode run ./examples/audit-routes.workflow.ts --args-file args.json
 ```
 
 - `--args '<json>'` / `--args-file <path>`: the value of the `args` global (real JSON, not a string containing JSON).
-- Limits: `--max-usd <x>`, `--max-tokens <n>` (output tokens), `--max-agents <n>`, `--concurrency <n>`.
-  For every untested workflow with a fan-out, set at least `--max-usd`.
+- Limits: `--max-agents <n>`, `--concurrency <n>`. There is no token or cost budget.
+  For an untested workflow with a large fan-out, set `--max-agents`.
 - `--model <m>`, `--effort <low|medium|high|xhigh|max>`: default values for agents without their own choice.
 - `--run-id <id>`: a custom run ID (useful for automation); otherwise `wf_<8hex>-<3hex>`.
 - `--cwd <dir>`: the project directory (the agents' cwd and the root of `.ultracode/`).
@@ -296,7 +295,7 @@ ultracode status audit-1 --json   # summary, also for a failed run
 If the Bash call hits the tool's time limit before the run ends, do **not** start a new run: check
 `ultracode status audit-1`, and if it is no longer `running` (interrupted), continue it in the foreground with
 `ultracode resume audit-1` – completed agents come back from the journal, only unfinished work runs again. Use the same
-foreground pattern for `resume` after a failure, an exhausted budget or a crash.
+foreground pattern for `resume` after a failure or a crash.
 
 Other useful commands (after the run): `ultracode status audit-1`, `ultracode logs audit-1 --agent 7` (prompt
 and result of a specific agent), `ultracode list` (runs and available workflows).
@@ -307,7 +306,7 @@ appears there as an "Ultracode" card with a diagram of phases and agents (planne
 are visible before they start, arrows come from `inputs`), so `phase()` titles and `label`s are what the user sees.
 Off with `ULTRACODE_AGENTIS_TELEMETRY=0`.
 
-**Resuming** (after Ctrl+C, a crash, an exhausted budget, agent failures):
+**Resuming** (after Ctrl+C, a crash, agent failures):
 
 ```bash
 ultracode resume audit-1                      # stored script, args and model/effort/limits from the run
@@ -330,7 +329,7 @@ A cheap trial run without a real model: `ULTRACODE_CLAUDE_BIN=<repo>/test/fixtur
   line `{"t":"summary","summary":{ runId, name, status, result, error, totals, budgetExceeded, runDir, … }}`
   (also for a failed run).
 - **stderr** = progress for a human (phases, agents, log()).
-- **Exit codes:** 0 completed · 1 run failed (script error, budget) · 2 incorrect usage / invalid script /
+- **Exit codes:** 0 completed · 1 run failed (script error, agent limit) · 2 incorrect usage / invalid script /
   unknown workflow · 130 aborted.
 - A failed run has empty stdout — find the summary and error in `ultracode status <runId> --json`
   or in `.ultracode/runs/<runId>/run.json`; the result of a completed run is also in `result.json`.
@@ -340,7 +339,7 @@ The run directory `.ultracode/runs/<runId>/`: `run.json`, `script.ts` (copy), `a
 `journal.jsonl` (completed agents), `result.json`, `agents/<n>/` (`prompt.txt`, `stream.jsonl`, `stderr.txt`, `result.json`).
 
 **Verify the result before handing it to the user:** how many items failed (`null`), how many were "unverified",
-whether the budget was exceeded (`budgetExceeded`), and whether the script reported any cuts. Present a partial result as partial.
+whether the agent limit was hit (`budgetExceeded`), and whether the script reported any cuts. Present a partial result as partial.
 
 ## 9. Pre-run checklist
 
@@ -351,9 +350,9 @@ whether the budget was exceeded (`budgetExceeded`), and whether the script repor
 - [ ] No two concurrent agents write to the same files; partitions are disjoint and checked by code.
 - [ ] Prompts are self-contained: context, scope of work, what to return, what not to do; read-only agents have `disallowedTools`.
 - [ ] Schema: root `object`, `required ⊆ properties`, an empty array instead of `null`.
-- [ ] Loops have a cap (rounds, `budget`) and an end condition that does not depend on an agent that may fail.
+- [ ] Loops have a cap (rounds) and an end condition that does not depend on an agent that may fail.
 - [ ] No `Date.now()`/`Math.random()`/`new Date()`; time and randomness come from `args`.
-- [ ] The fan-out matches the request (number of agents × cost); `--max-usd` is set.
+- [ ] The fan-out matches the request (number of agents × cost).
 - [ ] Cuts and omitted items are logged and returned.
 - [ ] The script returns everything the user needs (findings, counts, failures, reasons for cuts), not just "done".
 
@@ -385,4 +384,4 @@ whether the budget was exceeded (`budgetExceeded`), and whether the script repor
 | Resume runs everything again                  | the prompt contains a changing value / upstream changed             | stable prompts; this is just the cache                         |
 | `agent(): … is not supported in version 1`    | `isolation` or `agentType` used                                     | see section 10                                                 |
 | The synthesis is shallow or invents things    | input too large or free text                                        | group/cut, schema, IDs in code and references from the data    |
-| `BUDGET_EXCEEDED`                             | token/USD/agent limit                                               | raise the limit or narrow the work; `resume` finishes the rest |
+| `BUDGET_EXCEEDED`                             | agent limit (`--max-agents`)                                        | raise the limit or narrow the work; `resume` finishes the rest |

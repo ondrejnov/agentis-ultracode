@@ -502,56 +502,42 @@ describe('pipeline', () => {
 })
 
 describe('budget', () => {
-  it('no limit: total null, remaining Infinity', async () => {
+  it('total is null and remaining Infinity (no limits), spending is readable', async () => {
     const res = await run(
-      'return { total: budget.total, totalUsd: budget.totalUsd, spent: budget.spent(), rem: String(budget.remaining()), remUsd: String(budget.remainingUsd()), spentUsd: budget.spentUsd() }\n',
+      'return { total: budget.total, spent: budget.spent(), rem: String(budget.remaining()), spentUsd: budget.spentUsd() }\n',
       { budget: budgetBuffer({ spent: 1234, spentUsd: 0.5 }) },
     )
-    assert.deepEqual(res.value, { total: null, totalUsd: null, spent: 1234, rem: 'Infinity', remUsd: 'Infinity', spentUsd: 0.5 })
-  })
-
-  it('with limit: total, remaining, remainingUsd (and never negative)', async () => {
-    const res = await run(
-      'return { total: budget.total, totalUsd: budget.totalUsd, rem: budget.remaining(), remUsd: budget.remainingUsd() }\n',
-      { budget: budgetBuffer({ spent: 300, total: 1000, spentUsd: 1.5, totalUsd: 1 }) },
-    )
-    assert.deepEqual(res.value, { total: 1000, totalUsd: 1, rem: 700, remUsd: 0 })
+    assert.deepEqual(res.value, { total: null, spent: 1234, rem: 'Infinity', spentUsd: 0.5 })
   })
 
   it('reads LIVE from SharedArrayBuffer: values change as the engine writes them', async () => {
-    const buf = budgetBuffer({ total: 1000 })
+    const buf = budgetBuffer()
     const view = new Float64Array(buf, 0, BUDGET_SLOTS)
     const m = makeHooks({
       agent: () => {
         view[0]! += 400
+        view[1]! += 0.25
         return 'x'
       },
     })
     const res = await run(
-      `const a = budget.spent(); const ra = budget.remaining()
+      `const a = budget.spent()
 await agent('x')
-const b = budget.spent(); const rb = budget.remaining()
+const b = budget.spent()
 await agent('y')
-return [a, ra, b, rb, budget.spent(), budget.remaining()]\n`,
+return [a, b, budget.spent(), budget.spentUsd(), budget.total, String(budget.remaining())]\n`,
       { hooks: m.hooks, budget: buf },
     )
-    assert.deepEqual(res.value, [0, 1000, 400, 600, 800, 200])
+    assert.deepEqual(res.value, [0, 400, 800, 0.5, null, 'Infinity'])
   })
 
-  it('loop-until-budget pattern works', async () => {
-    const buf = budgetBuffer({ total: 1000 })
-    const view = new Float64Array(buf, 0, BUDGET_SLOTS)
-    const m = makeHooks({
-      agent: () => {
-        view[0]! += 300
-        return 'ok'
-      },
-    })
+  it('a loop guarded by budget.total does not run (there is no limit)', async () => {
+    const m = makeHooks({ agent: () => 'ok' })
     const res = await run(
       "let n = 0\nwhile (budget.total && budget.remaining() > 100) { await agent('r' + n); n++ }\nreturn n\n",
-      { hooks: m.hooks, budget: buf },
+      { hooks: m.hooks },
     )
-    assert.equal(res.value, 3) // 1000 left → 700 → 400 → 100; at 100 the condition `> 100` no longer holds
+    assert.equal(res.value, 0)
   })
 
   it('too-small budgetBuffer is a usage error', async () => {

@@ -34,8 +34,6 @@ const RUN_OPTIONS = `Options:
   --cwd <dir>              project directory (agents' cwd and root of .ultracode/); default current
   --concurrency <n>        max. concurrent agents (default min(16, CPU-2))
   --max-agents <n>         max. agents per run (default 1000)
-  --max-tokens <n>         hard cap on output tokens
-  --max-usd <x>            hard cap on spending in USD
   --model <m>              default model of agents
   --effort <level>         default effort of agents: low|medium|high|xhigh|max
   --run-id <id>            custom run id

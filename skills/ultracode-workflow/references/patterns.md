@@ -17,7 +17,7 @@ in `examples/*.workflow.ts`. The snippets assume the runtime globals (`agent`, `
 8. When a barrier is correct
 9. Partitions without path overlap
 10. Loop-until-green (fix until it passes)
-11. Budget loops
+11. Capped loops
 12. Hybrid: scout inline, then fan-out
 13. Synthesis with bounded input (map-reduce)
 14. No silent cuts
@@ -488,7 +488,7 @@ Process the collected `outsidePartition` in another round (or hand it to the use
 **When:** "fix until the command passes" (tests, build, lint, typecheck).
 
 **How:** round = *measurement* (an agent runs the command and returns the exit code + failures) → *fix* (agents with disjoint
-files) → measure again. Stop: exit 0, **2 consecutive rounds without a drop in failures**, round cap, budget. Once green, an independent
+files) → measure again. Stop: exit 0, **2 consecutive rounds without a drop in failures**, round cap. Once green, an independent
 confirmation by another agent (and a check that nobody made it "green" by removing tests).
 
 ```ts
@@ -549,38 +549,27 @@ return { status, best: best === Infinity ? null : best }
 ```
 
 **Warning:** the measurement must be done by a different agent than the fix; "I fixed it" from the fixer means nothing. The full
-version (file groups, confirmation, budget) is in `examples/fix-until-green.workflow.ts`.
+version (file groups, confirmation) is in `examples/fix-until-green.workflow.ts`.
 
-## 11. Budget loops
+## 11. Capped loops
 
-Two ways to scale work according to `--max-tokens` / `--max-usd`.
-
-**Dynamically** — run rounds as long as there is budget:
+The runtime has no token or cost budget (`budget.total` is always `null`, `budget.remaining()` always `Infinity`), so a loop
+must carry its own hard cap: a fixed number of rounds or items, plus a stop on "nothing new". The only run-wide limit is
+the agent count (`--max-agents`, default 1000).
 
 ```ts
+const MAX_ROUNDS = 8
 const notes: string[] = []
-// guard on budget.total: without a limit remaining() is Infinity and the loop would run up to 1000 agents
-while (budget.total !== null && budget.remaining() > 50_000 && notes.length < 40) {
-  const r = await agent(`Find another interesting problem in src/. Already known:\n${notes.slice(-20).join('\n')}`, { label: `probe:${notes.length + 1}` })
+for (let round = 1; round <= MAX_ROUNDS; round++) {
+  const r = await agent(`Find another interesting problem in src/. Already known:\n${notes.slice(-20).join('\n')}`, { label: `probe:${round}` })
   if (!r) break
   notes.push(r)
-  log(`${notes.length} findings, ${Math.round(budget.remaining() / 1000)}k tokens left`)
+  log(`${notes.length} findings, ${Math.round(budget.spent() / 1000)}k output tokens spent`)
 }
+if (notes.length === MAX_ROUNDS) log(`Stopped at the cap of ${MAX_ROUNDS} rounds; there may be more.`)
 ```
 
-**Statically** — fleet size from the budget:
-
-```ts
-const FLEET = budget.total !== null ? Math.max(1, Math.min(20, Math.floor(budget.total / 100_000))) : 5
-log(`fleet: ${FLEET} agents`)
-const outs = await parallel(
-  Array.from({ length: FLEET }, (_, i) => () => agent(`Explore area no. ${i + 1} of ${FLEET}.`, { label: `fleet:${i + 1}` })),
-)
-log(`done: ${outs.filter(Boolean).length}/${FLEET}`)
-```
-
-**Warning:** always have a hard cap on the count (`< 40`, `Math.min(20, …)`), independent of the budget; the budget counts only
-output tokens. With `--max-usd` use `budget.totalUsd` / `budget.remainingUsd()`.
+`budget.spent()` / `budget.spentUsd()` are informational counters (useful in `log()` and in the returned stats).
 
 ## 12. Hybrid: scout inline, then fan-out
 

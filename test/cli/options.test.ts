@@ -4,7 +4,6 @@ import {
   parseCommandLine,
   parseEffort,
   parsePositiveInt,
-  parsePositiveNumber,
 } from '../../src/cli/options.ts'
 import { UsageError } from '../../src/cli/types.ts'
 
@@ -20,10 +19,6 @@ describe('parseCommandLine', () => {
       '4',
       '--max-agents',
       '10',
-      '--max-tokens',
-      '1000',
-      '--max-usd',
-      '2.5',
       '--model',
       'haiku',
       '--effort',
@@ -37,7 +32,6 @@ describe('parseCommandLine', () => {
     assert.deepEqual(p.positionals, ['wf'])
     assert.equal(p.values.args, '{"a":1}')
     assert.equal(p.values.concurrency, '4')
-    assert.equal(p.values['max-usd'], '2.5')
     assert.equal(p.values.quiet, true)
     assert.equal(p.values.json, true)
     assert.equal(p.values['no-color'], true)
@@ -90,14 +84,6 @@ describe('option value validation', () => {
     assert.equal(parsePositiveInt('x', '8'), 8)
     for (const bad of ['0', '-1', '1.5', 'abc', '', '1e3', ' ']) {
       assert.throws(() => parsePositiveInt('concurrency', bad), (e: unknown) => e instanceof UsageError && /--concurrency/.test(e.message), `must reject “${bad}”`)
-    }
-  })
-
-  it('parsePositiveNumber', () => {
-    assert.equal(parsePositiveNumber('max-usd', '0.5'), 0.5)
-    assert.equal(parsePositiveNumber('max-usd', '3'), 3)
-    for (const bad of ['0', '-2', 'NaN', 'Infinity', 'x', '']) {
-      assert.throws(() => parsePositiveNumber('max-usd', bad), UsageError, `must reject “${bad}”`)
     }
   })
 

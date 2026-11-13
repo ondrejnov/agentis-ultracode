@@ -54,7 +54,7 @@ transformation does not need a barrier → rewrite as `pipeline(items, stageA, r
 - **Multi-modal sweep**: parallel agents searching in different ways (by container, content, entity, time).
 - **Completeness critic**: last agent: "what is missing — an unrun modality, an unverified claim, an unread source?"
 - **No silent cuts**: when a workflow limits coverage (top-N, sampling), `log()` what it discarded.
-- **Loop-until-budget**: `while (budget.total && budget.remaining() > 50_000) {…}` — always guard `budget.total`, otherwise `remaining()` is `Infinity`.
+- **Loop-until-budget**: `while (budget.total && budget.remaining() > 50_000) {…}` — in Claude Code only; ultracode has no budget (`budget.total` is always `null`), use a round cap instead.
 - Scale to the ask: "find bugs" → a couple of finders + 1 verification; "thorough audit" → more finders, 3–5 votes, synthesis.
 
 ## Resume

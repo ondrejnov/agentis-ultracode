@@ -145,8 +145,6 @@ describe('runWorkflow: basic run', () => {
         if (b.t !== 'budget') continue
         assert.ok(b.spentOutputTokens >= last)
         last = b.spentOutputTokens
-        assert.equal(b.limitOutputTokens, null)
-        assert.equal(b.limitUsd, null)
       }
       assert.equal(last, out)
     } finally {
@@ -318,7 +316,7 @@ describe('runWorkflow: cache and resume', () => {
         const a = await api.agent('alpha')
         return { a }
       })
-      const s1 = await runWorkflow({ workflow: file, cwd: p.cwd, runner: makeRunner().runner, model: 'haiku', effort: 'low', maxUsd: 5 }, body)
+      const s1 = await runWorkflow({ workflow: file, cwd: p.cwd, runner: makeRunner().runner, model: 'haiku', effort: 'low', maxAgents: 50 }, body)
       assert.equal(s1.status, 'completed')
 
       // without --model/--effort: cache hit, the runner is not called

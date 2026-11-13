@@ -307,13 +307,10 @@ const confirmed: ConfirmedFinding[] = outcomeList
 
 log(`Confirmed ${confirmed.length}, refuted ${rejected}, unverified ${unverified}, files failed ${failedFiles}.`)
 
-// budget (tokens/USD) exhausted: parallel/pipeline turn the budget error into null, so otherwise it would go unnoticed
-const budgetGone = (): boolean => (budget.total !== null && budget.remaining() <= 0) || (budget.totalUsd !== null && budget.remainingUsd() <= 0)
-
 const stats = { files: files.length, filesNotAudited: failedFiles, confirmed: confirmed.length, rejected, unverified }
 
 if (confirmed.length === 0) {
-  return { stats: { ...stats, ...(budgetGone() ? { budgetExceeded: true } : {}) }, confirmed: [], report: null }
+  return { stats, confirmed: [], report: null }
 }
 
 // ───────── Synthesize phase (the barrier is justified: it needs all findings at once) ─────────
@@ -365,4 +362,4 @@ const cleanedReport = report
 
 if (!cleanedReport && !synthBudgetHit) log('Synthesis failed; returning confirmed findings without a summary.')
 
-return { stats: { ...stats, ...(synthBudgetHit || budgetGone() ? { budgetExceeded: true } : {}) }, confirmed, report: cleanedReport }
+return { stats: { ...stats, ...(synthBudgetHit ? { budgetExceeded: true } : {}) }, confirmed, report: cleanedReport }

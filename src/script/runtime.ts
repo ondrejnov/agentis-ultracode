@@ -263,26 +263,16 @@ export function installRuntime(bridge: RuntimeBridge, cfg: RuntimeConfig): void 
 
   const budget = {
     get total(): number | null {
-      const v = bridge.slot(1)
-      return v < 0 ? null : v
-    },
-    get totalUsd(): number | null {
-      const v = bridge.slot(3)
-      return v < 0 ? null : v
+      return null // there is no token limit; kept so that scripts guarding `budget.total` keep working
     },
     spent(): number {
       return bridge.slot(0)
     },
     remaining(): number {
-      const total = bridge.slot(1)
-      return total < 0 ? Infinity : mathMax(0, total - bridge.slot(0))
+      return Infinity
     },
     spentUsd(): number {
-      return bridge.slot(2)
-    },
-    remainingUsd(): number {
-      const total = bridge.slot(3)
-      return total < 0 ? Infinity : mathMax(0, total - bridge.slot(2))
+      return bridge.slot(1)
     },
   }
 

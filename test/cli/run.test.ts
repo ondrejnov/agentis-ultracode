@@ -147,8 +147,6 @@ describe('run: mapping of options to RunOptions', () => {
         '--cwd', cwd,
         '--concurrency', '3',
         '--max-agents', '50',
-        '--max-tokens', '90000',
-        '--max-usd', '1.5',
         '--model', 'haiku',
         '--effort', 'xhigh',
         '--run-id', 'my-run_1',
@@ -164,8 +162,6 @@ describe('run: mapping of options to RunOptions', () => {
     assert.equal(o.cwd, cwd)
     assert.equal(o.concurrency, 3)
     assert.equal(o.maxAgents, 50)
-    assert.equal(o.maxOutputTokens, 90000)
-    assert.equal(o.maxUsd, 1.5)
     assert.equal(o.model, 'haiku')
     assert.equal(o.effort, 'xhigh')
     assert.equal(o.runId, 'my-run_1')
@@ -251,8 +247,8 @@ describe('run: invalid usage (exit 2, engine is not called)', () => {
   })
   it('invalid numeric options and effort', async () => {
     await expectUsage(['run', 'demo', '--concurrency', '0'], /--concurrency/)
-    await expectUsage(['run', 'demo', '--max-usd', 'lots'], /--max-usd/)
-    await expectUsage(['run', 'demo', '--max-tokens', '-5'], /--max-tokens|ambiguous/)
+    await expectUsage(['run', 'demo', '--max-usd', '5'], /max-usd/)
+    await expectUsage(['run', 'demo', '--max-tokens', '5'], /max-tokens/)
     await expectUsage(['run', 'demo', '--effort', 'turbo'], /--effort/)
   })
   it('unknown option', async () => {
@@ -336,15 +332,15 @@ describe('resume', () => {
     assert.equal(cap.out(), '"ok"\n')
   })
 
-  it('resume takes over the same options (--args, --max-usd, --concurrency)', async () => {
+  it('resume takes over the same options (--args, --max-agents, --concurrency)', async () => {
     const eng = fakeEngine(makeSummary({ result: 1 }))
-    await main(['resume', 'wf_prev0001-abc', '--args', '{"x":1}', '--max-usd', '3', '--concurrency', '2'], makeIO().io, {
+    await main(['resume', 'wf_prev0001-abc', '--args', '{"x":1}', '--max-agents', '30', '--concurrency', '2'], makeIO().io, {
       runWorkflow: eng.runWorkflow,
       store: makeStore([{ summary: prev }]),
     })
     const o = eng.calls[0]
     assert.deepEqual(o.args, { x: 1 })
-    assert.equal(o.maxUsd, 3)
+    assert.equal(o.maxAgents, 30)
     assert.equal(o.concurrency, 2)
   })
 

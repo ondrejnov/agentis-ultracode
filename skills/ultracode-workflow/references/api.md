@@ -98,7 +98,7 @@ Starts one agent (a `claude -p` process) and waits for it to finish.
 - **Without `schema`:** returns the agent's final text (`string`).
 - **With `schema`:** the agent is forced to return structured output; returns a validated object.
 - **`null`:** the agent failed after all attempts, or the run was aborted. See section 12.
-- **Exception:** only a script error — invalid prompt/option/schema, exceeded budget or agent limit.
+- **Exception:** only a script error — invalid prompt/option/schema, or exceeded agent limit.
 
 ### Options
 
@@ -115,7 +115,7 @@ Starts one agent (a `claude -p` process) and waits for it to finish.
 | `systemPrompt` | string | — | added AFTER the default subagent system prompt (`--append-system-prompt`) |
 | `stallMs` | number > 0 | 600 000 | silence in the output after which the agent is killed and retried |
 | `timeoutMs` | number > 0 | none | hard limit on the length of one attempt; after it, failure without retry |
-| `maxUsd` | number > 0 | — | spending cap for one agent (`--max-budget-usd`); with `--max-usd` it is limited to the remaining budget |
+| `maxUsd` | number > 0 | — | spending cap for one agent (`--max-budget-usd`) |
 | `noCache` | boolean | `false` | on resume, do not take the stored result of this call |
 
 **Unsupported** options (`isolation`, `agentType`) are rejected by `agent()` with a `TypeError`. Unknown options are
@@ -213,19 +213,17 @@ throw a clear error (`throw new Error('Missing args.question')`) — the run the
 ## 7. `budget`
 
 ```ts
-budget.total          // number | null   output token cap (--max-tokens), null = no limit
-budget.totalUsd       // number | null   USD cap (--max-usd)
-budget.spent()        // output tokens spent in the run (including nested workflows)
-budget.remaining()    // max(0, total - spent()), Infinity without a limit
-budget.spentUsd()
-budget.remainingUsd() // Infinity without a limit
+budget.spent()        // output tokens spent in the run so far (including nested workflows)
+budget.spentUsd()     // cost reported by agents so far
+budget.total          // always null
+budget.remaining()    // always Infinity
 ```
 
-- **Output** tokens and `total_cost_usd` reported by agents are counted. Values are updated when an agent finishes.
-- The cap is hard: once reached, every further `agent()` throws an error with `code === 'BUDGET_EXCEEDED'` and the run
-  is marked `budgetExceeded`. Agents already running finish (their `--max-budget-usd` is limited by the remaining USD).
-- Always guard loops with `budget.total` — without a limit `remaining()` is `Infinity` and the loop would run up to the
-  1000-agent limit: `while (budget.total && budget.remaining() > 50_000) { … }`.
+- There is **no token or cost limit**; `budget` only exposes spending counters (updated when an agent finishes).
+  `total` and `remaining()` exist only so that scripts written for Claude Code keep working — a loop guarded by
+  `budget.total && …` never runs here, so give loops their own cap (rounds, items).
+- The only run-wide limit is the number of agents (`--max-agents`): once reached, every further `agent()` throws an error
+  with `code === 'BUDGET_EXCEEDED'` and the run is marked `budgetExceeded`. Agents already running finish.
 
 ## 8. `workflow(nameOrRef, args?)`
 
@@ -265,7 +263,6 @@ Reason: resume must reach the same calls for the same script and input. Pass the
 | agents per run | 1000 | `--max-agents` |
 | items in one `parallel`/`pipeline` | 4096 | — (split into batches) |
 | `workflow()` depth | 1 | — |
-| tokens / USD | no limit | `--max-tokens`, `--max-usd` |
 | attempts per agent | 3 (schema +1) | — |
 | `stallMs` | 600 000 ms | `agent({ stallMs })` |
 
@@ -280,7 +277,7 @@ Agents above the concurrency limit wait in a queue; a batch of 100 items therefo
 | invalid schema / option / prompt | `agent()` throws `TypeError`; the script crashes unless caught |
 | agent failed after all attempts | `agent()` returns `null`; `totals.failedAgents`++; event `agent_done` with `error` |
 | abort (Ctrl+C, SIGTERM) | agents are killed including their children; the run is `aborted`, exit 130; `agent()` returns `null` |
-| exhausted budget / agent limit | `agent()` throws error `BUDGET_EXCEEDED`; in `parallel`/`pipeline` it becomes `null` |
+| agent limit reached | `agent()` throws error `BUDGET_EXCEEDED`; in `parallel`/`pipeline` it becomes `null` |
 | exception in the script | run `failed`, exit 1, `error` in `run.json`; completed agents are in the journal for resume |
 | `DeterminismError` | same as an exception in the script |
 | script waits on a Promise that is never resolved | error "Script stalled" |

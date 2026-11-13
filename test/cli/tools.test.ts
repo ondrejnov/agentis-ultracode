@@ -320,7 +320,7 @@ describe('help and version', () => {
     const a = makeIO()
     assert.equal(await main(['help', 'run'], a.io, {}), 0)
     assert.match(a.out(), /Usage: ultracode run/)
-    assert.match(a.out(), /--max-usd/)
+    assert.match(a.out(), /--max-agents/)
     let engineCalled = false
     const b = makeIO()
     const code = await main(['run', '--help'], b.io, {

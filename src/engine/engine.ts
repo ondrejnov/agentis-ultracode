@@ -100,9 +100,13 @@ export function resolveConcurrency(requested?: number, env: NodeJS.ProcessEnv = 
  * Agentis telemetry target: on when ultracode runs inside an Agentis run (env `AGENTIS_TASK_ID`, `AGENTIS_RUN_ID`
  * and `AGENTIS_ENDPOINT`, which agentiscode needs), unless `ULTRACODE_AGENTIS_TELEMETRY` is `0`/`false`/`no`/`off`.
  * Parent session = the Claude Code session that started ultracode (`CLAUDE_CODE_SESSION_ID`, then `AGENTIS_SESSION_ID`).
+ * Off by default under the node test runner (`NODE_TEST_CONTEXT`, inherited by spawned CLIs), so a test suite run inside
+ * an Agentis run does not write its fixture workflows into the real transcript; `ULTRACODE_AGENTIS_TELEMETRY=1` forces it on.
  */
 export function resolveAgentisTelemetry(env: NodeJS.ProcessEnv = process.env): AgentisTelemetryTarget | null {
-  if (/^(0|false|no|off)$/i.test(env.ULTRACODE_AGENTIS_TELEMETRY?.trim() ?? '')) return null
+  const flag = env.ULTRACODE_AGENTIS_TELEMETRY?.trim() ?? ''
+  if (/^(0|false|no|off)$/i.test(flag)) return null
+  if (env.NODE_TEST_CONTEXT && !/^(1|true|yes|on)$/i.test(flag)) return null
   const taskId = env.AGENTIS_TASK_ID?.trim()
   const runId = env.AGENTIS_RUN_ID?.trim()
   if (!taskId || !runId || !env.AGENTIS_ENDPOINT?.trim()) return null
@@ -218,8 +222,6 @@ interface StoredRunOptions {
   effort?: EffortLevel
   concurrency?: number
   maxAgents?: number
-  maxOutputTokens?: number
-  maxUsd?: number
   permissionMode?: PermissionMode
 }
 
@@ -235,12 +237,13 @@ function readStoredOptions(runDir: string): StoredRunOptions {
 /** Explicitly given options take precedence; missing ones are filled in from the stored options (only on resume). */
 function mergeOptions(opts: RunOptions, stored: StoredRunOptions): StoredRunOptions {
   const out: StoredRunOptions = { ...stored }
+  // runs stored by older versions may carry the removed token/USD limits
+  delete (out as { maxUsd?: unknown }).maxUsd
+  delete (out as { maxOutputTokens?: unknown }).maxOutputTokens
   if (opts.model !== undefined) out.model = opts.model
   if (opts.effort !== undefined) out.effort = opts.effort
   if (opts.concurrency !== undefined) out.concurrency = opts.concurrency
   if (opts.maxAgents !== undefined) out.maxAgents = opts.maxAgents
-  if (opts.maxOutputTokens !== undefined) out.maxOutputTokens = opts.maxOutputTokens
-  if (opts.maxUsd !== undefined) out.maxUsd = opts.maxUsd
   if (opts.permissionMode !== undefined) out.permissionMode = opts.permissionMode
   return out
 }
@@ -453,8 +456,6 @@ async function runWorkflowImpl(opts: RunOptions, deps: EngineDeps, lock: { relea
   let endedAt = ''
   let durationMs = 0
 
-  const limitTokens = typeof eff.maxOutputTokens === 'number' && Number.isFinite(eff.maxOutputTokens) && eff.maxOutputTokens >= 0 ? eff.maxOutputTokens : null
-  const limitUsd = typeof eff.maxUsd === 'number' && Number.isFinite(eff.maxUsd) && eff.maxUsd >= 0 ? eff.maxUsd : null
   const maxAgents = typeof eff.maxAgents === 'number' && Number.isFinite(eff.maxAgents) && eff.maxAgents >= 0 ? Math.floor(eff.maxAgents) : DEFAULT_MAX_AGENTS
   let spentTokens = 0
   let spentUsd = 0
@@ -462,9 +463,7 @@ async function runWorkflowImpl(opts: RunOptions, deps: EngineDeps, lock: { relea
   const budgetBuffer = new SharedArrayBuffer(BUDGET_SLOTS * Float64Array.BYTES_PER_ELEMENT)
   const budgetView = new Float64Array(budgetBuffer)
   budgetView[0] = 0
-  budgetView[1] = limitTokens ?? -1
-  budgetView[2] = 0
-  budgetView[3] = limitUsd ?? -1
+  budgetView[1] = 0
 
   const warnedWriteErrors = new Set<string>()
   const onWriteError = (what: string) => (err: unknown) => {
@@ -552,11 +551,6 @@ async function runWorkflowImpl(opts: RunOptions, deps: EngineDeps, lock: { relea
     reporter = (deps.agentisReporter ?? agentisReporterFromEnv(process.env, onReportError))(agentis)
   }
   const semaphore = new Semaphore(concurrencyLimit)
-  // USD budget: sum of the caps allocated to running agents (reservations), so that concurrent agents do not each draw the whole remainder.
-  let reservedUsd = 0
-  let runningAgents = 0
-  // agents waiting for a reservation to be released (if the remaining budget cannot be split, they wait instead of failing)
-  const budgetWaiters: Array<() => void> = []
   const inflight = new Set<Promise<unknown>>()
   const seqByKey = new Map<string, number>()
   const phaseByPath = new Map<string, string>()
@@ -578,19 +572,10 @@ async function runWorkflowImpl(opts: RunOptions, deps: EngineDeps, lock: { relea
     return new BudgetExceededError(message)
   }
 
-  const checkBudget = (call: HookCall): void => {
-    if (limitTokens !== null && spentTokens >= limitTokens) {
-      throw budgetError(`Output token budget exhausted (${spentTokens} of ${limitTokens}).`, call)
-    }
-    if (limitUsd !== null && spentUsd >= limitUsd) {
-      throw budgetError(`USD budget exhausted (${spentUsd.toFixed(4)} of ${limitUsd}).`, call)
-    }
-  }
-
   const publishBudget = (): void => {
     budgetView[0] = spentTokens
-    budgetView[2] = spentUsd
-    emit({ t: 'budget', ts: nowIso(), spentOutputTokens: spentTokens, spentUsd, limitOutputTokens: limitTokens, limitUsd })
+    budgetView[1] = spentUsd
+    emit({ t: 'budget', ts: nowIso(), spentOutputTokens: spentTokens, spentUsd })
   }
 
   const runAgent = async (prompt: string, aopts: AgentOptions, call: HookCall): Promise<unknown> => {
@@ -659,34 +644,13 @@ async function runWorkflowImpl(opts: RunOptions, deps: EngineDeps, lock: { relea
     } catch {
       return null // aborted while waiting
     }
-    runningAgents++
-    let myCap = 0
     try {
       if (runSignal.aborted) return null
-      // the budget may have been exhausted while waiting → check again (guards agents starting concurrently)
-      checkBudget(call)
 
       // (4) start the agent
       const id = ++agentSeq
-      emit({ t: 'agent_start', ts: nowIso(), id, label, phase, workflowPath: call.workflowPath, ...(model !== undefined ? { model } : {}), promptPreview: previewOf(prompt) })
 
-      let maxBudgetUsd = aopts.maxUsd
-      if (limitUsd !== null) {
-        let avail = limitUsd - spentUsd - reservedUsd
-        while (avail <= 0) {
-          // nothing to split: either we wait for running agents (they return their reservation), or the budget is really exhausted
-          if (reservedUsd <= 0 || runSignal.aborted) throw budgetError(`USD budget exhausted (${spentUsd.toFixed(4)} of ${limitUsd}).`, call)
-          await new Promise<void>((resolveWait) => budgetWaiters.push(resolveWait))
-          if (runSignal.aborted) return null
-          checkBudget(call)
-          avail = limitUsd - spentUsd - reservedUsd
-        }
-        // share based on actual demand (running + waiting agents); the sum of allocated caps will not exceed the remaining budget
-        const share = avail / Math.max(1, runningAgents + semaphore.waiting)
-        maxBudgetUsd = maxBudgetUsd === undefined ? share : Math.min(maxBudgetUsd, share)
-        myCap = maxBudgetUsd
-        reservedUsd += myCap
-      }
+      emit({ t: 'agent_start', ts: nowIso(), id, label, phase, workflowPath: call.workflowPath, ...(model !== undefined ? { model } : {}), promptPreview: previewOf(prompt) })
       const req: ClaudeRunRequest = {
         prompt,
         cwd: agentCwd,
@@ -722,7 +686,7 @@ async function runWorkflowImpl(opts: RunOptions, deps: EngineDeps, lock: { relea
       // Even an empty list `tools: []` is an explicit choice → dontAsk (otherwise the agent would get all tools).
       if (eff.permissionMode !== undefined) req.permissionMode = eff.permissionMode
       else if (aopts.tools !== undefined) req.permissionMode = 'dontAsk'
-      if (maxBudgetUsd !== undefined) req.maxBudgetUsd = maxBudgetUsd
+      if (aopts.maxUsd !== undefined) req.maxBudgetUsd = aopts.maxUsd
       if (aopts.stallMs !== undefined) req.stallMs = aopts.stallMs
       if (aopts.timeoutMs !== undefined) req.timeoutMs = aopts.timeoutMs
 
@@ -810,9 +774,6 @@ async function runWorkflowImpl(opts: RunOptions, deps: EngineDeps, lock: { relea
       void runJson.request()
       return ok ? value : null
     } finally {
-      runningAgents--
-      reservedUsd -= myCap
-      for (const wake of budgetWaiters.splice(0)) wake()
       release()
     }
   }

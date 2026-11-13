@@ -138,18 +138,8 @@ export function renderEvent(e: RunEvent, state: RenderState, opts: RenderOptions
       }
       break
     }
-    case 'budget': {
-      const parts: string[] = []
-      if (e.limitOutputTokens !== null) {
-        const pct = e.limitOutputTokens > 0 ? Math.round((e.spentOutputTokens / e.limitOutputTokens) * 100) : 0
-        parts.push(`${formatCount(e.spentOutputTokens)} / ${formatCount(e.limitOutputTokens)} output tokens (${pct} %)`)
-      }
-      if (e.limitUsd !== null) {
-        parts.push(`${formatUsd(e.spentUsd)} / ${formatUsd(e.limitUsd)}`)
-      }
-      if (parts.length > 0) push(s.dim(`  budget: ${parts.join('  |  ')}`))
-      break
-    }
+    case 'budget':
+      break // spending counters only; the totals are printed at the end of the run
     case 'run_end': {
       const color = e.status === 'completed' ? s.green : e.status === 'aborted' ? s.yellow : s.red
       push(

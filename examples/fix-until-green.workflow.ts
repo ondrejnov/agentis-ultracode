@@ -197,11 +197,6 @@ DO NOT fix anything and DO NOT modify any file. If the command cannot be started
       status = 'max-rounds' // no fixing after the last round: no unverified fix is left behind
       break
     }
-    if ((budget.total !== null && budget.remaining() < 100_000) || (budget.totalUsd !== null && budget.remainingUsd() < 1)) {
-      status = 'budget'
-      log('Too little budget left for another round; stopping.')
-      break
-    }
 
     // 3) split failures into groups by file (disjoint ownership)
     const byFile = new Map<string, Failure[]>()

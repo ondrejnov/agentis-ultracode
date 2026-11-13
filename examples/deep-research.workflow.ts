@@ -191,9 +191,6 @@ const SYNTH_SCHEMA = {
 const normalizeKey = (s: string): string =>
   s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim().replace(/\s+/g, ' ').slice(0, 160)
 
-// Budget (tokens and USD): parallel/pipeline turn the budget error into null, so exhaustion is visible only here.
-const budgetGone = (): boolean => (budget.total !== null && budget.remaining() <= 0) || (budget.totalUsd !== null && budget.remainingUsd() <= 0)
-const budgetLow = (): boolean => (budget.total !== null && budget.remaining() < 150_000) || (budget.totalUsd !== null && budget.remainingUsd() < 1)
 const isBudgetError = (e: unknown): boolean => e !== null && typeof e === 'object' && (e as { code?: unknown }).code === 'BUDGET_EXCEEDED'
 
 const isHttpUrl = (u: unknown): u is string => typeof u === 'string' && /^https?:\/\/\S+$/i.test(u)
@@ -272,11 +269,6 @@ let stoppedBecause = 'rounds'
 
 for (let round = 1; round <= ROUNDS; round++) {
   roundsDone = round
-  if (budgetLow()) {
-    stoppedBecause = 'budget'
-    log('Remaining budget is too low (tokens or USD); the next round is not started.')
-    break
-  }
 
   // 1) sweep: each agent searches differently; the barrier is justified here because dedup needs all of them at once
   phase('Sweep')
@@ -301,7 +293,7 @@ for (let round = 1; round <= ROUNDS; round++) {
   log(`Round ${round}: ${swept.fresh.length} new claims from ${tasks.length - swept.failed}/${tasks.length} sweeps.`)
 
   if (toVerify.length === 0) {
-    stoppedBecause = budgetGone() ? 'budget' : 'dry'
+    stoppedBecause = 'dry'
     break
   }
 
@@ -352,11 +344,6 @@ List the URLs you relied on in "otherUrls". Open the pages you cite. Do not modi
   verified.push(...good)
   log(`Round ${round}: verified ${good.filter((g) => g.status === 'verified').length}, single source ${good.filter((g) => g.status === 'single-source').length}, disputed ${good.filter((g) => g.status === 'disputed').length}, rejected ${toVerify.length - good.length}.`)
 
-  if (budgetGone()) {
-    stoppedBecause = 'budget'
-    log('Budget exhausted; the next round is not started.')
-    break
-  }
   if (round === ROUNDS) break
 
   // 3) completeness critic: what is missing? This becomes the work for the next round.
@@ -398,7 +385,7 @@ Do not modify any files.`,
 // disputed claims go into synthesis on purpose (as disputed); rejected ones are no longer in `verified`
 const usable = verified
 if (usable.length === 0) {
-  const outOfBudget = stoppedBecause === 'budget' || budgetGone()
+  const outOfBudget = stoppedBecause === 'budget'
   return {
     question: QUESTION,
     answer: null,

@@ -118,20 +118,18 @@ declare function log(message: string): void
 declare const args: any
 
 /**
- * Run budget (from `--max-tokens` / `--max-usd`). `total` is `null` when no limit is set.
- * The limit is a hard cap: once reached, further `agent()` calls throw an error.
+ * Run spending counters. There is no token or USD limit: `total` is always `null` and `remaining()` always `Infinity`
+ * (both kept only so that scripts written for Claude Code keep working).
  */
 declare const budget: {
-  /** Output token cap or `null`. */
-  total: number | null
-  /** USD spend cap or `null`. */
-  totalUsd: number | null
+  /** Always `null` (no limit). */
+  total: null
   /** Spent output tokens (whole run including nested workflows). */
   spent(): number
-  /** `max(0, total - spent())`, or `Infinity` without a limit. */
+  /** Always `Infinity`. */
   remaining(): number
+  /** Cost reported by the agents so far (informational; there is no USD limit). */
   spentUsd(): number
-  remainingUsd(): number
 }
 
 /**

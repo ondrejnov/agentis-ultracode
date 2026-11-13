@@ -25,8 +25,8 @@ example run `php8-upgrade-wf_003aa2c5-8ce.js` (21 agents, `agent → pipeline(fi
    + the sequence number of the same key. An identical call returns the stored result, otherwise it runs again — robust against the nondeterministic order in `parallel()`.
    If an upstream agent's output changes, the prompt of downstream agents changes and they run again automatically (same effect as in Claude Code).
 2. **`agent()` returns `null`** on a terminal failure (after retry/stall restarts) and on abort, just like in Claude Code;
-   the script must handle `null`. Script errors (invalid schema, exceeded budget) throw.
-3. **Budget** = output tokens (`--max-tokens`) and/or USD (`--max-usd`), a hard cap: once reached, the next `agent()` throws `BudgetExceededError`
+   the script must handle `null`. Script errors (invalid schema, exceeded agent limit) throw.
+3. **No token/cost budget**: `budget` exposes only spending counters. The agent limit (`--max-agents`) is a hard cap: once reached, the next `agent()` throws `BudgetExceededError`
    (inside `parallel`/`pipeline` it turns into `null`, the run finishes with a partial result and `budgetExceeded: true`).
 4. **Subagents have workflows disabled** (`CLAUDE_CODE_DISABLE_WORKFLOWS=1` + `--disallowedTools Workflow`), otherwise the user's global
    `ultracode` setting would run recursive workflows from the children.

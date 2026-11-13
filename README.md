@@ -229,7 +229,7 @@ uložený výsledek. Selhaní agenti se neukládají, takže se zopakují. Skrip
 **Skript musí být deterministický.** Kvůli resume vyhazují `Date.now()`, `Math.random()` a `new Date()` bez
 argumentu chybu. Čas nebo náhodu předej přes `args`.
 
-**Limity jsou tvrdé.** `--max-agents` a `--max-tokens` běh po překročení ukončí. Hotovou práci neztratíš:
+**Limit je tvrdý.** `--max-agents` běh po překročení ukončí. Hotovou práci neztratíš:
 zvyš limit a pokračuj přes `resume`.
 
 ## API skriptu
@@ -245,7 +245,7 @@ zvyš limit a pokračuj přes `resume`.
 | `parallel(thunks)` | spustí funkce souběžně a počká na všechny (**bariéra**); funkce s chybou vrací `null` |
 | `phase(title)`, `log(msg)` | fáze a zprávy do průběhu i do `events.jsonl` |
 | `args` | vstup z `--args` nebo `--args-file` jako skutečný JSON |
-| `budget` | `total`, `spent()`, `remaining()` (tokeny) a `totalUsd`, `spentUsd()`, `remainingUsd()` |
+| `budget` | jen počítadla útraty: `spent()` (výstupní tokeny) a `spentUsd()`; limit neexistuje (`total` je vždy `null`) |
 | `workflow(nameOrRef, args?)` | spustí jiný workflow uvnitř tohoto (vnoření jen o jednu úroveň) |
 
 Volby `agent()`:
@@ -293,7 +293,7 @@ Volby `run` a `resume`:
 | --- | --- |
 | `--args <json>`, `--args-file <cesta>` | vstup workflow (globál `args`) |
 | `--run-id <id>` | vlastní ID běhu; jinak `wf_<8 hex>-<3 hex>` |
-| `--max-usd <x>`, `--max-tokens <n>`, `--max-agents <n>` | tvrdé limity útraty, výstupních tokenů a počtu agentů |
+| `--max-agents <n>` | tvrdý limit počtu agentů |
 | `--concurrency <n>` | nejvyšší počet souběžných agentů |
 | `--model <m>`, `--effort <úroveň>` | výchozí model a úsilí agentů (`low`, `medium`, `high`, `xhigh`, `max`) |
 | `--cwd <dir>` | adresář projektu: `cwd` agentů a kořen `.ultracode/` |
@@ -410,7 +410,7 @@ Subagenti dostávají `CLAUDE_CODE_DISABLE_WORKFLOWS=1`, aby nevznikala rekurziv
 | Spuštění | nástroj `Workflow` v session | samostatné CLI; každý agent je `agentiscode` → `claude -p` |
 | Oprávnění agentů | podle session | vždy `--dangerously-skip-permissions` (spouštěj v kontejneru nebo VM) |
 | Resume | nezměněný prefix volání | podle obsahu: klíč = prompt, schema, model, effort, cwd a nástroje |
-| Rozpočet | tokeny turnu | `--max-tokens` i `--max-usd` |
+| Rozpočet | tokeny turnu | žádný (jen `--max-agents`) |
 | Volby `agent()` navíc | — | `cwd`, `tools`, `disallowedTools`, `systemPrompt`, `stallMs`, `timeoutMs`, `maxUsd`, `noCache` |
 | Pozorování | UI `/workflows` | `stderr`, `events.jsonl`, `status`, `logs --follow`, `run --json` |
 | `isolation: 'worktree'` | ano | **ne** (volba je odmítnuta; používej rozdělení podle cest) |

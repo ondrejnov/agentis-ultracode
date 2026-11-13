@@ -137,115 +137,15 @@ describe('agent limit', () => {
     }
   })
 
-  test('cache hits count towards maxAgents (every agent() call is an agent), but do not consume the budget', async () => {
-    const p = makeProject()
-    try {
-      const body = scriptDeps(async (api) => [await api.agent('a'), await api.agent('b')])
-      const s1 = await runWorkflow({ workflow: p.script(), cwd: p.cwd, runner: makeRunner().runner, maxOutputTokens: 1000 }, body)
-      const stub = makeRunner()
-      const s2 = await runWorkflow({ workflow: p.script(), cwd: p.cwd, runner: stub.runner, resumeRunId: s1.runId, maxOutputTokens: 1 }, body)
-      assert.equal(s2.status, 'completed')
-      assert.equal(s2.budgetExceeded, undefined)
-      assert.equal(stub.calls.length, 0)
-    } finally {
-      p.cleanup()
-    }
-  })
 })
 
 describe('budget', () => {
-  test('output tokens: after the cap is reached the next agent() throws, budget reads usage via SAB', async () => {
-    const p = makeProject()
-    try {
-      const stub = makeRunner({ outputTokens: 60 })
-      let caught: string | undefined
-      let spentAfter2 = -1
-      const summary = await runWorkflow(
-        { workflow: p.script(), cwd: p.cwd, runner: stub.runner, maxOutputTokens: 100 },
-        scriptDeps(async (api) => {
-          assert.equal(api.budget.total, 100)
-          assert.equal(api.budget.totalUsd, null)
-          assert.equal(api.budget.spent(), 0)
-          await api.agent('1')
-          await api.agent('2')
-          spentAfter2 = api.budget.spent()
-          try {
-            await api.agent('3')
-          } catch (e) {
-            caught = (e as { code?: string }).code
-          }
-          return 'konec'
-        }),
-      )
-      assert.equal(stub.calls.length, 2)
-      assert.equal(spentAfter2, 120)
-      assert.equal(caught, 'BUDGET_EXCEEDED')
-      assert.equal(summary.status, 'completed')
-      assert.equal(summary.budgetExceeded, true)
-      assert.equal(summary.totals.usage.outputTokens, 120)
-      const lastBudget = eventsOf(summary).filter((e) => e.t === 'budget').pop()
-      assert.ok(lastBudget && lastBudget.t === 'budget')
-      assert.equal(lastBudget.spentOutputTokens, 120)
-      assert.equal(lastBudget.limitOutputTokens, 100)
-      assert.equal(lastBudget.limitUsd, null)
-    } finally {
-      p.cleanup()
-    }
-  })
-
-  test('USD: the cap is respected and the agent gets the remaining amount as --max-budget-usd', async () => {
-    const p = makeProject()
-    try {
-      const stub = makeRunner({ costUsd: 0.03 })
-      const summary = await runWorkflow(
-        { workflow: p.script(), cwd: p.cwd, runner: stub.runner, maxUsd: 0.05 },
-        scriptDeps(async (api) => {
-          const out: unknown[] = []
-          for (let i = 0; i < 4; i++) {
-            try {
-              out.push(await api.agent(`u${i}`))
-            } catch {
-              out.push('BUDGET')
-            }
-          }
-          assert.ok(api.budget.spentUsd() >= 0.06 - 1e-9)
-          return out
-        }),
-      )
-      assert.deepEqual(summary.result, ['out:u0', 'out:u1', 'BUDGET', 'BUDGET'])
-      assert.equal(stub.calls.length, 2)
-      assert.ok(Math.abs((stub.calls[0].maxBudgetUsd ?? -1) - 0.05) < 1e-9)
-      assert.ok(Math.abs((stub.calls[1].maxBudgetUsd ?? -1) - 0.02) < 1e-9)
-      assert.equal(summary.budgetExceeded, true)
-    } finally {
-      p.cleanup()
-    }
-  })
-
-  test('concurrently starting agents: the queue behind the semaphore re-checks the budget', async () => {
-    const p = makeProject()
-    try {
-      const stub = makeRunner({ outputTokens: 30, delayMs: 5 })
-      const summary = await runWorkflow(
-        { workflow: p.script(), cwd: p.cwd, runner: stub.runner, concurrency: 1, maxOutputTokens: 50 },
-        scriptDeps(async (api) => api.parallel(Array.from({ length: 6 }, (_, i) => () => api.agent(`q${i}`)))),
-      )
-      // 30 → 60 >= 50: nobody else may start, even though all 6 calls passed the first check
-      assert.equal(stub.calls.length, 2)
-      assert.deepEqual(summary.result, ['out:q0', 'out:q1', null, null, null, null])
-      assert.equal(summary.budgetExceeded, true)
-      assert.equal(summary.status, 'completed')
-    } finally {
-      p.cleanup()
-    }
-  })
-
-  test('a failed agent also consumes the budget (tokens and USD are lost)', async () => {
+  test('the usage of a failed agent is still counted', async () => {
     const p = makeProject()
     try {
       const stub = makeRunner({ outputTokens: 40, costUsd: 0.01, fail: () => 'boom' })
       const summary = await runWorkflow(
-        { workflow: p.script(), cwd: p.cwd, runner: stub.runner, maxOutputTokens: 1000 },
+        { workflow: p.script(), cwd: p.cwd, runner: stub.runner },
         scriptDeps(async (api) => {
           await api.agent('a')
           return api.budget.spent()
@@ -267,10 +167,10 @@ describe('budget', () => {
         { workflow: p.script(), cwd: p.cwd, runner: makeRunner({ outputTokens: 7 }).runner },
         scriptDeps(async (api) => {
           await api.agent('x')
-          return { total: api.budget.total, totalUsd: api.budget.totalUsd, spent: api.budget.spent() }
+          return { total: api.budget.total, spent: api.budget.spent() }
         }),
       )
-      assert.deepEqual(summary.result, { total: null, totalUsd: null, spent: 7 })
+      assert.deepEqual(summary.result, { total: null, spent: 7 })
     } finally {
       p.cleanup()
     }
@@ -289,6 +189,9 @@ describe('Agentis telemetry', () => {
     assert.equal(resolveAgentisTelemetry({ ...env, AGENTIS_RUN_ID: ' ' }), null)
     for (const off of ['0', 'false', 'OFF', 'no']) assert.equal(resolveAgentisTelemetry({ ...env, ULTRACODE_AGENTIS_TELEMETRY: off }), null)
     assert.notEqual(resolveAgentisTelemetry({ ...env, ULTRACODE_AGENTIS_TELEMETRY: '1' }), null)
+    // under the node test runner it is off unless forced on (tests must not write into a real Agentis transcript)
+    assert.equal(resolveAgentisTelemetry({ ...env, NODE_TEST_CONTEXT: 'child-v8' }), null)
+    assert.notEqual(resolveAgentisTelemetry({ ...env, NODE_TEST_CONTEXT: 'child-v8', ULTRACODE_AGENTIS_TELEMETRY: '1' }), null)
   })
 
   test('every agent gets the target and a session title "[phase] label #id"; null turns it off', async () => {

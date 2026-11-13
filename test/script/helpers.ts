@@ -61,13 +61,11 @@ export function makeHooks(options: MockOptions = {}): MockHooks {
   }
 }
 
-export function budgetBuffer(init: { spent?: number; total?: number; spentUsd?: number; totalUsd?: number } = {}): SharedArrayBuffer {
+export function budgetBuffer(init: { spent?: number; spentUsd?: number } = {}): SharedArrayBuffer {
   const buf = new SharedArrayBuffer(BUDGET_SLOTS * 8)
   const v = new Float64Array(buf)
   v[0] = init.spent ?? 0
-  v[1] = init.total ?? -1
-  v[2] = init.spentUsd ?? 0
-  v[3] = init.totalUsd ?? -1
+  v[1] = init.spentUsd ?? 0
   return buf
 }
 

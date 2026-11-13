@@ -214,11 +214,10 @@ export interface ScriptHooks {
 
 /**
  * Layout of the SharedArrayBuffer (Float64Array) for `budget` — synchronous reads in the script:
- *   [0] spentOutputTokens   [1] totalOutputTokens (-1 = no limit)
- *   [2] spentUsd            [3] totalUsd          (-1 = no limit)
+ *   [0] spentOutputTokens   [1] spentUsd
  * Only the engine (main thread) writes to it.
  */
-export const BUDGET_SLOTS = 4
+export const BUDGET_SLOTS = 2
 
 export interface RunScriptRequest {
   source: string
@@ -254,8 +253,6 @@ export interface RunOptions {
   concurrency?: number
   /** Total agents per run (default 1000). */
   maxAgents?: number
-  maxOutputTokens?: number
-  maxUsd?: number
   /** Default model/effort for agents that do not specify them. */
   model?: string
   effort?: EffortLevel
@@ -310,5 +307,5 @@ export type RunEvent =
    */
   | { t: 'agent_event'; ts: string; id: number; label: string; attempt: number; event: Record<string, unknown> }
   | { t: 'agent_done'; ts: string; id: number; ok: boolean; cached: boolean; durationMs: number; usage: TokenUsage; costUsd: number; toolCalls: number; error?: string }
-  | { t: 'budget'; ts: string; spentOutputTokens: number; spentUsd: number; limitOutputTokens: number | null; limitUsd: number | null }
+  | { t: 'budget'; ts: string; spentOutputTokens: number; spentUsd: number }
   | { t: 'run_end'; ts: string; status: RunStatus; durationMs: number; totals: RunTotals; error?: string }

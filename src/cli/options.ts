@@ -23,8 +23,6 @@ const RUN_OPTS: Record<string, OptDef> = {
   'args-file': { type: 'string' },
   concurrency: { type: 'string' },
   'max-agents': { type: 'string' },
-  'max-tokens': { type: 'string' },
-  'max-usd': { type: 'string' },
   model: { type: 'string' },
   effort: { type: 'string' },
   'run-id': { type: 'string' },
@@ -95,16 +93,6 @@ export function parsePositiveInt(name: string, raw: string | undefined): number 
   if (!/^\d+$/.test(raw.trim())) throw new UsageError(`Option --${name} must be a positive integer (got "${raw}").`)
   const n = Number(raw)
   if (!Number.isSafeInteger(n) || n < 1) throw new UsageError(`Option --${name} must be a positive integer (got "${raw}").`)
-  return n
-}
-
-export function parsePositiveNumber(name: string, raw: string | undefined): number | undefined {
-  if (raw === undefined) return undefined
-  const trimmed = raw.trim()
-  const n = Number(trimmed)
-  if (trimmed === '' || !Number.isFinite(n) || n <= 0) {
-    throw new UsageError(`Option --${name} must be a positive number (got "${raw}").`)
-  }
   return n
 }
 

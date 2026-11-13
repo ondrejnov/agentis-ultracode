@@ -1,4 +1,4 @@
-/** Regression tests: budget of concurrent agents, cache after moving the project, lock holder identity. */
+/** Regression tests: cache after moving the project, lock holder identity. */
 import assert from 'node:assert/strict'
 import { renameSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
@@ -6,47 +6,6 @@ import { describe, test } from 'node:test'
 import { runWorkflow } from '../../src/engine/engine.ts'
 import { lockHolderAlive, processStartTime } from '../../src/engine/proc.ts'
 import { makeProject, makeRunner, scriptDeps } from './helpers.ts'
-
-describe('USD budget with concurrent agents', () => {
-  test('the second agent waits for the reservation to be released and gets the remainder (not an error, not the whole limit)', async () => {
-    const p = makeProject()
-    try {
-      const stub = makeRunner({ delayMs: 30, costUsd: 0.08 })
-      const summary = await runWorkflow(
-        { workflow: p.script(), cwd: p.cwd, runner: stub.runner, concurrency: 2, maxUsd: 0.1 },
-        scriptDeps(async (api) => api.parallel([() => api.agent('first'), () => api.agent('second')])),
-      )
-      assert.equal(summary.status, 'completed')
-      assert.ok(Array.isArray(summary.result))
-      assert.ok((summary.result as unknown[]).every((r) => r !== null), 'both agents got a result')
-      assert.equal(stub.calls.length, 2)
-      // the first reserved the whole limit, the second got only the remainder after its spending
-      assert.ok(Math.abs((stub.calls[0].maxBudgetUsd ?? -1) - 0.1) < 1e-9)
-      assert.ok(Math.abs((stub.calls[1].maxBudgetUsd ?? -1) - 0.02) < 1e-9)
-    } finally {
-      p.cleanup()
-    }
-  })
-
-  test('sequential agents get the whole remainder (demand = 1), not a share based on the number of slots', async () => {
-    const p = makeProject()
-    try {
-      const stub = makeRunner({ costUsd: 0.01 })
-      await runWorkflow(
-        { workflow: p.script(), cwd: p.cwd, runner: stub.runner, concurrency: 4, maxUsd: 0.1 },
-        scriptDeps(async (api) => {
-          await api.agent('a')
-          await api.agent('b')
-          return null
-        }),
-      )
-      assert.ok(Math.abs((stub.calls[0].maxBudgetUsd ?? -1) - 0.1) < 1e-9)
-      assert.ok(Math.abs((stub.calls[1].maxBudgetUsd ?? -1) - 0.09) < 1e-9)
-    } finally {
-      p.cleanup()
-    }
-  })
-})
 
 describe('cache after moving the project', () => {
   test('the cache key uses the path relative to the project → resume from a renamed directory is a 100% cache hit', async () => {
