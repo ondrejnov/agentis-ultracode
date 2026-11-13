@@ -1,26 +1,65 @@
 # agentis-ultracode
 
-Runtime pro **dynamické workflow** inspirované `/workflows` v Claude Code. Skript v TypeScriptu řídí desítky
-až stovky agentů; každý agent je samostatný proces `agentiscode --adapter claude` (wrapper nad `claude -p`
-s jednotným JSON výstupem).
+`ultracode` spouští **workflow**: krátký skript v TypeScriptu, který rozdělí velkou úlohu mezi desítky až
+stovky AI agentů, nechá je pracovat souběžně a jejich výsledky složí do jednoho JSON výstupu.
 
-Skript tvoří deterministická řídicí logika (smyčky, fan-out, verifikace), nedeterministickou práci
-dělají agenti.
+Dělba práce je jednoduchá:
 
-- **Skripty bez importů.** `agent`, `parallel`, `pipeline`, `phase`, `log`, `args`, `budget` a `workflow`
-  jsou globály.
-- **Psané agentem.** Součástí je skill `ultracode-workflow`, podle kterého Claude workflow napíše,
-  zvaliduje a spustí.
-- **Běh bez dozoru.** Výsledky agentů se ukládají na disk, `resume` dokončí přerušený běh bez opakování
-  hotové práce, limity tokenů, USD a počtu agentů jsou tvrdé.
-- **Bez runtime závislostí.** Potřeba je Node.js ≥ 22.18, nainstalované `agentiscode` a `claude`.
-- **JSON stream pro Agentis.** `ultracode run --json` posílá události běhu i kompletní log každého agenta
-  jako JSON Lines.
+- **Skript řídí.** Obsahuje běžný kód: smyčky, podmínky, rozdělení práce, sčítání výsledků. Sám nečte
+  soubory ani nespouští příkazy.
+- **Agenti pracují.** Každé volání `agent('…')` spustí samostatný proces Claude Code
+  (`agentiscode --adapter claude`, wrapper nad `claude -p`), který čte kód, opravuje, spouští testy a vrátí
+  výsledek zpět skriptu.
+
+```text
+ultracode run audit
+      │
+      ▼
+ skript (TypeScript)            agent() ──►  proces agentiscode → claude -p   (audit souboru A)
+ smyčky, větvení, fan-out  ──►  agent() ──►  proces agentiscode → claude -p   (audit souboru B)
+      ▲                         agent() ──►  proces agentiscode → claude -p   (ověření nálezu)
+      │                                            │
+      └──────────── výsledky (text nebo JSON podle schématu) ◄──┘
+      │
+      ▼
+ stdout: JSON návratové hodnoty skriptu        .ultracode/runs/<runId>/: záznam celého běhu
+```
+
+Návrh vychází z `/workflows` v Claude Code a API skriptu je téměř shodné (viz
+[srovnání](#srovnání-s-workflow-v-claude-code)).
+
+## Kdy se workflow hodí
+
+| Hodí se | Nehodí se |
+| --- | --- |
+| Práce jde rozdělit na **mnoho nezávislých kusů** (soubory, moduly, nálezy), které by se nevešly do jednoho kontextu. | Malá nebo lineární úloha (pár souborů, jedna oprava). Tu udělá jeden agent rychleji. |
+| Chceš **jistotu ve výsledku**: nález ověří nezávislý skeptik, opravu zreviduje jiný agent. | Uprostřed běhu je potřeba rozhodnutí člověka. Běh žádný vstup nepřijímá. |
+| Potřebuješ **smyčku do splnění podmínky** (testy zelené, žádné nové nálezy). | Zadání ještě není jasné. Workflow chybu v zadání znásobí, nejdřív ho ujasni. |
+
+Typické tvary z praxe:
+
+- **Audit jen pro čtení.** Kód se rozdělí na oddíly, každý oddíl projde jeden agent se zakázaným zápisem
+  a závažné nálezy se pokusí vyvrátit skeptik. Například kontrola kompatibility s PHP 8: 8 oddílů,
+  kontrola závislostí a ověření, celkem kolem 10 agentů.
+- **Review diffu.** Jeden revizor na změněný soubor, potom jeden skeptik na každý nález. Výsledek obsahuje
+  jen potvrzené nálezy a počty vyvrácených, neověřených a selhaných.
+- **Implementace po částech.** Několik agentů souběžně implementuje části specifikace, každý smí měnit jen
+  své soubory a změny potřebné jinde jen nahlásí. Reálný běh tohoto tvaru: 5 agentů, 34 minut, 108 volání
+  nástrojů.
+- **Oprava do zelena.** Jeden agent spustí testy, další opravují selhání na oddělených souborech a kolo se
+  opakuje, dokud testy neprojdou nebo se dvě kola po sobě nic nezlepší.
+- **Dva běhy s lidským schválením mezi nimi.** První běh (`--args '{"stage":"prepare"}'`) připraví
+  a zkontroluje změny, člověk je schválí a druhý běh (`"stage":"deploy"`) je nasadí.
 
 ## Instalace
 
-Požadavky: Node.js ≥ 22.18 (vyvíjeno na 24) a [Claude Code](https://code.claude.com) (`claude`) na `PATH`,
-přihlášený a schopný neinteraktivního režimu.
+Požadavky:
+
+- Node.js ≥ 22.18 (vyvíjeno na 24),
+- `agentiscode` na `PATH`,
+- [Claude Code](https://code.claude.com) (`claude`) na `PATH`, přihlášený a schopný neinteraktivního režimu.
+
+Jiné runtime závislosti projekt nemá.
 
 ```bash
 npm install
@@ -32,32 +71,55 @@ ultracode --version
 Bez `npm run build` se CLI spustí přímo ze zdrojů (`src/cli/cli.ts`) přes type-stripping Node.js,
 což se hodí při vývoji.
 
-## Rychlý start
+## První běh
 
 ```bash
 cd /cesta/k/projektu
-ultracode init                                   # .ultracode/workflows/hello.workflow.ts + typy
+ultracode init                                   # vytvoří .ultracode/workflows/hello.workflow.ts a typy
 ultracode validate .ultracode/workflows/hello.workflow.ts
-ultracode run hello --args '{"name":"světe"}'    # výsledek (JSON) na stdout, průběh na stderr
-ultracode status                                 # stav posledního běhu
-ultracode logs <runId> --follow                  # události živě
-ultracode resume <runId>                         # po přerušení dokončí zbytek
+ultracode run hello --args '{"name":"světe"}'
 ```
 
-Workflow může napsat Claude. Nainstaluj mu skill a popiš úlohu:
+`run` vypíše na stderr průběh (fáze, agenti, zprávy z `log()`) a po dokončení na stdout JSON, který skript
+vrátil, tady `{"ok":true,"greeting":"…"}`. Celý běh je zaznamenán v `.ultracode/runs/<runId>/`.
+
+Další příkazy, které budeš potřebovat:
+
+```bash
+ultracode status                   # stav posledního běhu: fáze, agenti, tokeny
+ultracode logs <runId> --follow    # události živě
+ultracode logs <runId> --agent 3   # prompt a výsledek jednoho agenta
+ultracode resume <runId>           # po přerušení nebo selhání dokončí zbytek
+```
+
+## Workflow píše Claude
+
+Skripty obvykle nepíše člověk. Nainstaluj Claudovi skill a popiš mu úlohu („zkontroluj celý projekt po
+upgradu na PHP 8“, „zreviduj diff, každý nález ověř“):
 
 ```bash
 ultracode skill install            # do ~/.claude/skills/ (nebo --project do ./.claude/skills/)
 ```
 
-> [!TIP]
-> Skill popisuje, kdy workflow použít, jak psát prompty pro subagenty, jak se vyhnout souběžným zápisům
-> a jak číst výsledek. Zdroj: [`skills/ultracode-workflow/`](skills/ultracode-workflow/SKILL.md).
+Claude pak podle skillu [`ultracode-workflow`](skills/ultracode-workflow/SKILL.md) postupuje takto:
 
-## Ukázkový skript
+1. **Zjistí rozsah** (`ls`, `grep`, `git diff --stat`) a odhadne počet agentů.
+2. **Napíše skript** `.ultracode/workflows/<jméno>.workflow.ts`.
+3. **Zvaliduje ho:** `ultracode validate …`.
+4. **Spustí ho na popředí a počká na konec**, s pevným ID běhu:
+   `ultracode run <jméno> --run-id audit-1 --args '{…}'`.
+5. **Přečte výsledek** a zkontroluje, kolik agentů selhalo a co zůstalo neověřené.
+6. Po přerušení nebo selhání **pokračuje** přes `ultracode resume audit-1`, nezačíná znovu.
 
-`.ultracode/workflows/find-todos.workflow.ts` najde TODO komentáře v adresářích. Každý adresář se zpracuje
-nezávisle (`pipeline`) a nálezy ověří druhý agent:
+> [!IMPORTANT]
+> Běh trvá minuty až hodiny a musí běžet na popředí. Agent, který workflow spustil na pozadí a ukončil svůj
+> tah, už výsledek nikdy nepřečte. Běh také neukončuj kvůli „pokračování přes resume“: do journalu se
+> ukládají jen dokončení agenti a práce rozpracovaných se ztratí.
+
+## Jak vypadá skript
+
+`.ultracode/workflows/find-todos.workflow.ts` najde TODO komentáře v adresářích. Každý adresář projde dvěma
+kroky: jeden agent hledá, druhý nálezy ověří.
 
 ```ts
 /// <reference path="../workflow.d.ts" />
@@ -117,42 +179,98 @@ if (ok.length < dirs.length) log(`Selhalo ${dirs.length - ok.length} z ${dirs.le
 return { dirs: ok, failed: dirs.length - ok.length }
 ```
 
-Plné příklady jsou v adresáři [`examples/`](examples/):
+Co si z ukázky odnést:
+
+- **`meta`** popisuje workflow a jeho fáze. Je to čistý literál na začátku souboru; `phases` musí odpovídat
+  fázím použitým ve skriptu.
+- **Žádné importy.** `agent`, `parallel`, `pipeline`, `phase`, `log`, `args`, `budget` a `workflow` jsou
+  globály. Typy dodá řádek `/// <reference …>`.
+- **`args`** je vstup z příkazové řádky: `ultracode run find-todos --args '{"dirs":["src","test"]}'`.
+- **`schema`** (JSON Schema) říká, v jakém tvaru má agent odpovědět. Skript dostane ověřený objekt
+  a nemusí nic parsovat z textu. Bez `schema` vrací `agent()` text.
+- **`pipeline`** pošle každý adresář přes oba kroky nezávisle na ostatních. Adresáře běží souběžně
+  a ověření jednoho nečeká na dohledání ostatních.
+- **`null` znamená selhání.** `agent()` nevyhazuje výjimku; když agent selže i po opakovaných pokusech,
+  vrátí `null`. Skript to musí ošetřit a selhání započítat do výsledku, aby výsledek nepředstíral úplnost.
+- **`return`** je výsledek běhu. Vypíše se jako JSON na stdout a uloží do `result.json`.
+
+Hotové příklady jsou v adresáři [`examples/`](examples/):
 
 | Příklad | Co ukazuje |
 | --- | --- |
-| [`audit-routes`](examples/audit-routes.workflow.ts) | najde soubory, pak `pipeline(audit → 3 skeptici s různými čočkami)` a syntézu s ID z kódu |
-| [`fix-until-green`](examples/fix-until-green.workflow.ts) | smyčka běh → oprava na disjunktních souborech → znovu; zastaví po 2 kolech bez pokroku |
-| [`deep-research`](examples/deep-research.workflow.ts) | sken z více směrů, deduplikace, křížová verifikace tvrzení, syntéza s citacemi |
-| [`php8-upgrade`](examples/php8-upgrade.workflow.ts) | `Core` a potom `pipeline(Fix → Review)` po oddílech kódu s kontrolou překryvu cest |
+| [`audit-routes`](examples/audit-routes.workflow.ts) | najde soubory, každý zaudituje, nálezy posoudí 3 skeptici z různých úhlů a nakonec vznikne souhrn |
+| [`fix-until-green`](examples/fix-until-green.workflow.ts) | smyčka testy → oprava na oddělených souborech → znovu; zastaví po 2 kolech bez pokroku |
+| [`deep-research`](examples/deep-research.workflow.ts) | hledání z více směrů, deduplikace, křížové ověření tvrzení, souhrn s citacemi |
+| [`php8-upgrade`](examples/php8-upgrade.workflow.ts) | nejdřív společné změny (`Core`), pak oprava a review po oddílech kódu s kontrolou překryvu cest |
 
 Příklad spustíš bez kopírování: `ultracode run ./examples/audit-routes.workflow.ts --args '{"root":"src"}'`.
 Do vlastního projektu ho zkopíruj do `.ultracode/workflows/` a změň řádek `/// <reference …>` na
 `../workflow.d.ts` (soubor vytvoří `ultracode init` nebo `ultracode types`).
 
-## API
+## Co je dobré vědět předem
+
+**Agent nemá paměť.** Každý agent je nový proces. Nevidí skript, ostatní agenty ani předchozí konverzaci,
+jen svůj prompt a projektové `CLAUDE.md` a skilly. Prompt proto musí obsahovat cíl, kontext, rozsah práce
+a popis toho, co vrátit.
+
+**Agenti sdílejí jeden pracovní strom.** Dva agenti, kteří upraví stejný soubor, si práci tiše přepíšou.
+Workflow, které zapisuje, musí práci rozdělit na cesty bez překryvu a každému agentovi říct, co je jeho.
+
+**`pipeline` nebo `parallel`.** `pipeline(items, krok1, krok2)` vede každou položku všemi kroky samostatně
+a je výchozí volbou. `parallel([...])` počká na všechny výsledky najednou (bariéra); použij ho jen tehdy,
+když další krok opravdu potřebuje všechny výsledky pohromadě, například kvůli deduplikaci. Obyčejné
+`for (…) await agent()` běží sériově.
+
+**Resume pracuje podle obsahu.** Výsledek každého dokončeného agenta se zapíše do `journal.jsonl`. Při
+`resume` se agent se stejným promptem, schématem, modelem, effortem, `cwd` a nástroji nespustí znovu a vrátí
+uložený výsledek. Selhaní agenti se neukládají, takže se zopakují. Skript lze mezi běhy i upravit:
+`ultracode run <jméno> --resume <runId>` použije nový kód a staré výsledky.
+
+**Skript musí být deterministický.** Kvůli resume vyhazují `Date.now()`, `Math.random()` a `new Date()` bez
+argumentu chybu. Čas nebo náhodu předej přes `args`.
+
+**Limity jsou tvrdé.** `--max-agents` a `--max-tokens` běh po překročení ukončí. Hotovou práci neztratíš:
+zvyš limit a pokračuj přes `resume`.
+
+## API skriptu
 
 Úplný popis je v [`references/api.md`](skills/ultracode-workflow/references/api.md), typy v
-[`types/workflow.d.ts`](types/workflow.d.ts).
+[`types/workflow.d.ts`](types/workflow.d.ts), osvědčené vzory v
+[`references/patterns.md`](skills/ultracode-workflow/references/patterns.md).
 
 | Globál | Účel |
 | --- | --- |
 | `agent(prompt, opts?)` | spustí agenta. Bez `schema` vrací text, se `schema` ověřený objekt, při selhání **`null`** |
-| `parallel(thunks)` | souběžně s **bariérou**; thunk s chybou vrací `null` |
-| `pipeline(items, s1, s2, …)` | každou položku projde stage nezávisle, **bez bariéry**; výchozí volba |
+| `pipeline(items, s1, s2, …)` | každá položka projde všemi kroky nezávisle, **bez bariéry**; výchozí volba |
+| `parallel(thunks)` | spustí funkce souběžně a počká na všechny (**bariéra**); funkce s chybou vrací `null` |
 | `phase(title)`, `log(msg)` | fáze a zprávy do průběhu i do `events.jsonl` |
 | `args` | vstup z `--args` nebo `--args-file` jako skutečný JSON |
 | `budget` | `total`, `spent()`, `remaining()` (tokeny) a `totalUsd`, `spentUsd()`, `remainingUsd()` |
-| `workflow(nameOrRef, args?)` | spustí jiný workflow inline (vnoření o jednu úroveň) |
+| `workflow(nameOrRef, args?)` | spustí jiný workflow uvnitř tohoto (vnoření jen o jednu úroveň) |
 
-Volby `agent()`: `label`, `phase`, `schema`, `model`, `effort`, `cwd`, `tools`, `disallowedTools`,
-`systemPrompt`, `stallMs`, `timeoutMs`, `maxUsd`, `noCache`.
+Volby `agent()`:
+
+| Volba | Účel |
+| --- | --- |
+| `label`, `phase` | název agenta a fáze v průběhu a v logu |
+| `schema` | JSON Schema odpovědi; kořen je `object` |
+| `model`, `effort` | model a úsilí; výchozí hodnoty jdou z `--model` a `--effort` |
+| `cwd` | pracovní adresář agenta |
+| `tools` | seznam povolených nástrojů; vše ostatní se odmítne |
+| `disallowedTools` | zakázané nástroje, např. `['Edit', 'Write']` |
+| `systemPrompt` | vlastní systémový prompt |
+| `stallMs`, `timeoutMs` | limit ticha (výchozích 10 minut) a celkové doby agenta |
+| `maxUsd` | strop útraty jednoho agenta |
+| `noCache` | při resume nepoužije uložený výsledek |
 
 Pravidla skriptů:
 
 - `meta` je čistý literál na začátku souboru a jeho `phases` odpovídají volání `phase()`.
-- `Date.now()`, `Math.random()` a `new Date()` bez argumentu vyhazují chybu, protože by rozbily `resume`.
-- Limity: souběžnost `min(16, CPU−2)`, nejvýš 1000 agentů za běh a 4096 položek v jednom `parallel` nebo `pipeline`.
+- Povolená je jen TypeScript syntaxe, kterou lze vymazat (typy, `interface`, `as`); `enum` a `namespace` ne.
+- Skript běží v sandboxu bez `process`, `require`, `fetch`, `setTimeout` a souborového systému.
+- `Date.now()`, `Math.random()` a `new Date()` bez argumentu vyhazují chybu.
+- Limity: souběžnost `min(16, CPU−2)`, nejvýš 1000 agentů za běh a 4096 položek v jednom `parallel` nebo
+  `pipeline`.
 
 ## CLI
 
@@ -167,24 +285,40 @@ Pravidla skriptů:
 | `ultracode meta <workflow\|cesta>` | vypíše `meta` workflow jako JSON |
 | `ultracode types [--out <dir>]` | zapíše `workflow.d.ts` |
 | `ultracode init` | vytvoří `.ultracode/` s ukázkovým workflow |
-| `ultracode skill install [--user\|--project] [--force]` | nainstaluje authoring skill |
+| `ultracode skill install [--user\|--project] [--force]` | nainstaluje skill pro psaní workflow |
 
-Volby `run` a `resume`: `--cwd`, `--concurrency`, `--max-agents`, `--max-tokens`, `--max-usd`, `--model`,
-`--effort`, `--run-id`, `--quiet`, `--verbose`, `--json`, `--no-color`.
+Volby `run` a `resume`:
 
-**Výstup.** Stdout je JSON návratové hodnoty skriptu, stderr je průběh pro člověka. S `--json` je stdout
-proud JSON Lines.
+| Volba | Účel |
+| --- | --- |
+| `--args <json>`, `--args-file <cesta>` | vstup workflow (globál `args`) |
+| `--run-id <id>` | vlastní ID běhu; jinak `wf_<8 hex>-<3 hex>` |
+| `--max-usd <x>`, `--max-tokens <n>`, `--max-agents <n>` | tvrdé limity útraty, výstupních tokenů a počtu agentů |
+| `--concurrency <n>` | nejvyšší počet souběžných agentů |
+| `--model <m>`, `--effort <úroveň>` | výchozí model a úsilí agentů (`low`, `medium`, `high`, `xhigh`, `max`) |
+| `--cwd <dir>` | adresář projektu: `cwd` agentů a kořen `.ultracode/` |
+| `--quiet`, `--verbose` | potlačí průběh na stderr, nebo přidá volání nástrojů |
+| `--json` | stdout jako proud JSON Lines (viz níže) |
+| `--no-color` | vypne barvy |
+
+**Kde se workflow hledá.** Argument s `/` nebo příponou `.ts`/`.js` je cesta. Jinak je to jméno
+(`<jméno>.workflow.ts`, `.workflow.js`, `.ts`, `.js`) hledané v `<cwd>/.ultracode/workflows/` a ve stejném
+podadresáři rodičovských adresářů, potom v `~/.ultracode/workflows` a v adresářích
+z `$ULTRACODE_WORKFLOWS_DIR`.
+
+**Výstup.** Stdout je JSON návratové hodnoty skriptu, a to jen u dokončeného běhu. Stderr je průběh pro
+člověka. Neúspěšný běh má stdout prázdný; shrnutí a chybu ukáže `ultracode status <runId> --json`.
 
 **Exit kódy.** `0` dokončeno, `1` běh selhal, `2` chybné použití, neplatný skript nebo neznámé workflow,
 `130` přerušeno.
 
-### `run --json`: stream pro Agentis
+### `run --json`: proud událostí pro Agentis
 
-Každý řádek je JSON objekt s polem `t`:
+S `--json` je stdout proud JSON Lines. Každý řádek je objekt s polem `t`:
 
 - události běhu shodné s `events.jsonl`: `run_start`, `phase`, `log`, `workflow_enter` / `workflow_exit`,
   `agent_start`, `agent_tool`, `agent_retry`, `agent_done`, `budget`, `run_end`;
-- `agent_event` (`{t, ts, id, label, attempt, event}`) je jedna událost z logu subagenta ve formátu
+- `agent_event` (`{t, ts, id, label, attempt, event}`) je jedna událost z logu agenta ve formátu
   `agentiscode --json`. Pole `id` odpovídá `agent_start.id`. Tyto události se nezapisují do `events.jsonl`,
   na disku jsou v `agents/<id>/stream.jsonl`;
 - poslední řádek `{"t":"summary", …}` obsahuje `RunSummary`, i u neúspěšného běhu.
@@ -193,21 +327,18 @@ Každý řádek je JSON objekt s polem `t`:
 ultracode run audit --json --quiet | agentis-ingest     # stdout obsahuje jen JSON Lines
 ```
 
-### Živý průběh subagentů v Agentis tasku
+### Živý průběh agentů v Agentis tasku
 
 Pokud `ultracode` běží uvnitř Agentis runu (v prostředí jsou `AGENTIS_TASK_ID`, `AGENTIS_RUN_ID`
-a `AGENTIS_ENDPOINT`), každý subagent se spustí s `agentiscode --task-id … --run-id … --primary-session false`.
+a `AGENTIS_ENDPOINT`), každý agent se spustí s `agentiscode --task-id … --run-id … --primary-session false`.
 V aktuálním runu tasku se pak zobrazí jako vedlejší session s živým přepisem (text, reasoning, nástroje,
-tokeny), s titulkem `[Fáze] label #id` a rodičovskou session orchestrátoru. Vypnutí:
-`ULTRACODE_AGENTIS_TELEMETRY=0`. Vyžaduje `agentiscode` s volbami `--session-title` a `--parent-session-id`.
+tokeny), s titulkem `[Fáze] label #id` a rodičovskou session orchestrátoru. Vyplatí se proto dávat agentům
+srozumitelné `label`. Vypnutí: `ULTRACODE_AGENTIS_TELEMETRY=0`. Vyžaduje `agentiscode` s volbami
+`--session-title` a `--parent-session-id`.
 
-Workflow se hledá podle jména (`<jméno>.workflow.ts`, `.workflow.js`, `.ts`, `.js`) v
-`<cwd>/.ultracode/workflows/` a ve stejných podadresářích rodičů, potom v `~/.ultracode/workflows` a v
-adresářích z `$ULTRACODE_WORKFLOWS_DIR`.
+## Záznam běhu
 
-## Struktura běhu
-
-Každý běh se zapisuje do `<cwd>/.ultracode/runs/<runId>/` (`runId` má tvar `wf_<8 hex>-<3 hex>`):
+Každý běh se zapisuje do `<cwd>/.ultracode/runs/<runId>/`:
 
 ```text
 run.json         shrnutí a stav běhu (průběžně aktualizovaný): status, totals, error, budgetExceeded
@@ -221,7 +352,10 @@ result.json      návratová hodnota skriptu (jen u dokončeného běhu)
 agents/<n>/      prompt.txt, stream.jsonl, stderr.txt, result.json (n = pořadí startu)
 ```
 
-`ultracode init` přidá do `.ultracode/.gitignore` řádek `runs/`.
+Když výsledek nevypadá podle očekávání, začni u `ultracode status <runId>` (kolik agentů selhalo) a potom
+se podívej na konkrétního agenta přes `ultracode logs <runId> --agent <n>`.
+
+`ultracode init` přidá do `.ultracode/.gitignore` řádek `runs/`, takže se záznamy běhů necommitují.
 
 ## Proměnné prostředí
 
@@ -244,18 +378,18 @@ Subagenti dostávají `CLAUDE_CODE_DISABLE_WORKFLOWS=1`, aby nevznikala rekurziv
 ## Bezpečnost
 
 > [!WARNING]
-> Každý agent běží s `--dangerously-skip-permissions` a `IS_SANDBOX=1`. Běží bez dotazů, souběžně a bez dozoru, může
-> číst a měnit libovolné soubory dostupné uživateli, spouštět příkazy a používat síť. Obsah zpracovávaných
-> souborů navíc může obsahovat **prompt injection**. **Spouštěj ultracode v kontejneru nebo VM** s omezeným
-> přístupem k tajemstvím a síti.
+> Každý agent běží s `--dangerously-skip-permissions` a `IS_SANDBOX=1`. Běží bez dotazů, souběžně a bez
+> dozoru, může číst a měnit libovolné soubory dostupné uživateli, spouštět příkazy a používat síť. Obsah
+> zpracovávaných souborů navíc může obsahovat **prompt injection**. **Spouštěj ultracode v kontejneru nebo
+> VM** s omezeným přístupem k tajemstvím a síti.
 
 - `disallowedTools` nástroje agentovi skutečně zakáže (např. `Edit`, `Write`).
 - `tools` je skutečný whitelist. Agent s `tools` běží v `--permission-mode dontAsk`, takže vše mimo seznam
   se odmítne. Bez `tools` platí `bypassPermissions`.
 - `Bash` může zapisovat i agentovi bez `Edit` a `Write`. Pro režim jen pro čtení použij
-  `tools: ['Read', 'Grep', 'Glob']`, případně to řekni v promptu.
-- Agenti sdílejí jeden pracovní strom. Workflow, které zapisuje, musí rozdělit práci na disjunktní cesty.
-- Při každém novém fan-outu nastav `--max-usd` a `--max-tokens`.
+  `tools: ['Read', 'Grep', 'Glob']`, případně zákaz zápisu zopakuj v promptu.
+- Agenti sdílejí jeden pracovní strom. Workflow, které zapisuje, musí rozdělit práci na cesty bez překryvu.
+- U nového workflow s velkým počtem agentů nastav `--max-agents`.
 
 ## Srovnání s workflow v Claude Code
 
